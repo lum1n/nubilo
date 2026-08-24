@@ -166,6 +166,41 @@ func TestEncodeEventICSKeepsLocalTimezone(t *testing.T) {
 	if spec.Start.Weekday() != time.Monday {
 		t.Fatalf("weekday %s", spec.Start.Weekday())
 	}
+	if !strings.Contains(s, "BEGIN:VTIMEZONE") || !strings.Contains(s, "TZID:Europe/Oslo") {
+		t.Fatalf("missing vtimezone: %s", s)
+	}
+}
+
+func TestEncodeEventICSAlarmsAttendeesURL(t *testing.T) {
+	start := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	ics, err := EncodeEventICS(EventSpec{
+		UID: "uid-full", Summary: "Standup", Start: start, End: start.Add(time.Hour),
+		URL: "https://meet.example/standup", Status: "CONFIRMED", Transp: "OPAQUE",
+		Organizer: PersonSpec{Name: "Ada", Email: "ada@example.com"},
+		Attendees: []PersonSpec{
+			{Name: "Bob", Email: "bob@example.com", PartStat: "ACCEPTED", Role: "REQ-PARTICIPANT"},
+		},
+		Alarms: []AlarmSpec{{OffsetSec: -900, Desc: "Soon"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(ics)
+	for _, want := range []string{"BEGIN:VALARM", "TRIGGER:-PT900S", "ATTENDEE", "ORGANIZER", "mailto:ada@example.com", "URL:", "STATUS:CONFIRMED", "TRANSP:OPAQUE"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in %s", want, s)
+		}
+	}
+	spec, err := ParseEventICS(ics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.URL == "" || spec.Organizer.Email == "" || len(spec.Attendees) != 1 || len(spec.Alarms) != 1 {
+		t.Fatalf("%+v", spec)
+	}
+	if spec.Alarms[0].OffsetSec != -900 {
+		t.Fatalf("offset %d", spec.Alarms[0].OffsetSec)
+	}
 }
 
 func TestEncodeEventICSAllowsCRLFText(t *testing.T) {

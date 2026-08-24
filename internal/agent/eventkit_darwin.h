@@ -6,4 +6,9 @@ char *nubilo_ek_list_events(const char *calendar_id, double start, double end, c
 char *nubilo_ek_save_event(const char *calendar_id, const char *item_id, const char *json, char **err);
 int nubilo_ek_delete_event(const char *item_id, char **err);
 
+char *nubilo_ek_list_reminder_lists(char **err);
+char *nubilo_ek_list_reminders(const char *calendar_id, double start, double end, char **err);
+char *nubilo_ek_save_reminder(const char *calendar_id, const char *item_id, const char *json, char **err);
+int nubilo_ek_delete_reminder(const char *item_id, char **err);
+
 #endif

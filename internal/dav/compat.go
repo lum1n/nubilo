@@ -38,6 +38,7 @@ func WrapCalDAV(b *CalDAV) http.Handler {
 			b.Prefix + "/" + calUserSeg + "/" + calHomeSeg,
 		},
 		mkcalendar: b,
+		cal:        b,
 	}
 }
 
@@ -62,6 +63,7 @@ type appleDAV struct {
 	next       http.Handler
 	slash      []string
 	mkcalendar mkCalendarHandler
+	cal        *CalDAV
 }
 
 func (h appleDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -70,11 +72,20 @@ func (h appleDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case "PROPPATCH":
+		if h.cal != nil {
+			h.cal.serveCalendarPropPatch(w, r)
+			return
+		}
 		servePropPatchOK(w, r)
 		return
 	case "MKCALENDAR":
 		if h.mkcalendar != nil {
 			h.mkcalendar.createFromPath(w, r)
+			return
+		}
+	case "PROPFIND":
+		if h.cal != nil {
+			h.serveCalPropFind(w, r)
 			return
 		}
 	}
@@ -99,7 +110,11 @@ func servePropPatchOK(w http.ResponseWriter, r *http.Request) {
 	// iOS PROPPATCHes calendar-color / calendar-order. go-webdav returns 501,
 	// which Calendar.app surfaces as "Calendars could not update".
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	href := xmlEscape(r.URL.Path)
+	writePropPatchOK(w, r.URL.Path, body)
+}
+
+func writePropPatchOK(w http.ResponseWriter, path string, body []byte) {
+	href := xmlEscape(path)
 	props := propPatchNames(body)
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)

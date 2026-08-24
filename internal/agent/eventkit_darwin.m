@@ -3,6 +3,7 @@
 #import "eventkit_darwin.h"
 #import <EventKit/EventKit.h>
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <math.h>
 #import <string.h>
 
@@ -293,6 +294,8 @@ static BOOL nubilo_ek_rule_same(EKEvent *ev, EKRecurrenceRule *want) {
 	return [a isEqualToString:b];
 }
 
+static void nubilo_ek_apply_extras(EKEvent *ev, NSDictionary *j);
+
 static void nubilo_ek_apply_body(EKEvent *ev, EKCalendar *cal, NSDictionary *j) {
 	ev.calendar = cal;
 	ev.title = [j[@"title"] isKindOfClass:[NSString class]] ? j[@"title"] : @"";
@@ -303,6 +306,7 @@ static void nubilo_ek_apply_body(EKEvent *ev, EKCalendar *cal, NSDictionary *j) 
 	ev.startDate = [NSDate dateWithTimeIntervalSince1970:start];
 	ev.endDate = [NSDate dateWithTimeIntervalSince1970:end > start ? end : start + 3600];
 	ev.allDay = [j[@"all_day"] intValue] != 0;
+	nubilo_ek_apply_extras(ev, j);
 }
 
 static void nubilo_ek_apply_rule(EKEvent *ev, EKRecurrenceRule *rule) {
@@ -354,6 +358,184 @@ static NSString *nubilo_ek_tzname(EKEvent *ev) {
 	return tz.name ?: @"";
 }
 
+static NSString *nubilo_ek_status(EKEvent *ev) {
+	switch (ev.status) {
+	case EKEventStatusTentative:
+		return @"TENTATIVE";
+	case EKEventStatusCanceled:
+		return @"CANCELLED";
+	case EKEventStatusConfirmed:
+		return @"CONFIRMED";
+	default:
+		return @"";
+	}
+}
+
+static NSString *nubilo_ek_transp(EKEvent *ev) {
+	switch (ev.availability) {
+	case EKEventAvailabilityFree:
+		return @"TRANSPARENT";
+	case EKEventAvailabilityBusy:
+	case EKEventAvailabilityTentative:
+	case EKEventAvailabilityUnavailable:
+		return @"OPAQUE";
+	default:
+		return @"";
+	}
+}
+
+static NSDictionary *nubilo_ek_person(EKParticipant *p) {
+	if (!p) {
+		return @{};
+	}
+	NSString *email = p.URL.absoluteString ?: @"";
+	NSString *part = @"NEEDS-ACTION";
+	switch (p.participantStatus) {
+	case EKParticipantStatusAccepted:
+		part = @"ACCEPTED";
+		break;
+	case EKParticipantStatusDeclined:
+		part = @"DECLINED";
+		break;
+	case EKParticipantStatusTentative:
+		part = @"TENTATIVE";
+		break;
+	case EKParticipantStatusDelegated:
+		part = @"DELEGATED";
+		break;
+	case EKParticipantStatusCompleted:
+		part = @"COMPLETED";
+		break;
+	case EKParticipantStatusInProcess:
+		part = @"IN-PROCESS";
+		break;
+	default:
+		break;
+	}
+	NSString *role = @"REQ-PARTICIPANT";
+	switch (p.participantRole) {
+	case EKParticipantRoleOptional:
+		role = @"OPT-PARTICIPANT";
+		break;
+	case EKParticipantRoleChair:
+		role = @"CHAIR";
+		break;
+	case EKParticipantRoleNonParticipant:
+		role = @"NON-PARTICIPANT";
+		break;
+	default:
+		break;
+	}
+	return @{
+		@"name": p.name ?: @"",
+		@"email": email,
+		@"partstat": part,
+		@"role": role
+	};
+}
+
+static void nubilo_ek_fill_ics(NSMutableDictionary *d, EKEvent *ev) {
+	d[@"url"] = ev.URL.absoluteString ?: @"";
+	d[@"status"] = nubilo_ek_status(ev);
+	d[@"transp"] = nubilo_ek_transp(ev);
+	if (ev.organizer) {
+		d[@"organizer"] = nubilo_ek_person(ev.organizer);
+	}
+	NSMutableArray *atts = [NSMutableArray array];
+	for (EKParticipant *p in ev.attendees) {
+		[atts addObject:nubilo_ek_person(p)];
+	}
+	if (atts.count) {
+		d[@"attendees"] = atts;
+	}
+	NSMutableArray *alarms = [NSMutableArray array];
+	for (EKAlarm *a in ev.alarms) {
+		NSMutableDictionary *row = [NSMutableDictionary dictionary];
+		if (a.absoluteDate) {
+			row[@"abs"] = @([a.absoluteDate timeIntervalSince1970]);
+		} else {
+			row[@"offset"] = @(a.relativeOffset);
+		}
+		row[@"action"] = @"DISPLAY";
+		row[@"desc"] = a.emailAddress.length ? a.emailAddress : @"Reminder";
+		[alarms addObject:row];
+	}
+	if (alarms.count) {
+		d[@"alarms"] = alarms;
+	}
+}
+
+static void nubilo_ek_apply_extras(EKEvent *ev, NSDictionary *j) {
+	NSString *url = [j[@"url"] isKindOfClass:[NSString class]] ? j[@"url"] : @"";
+	ev.URL = url.length ? [NSURL URLWithString:url] : nil;
+	NSString *status = [j[@"status"] isKindOfClass:[NSString class]] ? j[@"status"] : @"";
+	if ([status isEqualToString:@"TENTATIVE"]) {
+		ev.status = EKEventStatusTentative;
+	} else if ([status isEqualToString:@"CANCELLED"]) {
+		ev.status = EKEventStatusCanceled;
+	} else if ([status isEqualToString:@"CONFIRMED"]) {
+		ev.status = EKEventStatusConfirmed;
+	}
+	NSString *transp = [j[@"transp"] isKindOfClass:[NSString class]] ? j[@"transp"] : @"";
+	if (ev.availability != EKEventAvailabilityNotSupported) {
+		if ([transp isEqualToString:@"TRANSPARENT"]) {
+			ev.availability = EKEventAvailabilityFree;
+		} else if ([transp isEqualToString:@"OPAQUE"]) {
+			ev.availability = EKEventAvailabilityBusy;
+		}
+	}
+	NSArray *old = [ev.alarms copy];
+	for (EKAlarm *a in old) {
+		[ev removeAlarm:a];
+	}
+	for (NSDictionary *al in j[@"alarms"]) {
+		if (![al isKindOfClass:[NSDictionary class]]) {
+			continue;
+		}
+		EKAlarm *a = nil;
+		if (al[@"abs"] && [al[@"abs"] doubleValue] > 0) {
+			a = [EKAlarm alarmWithAbsoluteDate:[NSDate dateWithTimeIntervalSince1970:[al[@"abs"] doubleValue]]];
+		} else if (al[@"offset"]) {
+			a = [EKAlarm alarmWithRelativeOffset:[al[@"offset"] doubleValue]];
+		}
+		if (a) {
+			[ev addAlarm:a];
+		}
+	}
+}
+
+static NSString *nubilo_cal_hex(EKCalendar *cal) {
+	CGColorRef cg = cal.CGColor;
+	if (!cg) {
+		return @"";
+	}
+	size_t n = CGColorGetNumberOfComponents(cg);
+	const CGFloat *c = CGColorGetComponents(cg);
+	if (!c || n < 2) {
+		return @"";
+	}
+	CGFloat r = 0, g = 0, b = 0, a = 1;
+	if (n == 2) {
+		r = g = b = c[0];
+		a = c[1];
+	} else {
+		r = c[0];
+		g = c[1];
+		b = c[2];
+		if (n >= 4) {
+			a = c[3];
+		}
+	}
+	int ri = (int)lround(fmin(1.0, fmax(0.0, r)) * 255.0);
+	int gi = (int)lround(fmin(1.0, fmax(0.0, g)) * 255.0);
+	int bi = (int)lround(fmin(1.0, fmax(0.0, b)) * 255.0);
+	if (a >= 0.995) {
+		return [NSString stringWithFormat:@"#%02X%02X%02X", ri, gi, bi];
+	}
+	int ai = (int)lround(fmin(1.0, fmax(0.0, a)) * 255.0);
+	return [NSString stringWithFormat:@"#%02X%02X%02X%02X", ri, gi, bi, ai];
+}
+
 char *nubilo_ek_list_calendars(char **err) {
 	NSError *e = nil;
 	if (!nubilo_ek_access(&e)) {
@@ -367,7 +549,14 @@ char *nubilo_ek_list_calendars(char **err) {
 		if (cal.calendarIdentifier.length == 0) {
 			continue;
 		}
-		[out addObject:@{ @"id": cal.calendarIdentifier, @"title": cal.title ?: @"" }];
+		NSMutableDictionary *row = [NSMutableDictionary dictionary];
+		row[@"id"] = cal.calendarIdentifier;
+		row[@"title"] = cal.title ?: @"";
+		NSString *hex = nubilo_cal_hex(cal);
+		if (hex.length > 0) {
+			row[@"color"] = hex;
+		}
+		[out addObject:row];
 	}
 	NSData *data = [NSJSONSerialization dataWithJSONObject:out options:0 error:&e];
 	if (!data) {
@@ -422,6 +611,7 @@ char *nubilo_ek_list_events(const char *calendar_id, double start, double end, c
 		d[@"all_day"] = @(ev.allDay ? 1 : 0);
 		d[@"detached"] = @(ev.isDetached ? 1 : 0);
 		d[@"occurrence"] = @([ev.occurrenceDate timeIntervalSince1970]);
+		nubilo_ek_fill_ics(d, ev);
 		if (!ev.isDetached) {
 			NSString *eid = nubilo_ek_series_id(ev.eventIdentifier ?: @"");
 			EKEvent *master = eid.length ? masters[eid] : nil;
@@ -446,6 +636,7 @@ char *nubilo_ek_list_events(const char *calendar_id, double start, double end, c
 				d[@"master_end"] = @([master.endDate timeIntervalSince1970]);
 				d[@"rrule"] = nubilo_ek_rrule(master.recurrenceRules.firstObject, master.allDay);
 				d[@"all_day"] = @(master.allDay ? 1 : 0);
+				nubilo_ek_fill_ics(d, master);
 			}
 		}
 		[out addObject:d];
@@ -578,6 +769,325 @@ int nubilo_ek_delete_event(const char *item_id, char **err) {
 	if (![nubilo_ek_store() removeEvent:(EKEvent *)item span:EKSpanThisEvent commit:YES error:&e]) {
 		if (err) {
 			*err = nubilo_dup(e.localizedDescription ?: @"delete failed");
+		}
+		return 0;
+	}
+	return 1;
+}
+
+static int nubilo_ek_reminder_access(NSError **outErr) {
+	EKEventStore *store = nubilo_ek_store();
+	EKAuthorizationStatus st = [EKEventStore authorizationStatusForEntityType:EKEntityTypeReminder];
+	if (st == EKAuthorizationStatusAuthorized) {
+		return 1;
+	}
+	__block BOOL ok = NO;
+	__block NSError *err = nil;
+	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+	[store requestAccessToEntityType:EKEntityTypeReminder completion:^(BOOL granted, NSError *e) {
+		ok = granted;
+		err = e;
+		dispatch_semaphore_signal(sem);
+	}];
+	while (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC))) {
+		[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+	}
+	if (outErr) {
+		*outErr = err;
+	}
+	return ok ? 1 : 0;
+}
+
+static NSDate *nubilo_ek_comp_date(NSDateComponents *comp, BOOL *allDayOut) {
+	if (!comp) {
+		if (allDayOut) {
+			*allDayOut = NO;
+		}
+		return nil;
+	}
+	NSCalendar *cal = [NSCalendar currentCalendar];
+	BOOL allDay = (comp.hour == NSDateComponentUndefined && comp.minute == NSDateComponentUndefined && comp.second == NSDateComponentUndefined);
+	if (allDayOut) {
+		*allDayOut = allDay;
+	}
+	if (allDay) {
+		NSDateComponents *d = [comp copy];
+		d.hour = 0;
+		d.minute = 0;
+		d.second = 0;
+		return [cal dateFromComponents:d];
+	}
+	return [cal dateFromComponents:comp];
+}
+
+static NSDateComponents *nubilo_ek_date_comp(NSDate *date, BOOL allDay) {
+	if (!date) {
+		return nil;
+	}
+	NSCalendar *cal = [NSCalendar currentCalendar];
+	NSCalendarUnit units = NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond;
+	NSDateComponents *c = [cal components:units fromDate:date];
+	if (allDay) {
+		c.hour = NSDateComponentUndefined;
+		c.minute = NSDateComponentUndefined;
+		c.second = NSDateComponentUndefined;
+	}
+	return c;
+}
+
+static void nubilo_ek_fill_reminder_alarms(NSMutableDictionary *d, EKReminder *rem) {
+	NSMutableArray *alarms = [NSMutableArray array];
+	for (EKAlarm *a in rem.alarms) {
+		NSMutableDictionary *row = [NSMutableDictionary dictionary];
+		if (a.absoluteDate) {
+			row[@"abs"] = @([a.absoluteDate timeIntervalSince1970]);
+		} else {
+			row[@"offset"] = @(a.relativeOffset);
+		}
+		row[@"action"] = @"DISPLAY";
+		row[@"desc"] = @"Reminder";
+		[alarms addObject:row];
+	}
+	if (alarms.count) {
+		d[@"alarms"] = alarms;
+	}
+}
+
+static void nubilo_ek_apply_reminder_alarms(EKReminder *rem, NSDictionary *j) {
+	NSArray *old = [rem.alarms copy];
+	for (EKAlarm *a in old) {
+		[rem removeAlarm:a];
+	}
+	for (NSDictionary *al in j[@"alarms"]) {
+		if (![al isKindOfClass:[NSDictionary class]]) {
+			continue;
+		}
+		EKAlarm *a = nil;
+		if (al[@"abs"] && [al[@"abs"] doubleValue] > 0) {
+			a = [EKAlarm alarmWithAbsoluteDate:[NSDate dateWithTimeIntervalSince1970:[al[@"abs"] doubleValue]]];
+		} else if (al[@"offset"]) {
+			a = [EKAlarm alarmWithRelativeOffset:[al[@"offset"] doubleValue]];
+		}
+		if (a) {
+			[rem addAlarm:a];
+		}
+	}
+}
+
+char *nubilo_ek_list_reminder_lists(char **err) {
+	NSError *e = nil;
+	if (!nubilo_ek_reminder_access(&e)) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"reminders access denied");
+		}
+		return NULL;
+	}
+	NSMutableArray *out = [NSMutableArray array];
+	for (EKCalendar *cal in [nubilo_ek_store() calendarsForEntityType:EKEntityTypeReminder]) {
+		if (cal.calendarIdentifier.length == 0) {
+			continue;
+		}
+		NSMutableDictionary *row = [NSMutableDictionary dictionary];
+		row[@"id"] = cal.calendarIdentifier;
+		row[@"title"] = cal.title ?: @"";
+		NSString *hex = nubilo_cal_hex(cal);
+		if (hex.length > 0) {
+			row[@"color"] = hex;
+		}
+		[out addObject:row];
+	}
+	NSData *data = [NSJSONSerialization dataWithJSONObject:out options:0 error:&e];
+	if (!data) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"json");
+		}
+		return NULL;
+	}
+	return nubilo_dup([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
+}
+
+char *nubilo_ek_list_reminders(const char *calendar_id, double start, double end, char **err) {
+	NSError *e = nil;
+	if (!nubilo_ek_reminder_access(&e)) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"reminders access denied");
+		}
+		return NULL;
+	}
+	EKEventStore *store = nubilo_ek_store();
+	NSString *cid = [NSString stringWithUTF8String:calendar_id ? calendar_id : ""];
+	EKCalendar *want = nil;
+	for (EKCalendar *cal in [store calendarsForEntityType:EKEntityTypeReminder]) {
+		if ([cal.calendarIdentifier isEqualToString:cid]) {
+			want = cal;
+			break;
+		}
+	}
+	if (!want) {
+		if (err) {
+			*err = strdup("reminder list not found");
+		}
+		return NULL;
+	}
+	NSPredicate *pred = [store predicateForRemindersInCalendars:@[ want ]];
+	__block NSArray *reminders = nil;
+	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+	[store fetchRemindersMatchingPredicate:pred completion:^(NSArray *rems) {
+		reminders = rems ?: @[];
+		dispatch_semaphore_signal(sem);
+	}];
+	while (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC))) {
+		[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+	}
+	NSMutableArray *out = [NSMutableArray array];
+	for (EKReminder *rem in reminders) {
+		if (![rem isKindOfClass:[EKReminder class]] || rem.calendarItemIdentifier.length == 0) {
+			continue;
+		}
+		BOOL dueAllDay = NO;
+		NSDate *due = nubilo_ek_comp_date(rem.dueDateComponents, &dueAllDay);
+		BOOL startAllDay = NO;
+		NSDate *startDate = nubilo_ek_comp_date(rem.startDateComponents, &startAllDay);
+		NSMutableDictionary *d = [NSMutableDictionary dictionary];
+		d[@"id"] = rem.calendarItemIdentifier;
+		d[@"list_id"] = cid;
+		d[@"uid"] = rem.calendarItemExternalIdentifier.length ? rem.calendarItemExternalIdentifier : rem.calendarItemIdentifier;
+		d[@"title"] = rem.title ?: @"";
+		d[@"notes"] = rem.notes ?: @"";
+		d[@"url"] = rem.URL.absoluteString ?: @"";
+		d[@"priority"] = @(rem.priority);
+		d[@"all_day"] = @((dueAllDay || startAllDay) ? 1 : 0);
+		if (startDate) {
+			d[@"start"] = @([startDate timeIntervalSince1970]);
+		}
+		if (due) {
+			d[@"due"] = @([due timeIntervalSince1970]);
+		}
+		if (rem.completed) {
+			d[@"status"] = @"COMPLETED";
+			d[@"percent"] = @100;
+			if (rem.completionDate) {
+				d[@"completed"] = @([rem.completionDate timeIntervalSince1970]);
+			}
+		} else {
+			d[@"status"] = @"NEEDS-ACTION";
+		}
+		if (rem.recurrenceRules.count) {
+			NSString *rr = nubilo_ek_rrule(rem.recurrenceRules.firstObject, dueAllDay || startAllDay);
+			if (rr.length) {
+				d[@"rrule"] = rr;
+			}
+		}
+		nubilo_ek_fill_reminder_alarms(d, rem);
+		[out addObject:d];
+	}
+	(void)start;
+	(void)end;
+	NSData *data = [NSJSONSerialization dataWithJSONObject:out options:0 error:&e];
+	if (!data) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"json");
+		}
+		return NULL;
+	}
+	return nubilo_dup([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
+}
+
+char *nubilo_ek_save_reminder(const char *calendar_id, const char *item_id, const char *json, char **err) {
+	NSError *e = nil;
+	if (!nubilo_ek_reminder_access(&e)) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"reminders access denied");
+		}
+		return NULL;
+	}
+	NSData *raw = [NSData dataWithBytes:json ? json : "{}" length:json ? strlen(json) : 2];
+	id parsed = [NSJSONSerialization JSONObjectWithData:raw options:0 error:&e];
+	if (![parsed isKindOfClass:[NSDictionary class]]) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"invalid reminder json");
+		}
+		return NULL;
+	}
+	NSDictionary *j = parsed;
+	EKEventStore *store = nubilo_ek_store();
+	NSString *cid = [NSString stringWithUTF8String:calendar_id ? calendar_id : ""];
+	EKCalendar *cal = nil;
+	for (EKCalendar *c in [store calendarsForEntityType:EKEntityTypeReminder]) {
+		if ([c.calendarIdentifier isEqualToString:cid]) {
+			cal = c;
+			break;
+		}
+	}
+	if (!cal) {
+		if (err) {
+			*err = strdup("reminder list not found");
+		}
+		return NULL;
+	}
+	NSString *iid = [NSString stringWithUTF8String:item_id ? item_id : ""];
+	EKReminder *rem = nil;
+	if (iid.length) {
+		EKCalendarItem *item = [store calendarItemWithIdentifier:iid];
+		if ([item isKindOfClass:[EKReminder class]]) {
+			rem = (EKReminder *)item;
+		}
+	}
+	if (!rem) {
+		rem = [EKReminder reminderWithEventStore:store];
+	}
+	rem.calendar = cal;
+	rem.title = [j[@"title"] isKindOfClass:[NSString class]] ? j[@"title"] : @"";
+	rem.notes = [j[@"notes"] isKindOfClass:[NSString class]] ? j[@"notes"] : nil;
+	NSString *url = [j[@"url"] isKindOfClass:[NSString class]] ? j[@"url"] : @"";
+	rem.URL = url.length ? [NSURL URLWithString:url] : nil;
+	rem.priority = [j[@"priority"] intValue];
+	BOOL allDay = [j[@"all_day"] intValue] != 0;
+	double due = [j[@"due"] doubleValue];
+	double startSec = [j[@"start"] doubleValue];
+	rem.dueDateComponents = due > 0 ? nubilo_ek_date_comp([NSDate dateWithTimeIntervalSince1970:due], allDay) : nil;
+	rem.startDateComponents = startSec > 0 ? nubilo_ek_date_comp([NSDate dateWithTimeIntervalSince1970:startSec], allDay) : nil;
+	NSString *status = [j[@"status"] isKindOfClass:[NSString class]] ? j[@"status"] : @"";
+	double completed = [j[@"completed"] doubleValue];
+	BOOL done = completed > 0 || [status isEqualToString:@"COMPLETED"];
+	rem.completed = done;
+	if (done && completed > 0) {
+		rem.completionDate = [NSDate dateWithTimeIntervalSince1970:completed];
+	} else if (!done) {
+		rem.completionDate = nil;
+	}
+	EKRecurrenceRule *rule = nubilo_ek_rule_from_json(j[@"rrule"]);
+	if (rule) {
+		rem.recurrenceRules = @[ rule ];
+	} else {
+		rem.recurrenceRules = nil;
+	}
+	nubilo_ek_apply_reminder_alarms(rem, j);
+	if (![store saveReminder:rem commit:YES error:&e]) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"save reminder failed");
+		}
+		return NULL;
+	}
+	return nubilo_dup(rem.calendarItemIdentifier ?: @"");
+}
+
+int nubilo_ek_delete_reminder(const char *item_id, char **err) {
+	NSError *e = nil;
+	if (!nubilo_ek_reminder_access(&e)) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"reminders access denied");
+		}
+		return 0;
+	}
+	NSString *iid = [NSString stringWithUTF8String:item_id ? item_id : ""];
+	EKCalendarItem *item = [nubilo_ek_store() calendarItemWithIdentifier:iid];
+	if (![item isKindOfClass:[EKReminder class]]) {
+		return 1;
+	}
+	if (![nubilo_ek_store() removeReminder:(EKReminder *)item commit:YES error:&e]) {
+		if (err) {
+			*err = nubilo_dup(e.localizedDescription ?: @"delete reminder failed");
 		}
 		return 0;
 	}

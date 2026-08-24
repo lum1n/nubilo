@@ -372,10 +372,10 @@ func TestWellKnownCalDAVPropfind(t *testing.T) {
 }
 
 func TestCalDAVPropPatchAppleColor(t *testing.T) {
-	ts, dev, pass, _, _, _ := calServer(t)
+	ts, dev, pass, _, _, eng := calServer(t)
 	body := []byte(`<?xml version="1.0"?>
 <D:propertyupdate xmlns:D="DAV:" xmlns:A="http://apple.com/ns/ical/">
-  <D:set><D:prop><A:calendar-color>#FF0000</A:calendar-color></D:prop></D:set>
+  <D:set><D:prop><A:calendar-color>#f00</A:calendar-color><A:calendar-order>4</A:calendar-order></D:prop></D:set>
 </D:propertyupdate>`)
 	resp := calReq(t, ts, "PROPPATCH", "/caldav/user/calendars/Personal", dev.ID, pass, "application/xml", body)
 	b, _ := io.ReadAll(resp.Body)
@@ -385,6 +385,34 @@ func TestCalDAVPropPatchAppleColor(t *testing.T) {
 	}
 	if !bytes.Contains(b, []byte("200 OK")) {
 		t.Fatalf("proppatch body %s", b)
+	}
+	col, err := eng.FindChildCollection(context.Background(), "calendar", "", "Personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := dav.ParseCalendarColMeta(col.Metadata)
+	if meta.Color != "#FF0000" || meta.Order != 4 {
+		t.Fatalf("stored %+v %s", meta, col.Metadata)
+	}
+	pf := []byte(`<?xml version="1.0"?><D:propfind xmlns:D="DAV:" xmlns:A="http://apple.com/ns/ical/"><D:prop><D:displayname/><A:calendar-color/><A:calendar-order/></D:prop></D:propfind>`)
+	r, _ := http.NewRequest("PROPFIND", ts.URL+"/caldav/user/calendars/Personal", bytes.NewReader(pf))
+	r.SetBasicAuth(dev.ID, pass)
+	r.Header.Set("Depth", "0")
+	r.Header.Set("Content-Type", "application/xml")
+	resp, err = http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		t.Fatalf("propfind %d %s", resp.StatusCode, got)
+	}
+	if !bytes.Contains(got, []byte("#FF0000")) {
+		t.Fatalf("propfind missing color %s", got)
+	}
+	if !bytes.Contains(got, []byte("4")) {
+		t.Fatalf("propfind missing order %s", got)
 	}
 }
 
@@ -417,5 +445,69 @@ func TestDAVResourceName(t *testing.T) {
 	}
 	if dav.DAVResourceName("Work", "") != "Work" {
 		t.Fatal("plain name")
+	}
+}
+
+const testTodoICS = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//nubilo//test//EN
+BEGIN:VTODO
+UID:todo-uid-1
+DTSTAMP:20260101T000000Z
+DUE:20260825T150000Z
+SUMMARY:Buy milk
+STATUS:NEEDS-ACTION
+END:VTODO
+END:VCALENDAR
+`
+
+func TestCalDAVVTODOPutGet(t *testing.T) {
+	ts, dev, pass, _, _, _ := calServer(t)
+	href := "/caldav/user/calendars/Personal/todo-uid-1.ics"
+	resp := putEvent(t, ts, dev.ID, pass, href, testTodoICS)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("put %d %s", resp.StatusCode, body)
+	}
+	resp = calReq(t, ts, http.MethodGet, href, dev.ID, pass, "", nil)
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("get %d", resp.StatusCode)
+	}
+	if !bytes.Contains(got, []byte("BEGIN:VTODO")) || !bytes.Contains(got, []byte("SUMMARY:Buy milk")) {
+		t.Fatalf("ics %s", got)
+	}
+}
+
+func TestCalDAVVTODOComponentSet(t *testing.T) {
+	ts, dev, pass, _, _, eng := calServer(t)
+	col, err := eng.FindChildCollection(context.Background(), "calendar", "", "Personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.SetCollectionMetadata(context.Background(), col.ID, dav.EncodeCalendarColMeta(dav.CalendarColMeta{Comp: "VTODO"})); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`<?xml version="1.0"?><D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:prop><C:supported-calendar-component-set/></D:prop></D:propfind>`)
+	r, _ := http.NewRequest("PROPFIND", ts.URL+"/caldav/user/calendars/Personal", bytes.NewReader(body))
+	r.SetBasicAuth(dev.ID, pass)
+	r.Header.Set("Depth", "0")
+	r.Header.Set("Content-Type", "application/xml")
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		t.Fatalf("propfind %d %s", resp.StatusCode, got)
+	}
+	if !bytes.Contains(got, []byte("VTODO")) {
+		t.Fatalf("missing VTODO %s", got)
+	}
+	if bytes.Contains(got, []byte("VEVENT")) {
+		t.Fatalf("VEVENT still advertised %s", got)
 	}
 }

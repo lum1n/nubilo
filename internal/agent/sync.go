@@ -17,6 +17,7 @@ import (
 
 const (
 	kindEvent   = "event"
+	kindTodo    = "todo"
 	kindContact = "contact"
 	kindCal     = "calendar"
 	kindBook    = "addressbook"
@@ -25,14 +26,15 @@ const (
 )
 
 type Agent struct {
-	Client   *protocol.Client
-	Map      *Map
-	Sel      Selection
-	SelPath  string // agent.json; reloaded at the start of each SyncOnce
-	Cal      CalendarSource
-	Contacts ContactSource
-	Photos   PhotoSource
-	Log      *slog.Logger
+	Client    *protocol.Client
+	Map       *Map
+	Sel       Selection
+	SelPath   string // agent.json; reloaded at the start of each SyncOnce
+	Cal       CalendarSource
+	Reminders ReminderSource
+	Contacts  ContactSource
+	Photos    PhotoSource
+	Log       *slog.Logger
 
 	routes map[string]route
 }
@@ -95,10 +97,15 @@ func (a *Agent) pull(ctx context.Context, since int64) error {
 			}
 			return a.pull(ctx, a.Map.Cursor())
 		}
+		failed := false
 		for i := range res.Changes {
 			if err := a.applyChange(ctx, res.Changes[i]); err != nil {
 				a.Log.Warn("apply_change", "err", err.Error(), "object", res.Changes[i].ObjectID)
+				failed = true
 			}
+		}
+		if failed {
+			return errors.New("apply_change failed")
 		}
 		if res.NextSeq > since {
 			if err := a.Client.Ack(res.NextSeq); err != nil {
@@ -125,6 +132,9 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 		if mapErr == nil {
 			if rt.kind == kindEvent && a.Cal != nil {
 				_ = a.Cal.DeleteEvent(existing.LocalID)
+			}
+			if rt.kind == kindTodo && a.Reminders != nil {
+				_ = a.Reminders.DeleteReminder(existing.LocalID)
 			}
 			if rt.kind == kindContact && a.Contacts != nil {
 				_ = a.Contacts.DeleteContact(existing.LocalID)
@@ -161,6 +171,20 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 		}
 		localID = id
 		startMS = EventStartMS(payload)
+	case kindTodo:
+		if a.Reminders == nil {
+			return nil
+		}
+		prev := ""
+		if mapErr == nil {
+			prev = existing.LocalID
+		}
+		id, err := a.Reminders.UpsertReminder(rt.localID, prev, payload)
+		if err != nil {
+			return err
+		}
+		localID = id
+		startMS = TodoDueMS(payload)
 	case kindContact:
 		if a.Contacts == nil {
 			return nil
@@ -187,6 +211,9 @@ func (a *Agent) pushLocal(ctx context.Context) error {
 	if err := a.pushCalendars(ctx); err != nil {
 		return err
 	}
+	if err := a.pushReminders(ctx); err != nil {
+		return err
+	}
 	if err := a.pushContacts(ctx); err != nil {
 		return err
 	}
@@ -200,6 +227,14 @@ func (a *Agent) pushCalendars(ctx context.Context) error {
 	now := time.Now()
 	start := now.AddDate(0, 0, -a.Sel.WindowDays)
 	end := now.AddDate(0, 0, a.Sel.WindowDays)
+	colorByID := map[string]string{}
+	if cals, err := a.Cal.ListCalendars(); err == nil {
+		for _, c := range cals {
+			if c.Color != "" {
+				colorByID[c.ID] = c.Color
+			}
+		}
+	}
 	for _, sel := range a.Sel.Calendars {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -207,6 +242,11 @@ func (a *Agent) pushCalendars(ctx context.Context) error {
 		col, err := a.ensureCollection(kindCal, sel.Title)
 		if err != nil {
 			return err
+		}
+		if hex := colorByID[sel.LocalID]; hex != "" {
+			if err := a.syncCollectionColor(col, hex); err != nil {
+				a.Log.Warn("calendar_color", "name", sel.Title, "err", err.Error())
+			}
 		}
 		events, err := a.Cal.ListEvents(sel.LocalID, start, end)
 		if err != nil {
@@ -231,6 +271,63 @@ func (a *Agent) pushCalendars(ctx context.Context) error {
 				continue
 			}
 			if row.StartMS == 0 || row.StartMS < winStart || row.StartMS > winEnd {
+				continue
+			}
+			if err := a.pushDelete(row); err != nil {
+				a.Log.Warn("push_delete", "err", err.Error(), "object", row.ObjectID)
+			}
+		}
+	}
+	return nil
+}
+
+func (a *Agent) pushReminders(ctx context.Context) error {
+	if a.Reminders == nil || len(a.Sel.Reminders) == 0 {
+		return nil
+	}
+	now := time.Now()
+	start := now.AddDate(0, 0, -a.Sel.WindowDays)
+	end := now.AddDate(0, 0, a.Sel.WindowDays)
+	colorByID := map[string]string{}
+	if lists, err := a.Reminders.ListReminderLists(); err == nil {
+		for _, c := range lists {
+			if c.Color != "" {
+				colorByID[c.ID] = c.Color
+			}
+		}
+	}
+	for _, sel := range a.Sel.Reminders {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		col, err := a.ensureReminderCollection(sel.Title, colorByID[sel.LocalID])
+		if err != nil {
+			return err
+		}
+		todos, err := a.Reminders.ListReminders(sel.LocalID, start, end)
+		if err != nil {
+			a.Log.Warn("list_reminders_failed", "list", sel.Title, "err", err.Error())
+			continue
+		}
+		a.Log.Info("push_reminders", "name", sel.Title, "todos", len(todos))
+		seen := map[string]bool{}
+		for _, td := range todos {
+			seen[td.ID] = true
+			if err := a.pushTodo(col.ID, td); err != nil {
+				a.Log.Warn("push_todo", "err", err.Error(), "local", td.ID)
+			}
+		}
+		mapped, err := a.Map.ForCollection(col.ID)
+		if err != nil {
+			return err
+		}
+		winStart, winEnd := start.UnixMilli(), end.UnixMilli()
+		for _, row := range mapped {
+			if seen[row.LocalID] {
+				continue
+			}
+			// Incomplete undated todos use StartMS=0; always delete if missing from list.
+			if row.StartMS != 0 && (row.StartMS < winStart || row.StartMS > winEnd) {
 				continue
 			}
 			if err := a.pushDelete(row); err != nil {
@@ -325,6 +422,58 @@ func (a *Agent) pushEvent(collectionID string, ev LocalEvent) error {
 	return a.Map.Put(Mapping{
 		LocalID: ev.ID, Kind: kindEvent, ObjectID: in.ObjectID, CollectionID: collectionID,
 		ContentHash: hash, Revision: res[0].Revision, StartMS: start,
+	})
+}
+
+func (a *Agent) pushTodo(collectionID string, td LocalTodo) error {
+	hash := ncrypto.SHA256Hex(td.ICS)
+	row, err := a.Map.ByLocal(kindTodo, td.ID)
+	if err == nil && row.ContentHash == hash {
+		return nil
+	}
+	if err := a.Client.PutBlob(hash, td.ICS); err != nil {
+		return err
+	}
+	uid := td.UID
+	if uid == "" {
+		uid = UIDFromICS(td.ICS)
+	}
+	if uid == "" {
+		uid = td.ID
+	}
+	in := syncengine.ChangeInput{
+		CollectionID: collectionID,
+		Kind:         kindTodo,
+		ContentHash:  hash,
+		BlobID:       hash,
+		Size:         int64(len(td.ICS)),
+		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: dav.DAVResourceName(uid+".ics", ".ics"), UID: uid, Comp: "VTODO"}),
+		Force:        true,
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		in.ObjectID = ids.New()
+		in.Op = syncengine.OpCreate
+	} else if err != nil {
+		return err
+	} else {
+		in.ObjectID = row.ObjectID
+		in.Op = syncengine.OpUpdate
+		in.BaseRevision = row.Revision
+	}
+	res, err := a.Client.Push(ids.New(), []syncengine.ChangeInput{in})
+	if err != nil {
+		return err
+	}
+	if len(res) == 0 || res[0].Status != "ok" {
+		return errors.New("push todo rejected")
+	}
+	due := td.DueMS
+	if due == 0 {
+		due = TodoDueMS(td.ICS)
+	}
+	return a.Map.Put(Mapping{
+		LocalID: td.ID, Kind: kindTodo, ObjectID: in.ObjectID, CollectionID: collectionID,
+		ContentHash: hash, Revision: res[0].Revision, StartMS: due,
 	})
 }
 
@@ -524,6 +673,15 @@ func (a *Agent) reconcile(ctx context.Context) error {
 			return err
 		}
 	}
+	for _, sel := range a.Sel.Reminders {
+		col, err := a.ensureReminderCollection(sel.Title, "")
+		if err != nil {
+			return err
+		}
+		if err := a.reconcileCollection(ctx, col.ID); err != nil {
+			return err
+		}
+	}
 	if a.Sel.SyncContacts {
 		col, err := a.ensureCollection(kindBook, "Contacts")
 		if err != nil {
@@ -597,6 +755,13 @@ func (a *Agent) bindRoutes() error {
 		}
 		a.routes[col.ID] = route{localID: sel.LocalID, kind: kindEvent}
 	}
+	for _, sel := range a.Sel.Reminders {
+		col, err := a.ensureReminderCollection(sel.Title, "")
+		if err != nil {
+			return err
+		}
+		a.routes[col.ID] = route{localID: sel.LocalID, kind: kindTodo}
+	}
 	if a.Sel.SyncContacts {
 		col, err := a.ensureCollection(kindBook, "Contacts")
 		if err != nil {
@@ -621,7 +786,64 @@ func (a *Agent) ensureCollection(kind, name string) (*syncengine.Collection, err
 			return &cols[i], nil
 		}
 	}
-	return a.Client.EnsureCollection(kind, name)
+	return a.Client.EnsureCollection(kind, name, nil)
+}
+
+func reminderDAVName(title string, cols []syncengine.Collection) string {
+	base := dav.DAVResourceName(title, "")
+	for i := range cols {
+		c := &cols[i]
+		if c.Kind != kindCal || c.DeletedAt != nil || c.Name != base {
+			continue
+		}
+		if dav.ParseCalendarColMeta(c.Metadata).Comp == "VTODO" {
+			return base
+		}
+		return dav.DAVResourceName(title+" Reminders", "")
+	}
+	return base
+}
+
+func (a *Agent) ensureReminderCollection(title, color string) (*syncengine.Collection, error) {
+	if title == "" {
+		title = "Reminders"
+	}
+	cols, err := a.Client.Collections()
+	if err != nil {
+		return nil, err
+	}
+	name := reminderDAVName(title, cols)
+	color = dav.NormalizeCalendarColor(color)
+	patch := dav.EncodeCalendarColMeta(dav.CalendarColMeta{Comp: "VTODO", Color: color})
+	for i := range cols {
+		c := &cols[i]
+		if c.Kind != kindCal || c.Name != name || c.DeletedAt != nil {
+			continue
+		}
+		meta := dav.ParseCalendarColMeta(c.Metadata)
+		need := meta.Comp != "VTODO" || (color != "" && meta.Color != color)
+		if !need {
+			return c, nil
+		}
+		return a.Client.EnsureCollection(kindCal, name, patch)
+	}
+	return a.Client.EnsureCollection(kindCal, name, patch)
+}
+
+func (a *Agent) syncCollectionColor(col *syncengine.Collection, color string) error {
+	color = dav.NormalizeCalendarColor(color)
+	if color == "" {
+		return nil
+	}
+	if dav.ParseCalendarColMeta(col.Metadata).Color == color {
+		return nil
+	}
+	updated, err := a.Client.EnsureCollection(kindCal, col.Name, dav.EncodeCalendarColMeta(dav.CalendarColMeta{Color: color}))
+	if err != nil {
+		return err
+	}
+	*col = *updated
+	return nil
 }
 
 func (a *Agent) runSync(ctx context.Context) {
@@ -629,7 +851,7 @@ func (a *Agent) runSync(ctx context.Context) {
 		a.Log.Error("sync", "err", err.Error())
 		return
 	}
-	a.Log.Info("sync_ok", "calendars", len(a.Sel.Calendars), "contacts", a.Sel.SyncContacts, "photos", a.Sel.Photos.Enabled)
+	a.Log.Info("sync_ok", "calendars", len(a.Sel.Calendars), "reminders", len(a.Sel.Reminders), "contacts", a.Sel.SyncContacts, "photos", a.Sel.Photos.Enabled)
 }
 
 func (a *Agent) Run(ctx context.Context) error {

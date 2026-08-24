@@ -22,6 +22,7 @@ type Selection struct {
 	IntervalSeconds int           `json:"interval_seconds"`
 	WindowDays      int           `json:"window_days"`
 	Calendars       []CalendarSel `json:"calendars"`
+	Reminders       []CalendarSel `json:"reminders"`
 	SyncContacts    bool          `json:"sync_contacts"`
 	Photos          PhotosSel     `json:"photos"`
 }
@@ -89,6 +90,26 @@ func (s *Selection) UnselectCalendar(id string) {
 		}
 	}
 	s.Calendars = out
+}
+
+func (s *Selection) SelectReminder(id, title string) {
+	for i := range s.Reminders {
+		if s.Reminders[i].LocalID == id {
+			s.Reminders[i].Title = title
+			return
+		}
+	}
+	s.Reminders = append(s.Reminders, CalendarSel{LocalID: id, Title: title})
+}
+
+func (s *Selection) UnselectReminder(id string) {
+	out := s.Reminders[:0]
+	for _, c := range s.Reminders {
+		if c.LocalID != id {
+			out = append(out, c)
+		}
+	}
+	s.Reminders = out
 }
 
 func (s *Selection) SelectAlbum(id string) {

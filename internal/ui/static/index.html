@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nubilo</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <div class="login-card">
+      <h1 class="logo">nubilo ui</h1>
+      <p class="login-hint">admin token required</p>
+      <input type="password" id="login-token" placeholder="token" autocomplete="off">
+      <button type="button" id="login-btn" class="btn primary">login</button>
+      <p class="login-path" id="token-path"></p>
+    </div>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-name">nubilo</span>
+      </div>
+      <nav class="nav">
+        <a href="#/" class="nav-link" data-route="home">overview</a>
+        <a href="#/photos" class="nav-link" data-route="photos">photos</a>
+        <a href="#/calendar" class="nav-link" data-route="calendar">calendar</a>
+        <a href="#/contacts" class="nav-link" data-route="contacts">contacts</a>
+        <a href="#/files" class="nav-link" data-route="files">files</a>
+        <a href="#/ops" class="nav-link" data-route="ops">ops</a>
+        <a href="#/settings" class="nav-link" data-route="settings">settings</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="status-text">ok</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h2 id="page-title" class="page-title">overview</h2>
+        <div id="topbar-actions" class="topbar-actions"></div>
+      </header>
+      <div id="content" class="content"></div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <div id="lightbox" class="lightbox hidden">
+    <button type="button" class="lightbox-close" aria-label="Close">esc</button>
+    <img id="lightbox-img" alt="">
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

@@ -13,6 +13,7 @@ var (
 type CalendarInfo struct {
 	ID    string
 	Title string
+	Color string
 }
 
 type LocalEvent struct {
@@ -21,6 +22,14 @@ type LocalEvent struct {
 	UID        string
 	ICS        []byte
 	StartMS    int64
+}
+
+type LocalTodo struct {
+	ID     string
+	ListID string
+	UID    string
+	ICS    []byte
+	DueMS  int64 // due or completed; 0 = incomplete without a date
 }
 
 type LocalContact struct {
@@ -62,6 +71,13 @@ type CalendarSource interface {
 	ListEvents(calendarID string, start, end time.Time) ([]LocalEvent, error)
 	UpsertEvent(calendarID, localID string, ics []byte) (string, error)
 	DeleteEvent(localID string) error
+}
+
+type ReminderSource interface {
+	ListReminderLists() ([]CalendarInfo, error)
+	ListReminders(listID string, start, end time.Time) ([]LocalTodo, error)
+	UpsertReminder(listID, localID string, ics []byte) (string, error)
+	DeleteReminder(localID string) error
 }
 
 type ContactSource interface {

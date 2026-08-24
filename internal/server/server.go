@@ -448,8 +448,9 @@ func (s *Server) handleEnsureCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Kind string `json:"kind"`
-		Name string `json:"name"`
+		Kind     string          `json:"kind"`
+		Name     string          `json:"name"`
+		Metadata json.RawMessage `json:"metadata"`
 	}
 	if err := s.readJSON(r, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -459,6 +460,13 @@ func (s *Server) handleEnsureCollection(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
+	}
+	if len(req.Metadata) > 0 && string(req.Metadata) != "null" {
+		c, err = s.Engine.PatchCollectionMetadata(r.Context(), c.ID, req.Metadata)
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 	}
 	s.writeJSON(w, http.StatusOK, c)
 }

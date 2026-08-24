@@ -454,11 +454,18 @@ func (b *CalDAV) parseCalPath(p string) (segs []string, calName, fileName string
 }
 
 func (b *CalDAV) calInfo(c *syncengine.Collection) caldav.Calendar {
+	comps := []string{ical.CompEvent, ical.CompToDo}
+	switch ParseCalendarColMeta(c.Metadata).Comp {
+	case ical.CompEvent:
+		comps = []string{ical.CompEvent}
+	case ical.CompToDo:
+		comps = []string{ical.CompToDo}
+	}
 	return caldav.Calendar{
 		Path:                  Join(b.Prefix, calUserSeg, calHomeSeg, c.Name),
 		Name:                  c.Name,
 		MaxResourceSize:       b.Store.MaxBlob,
-		SupportedComponentSet: []string{ical.CompEvent, ical.CompToDo},
+		SupportedComponentSet: comps,
 	}
 }
 

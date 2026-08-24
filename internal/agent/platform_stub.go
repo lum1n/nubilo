@@ -6,8 +6,12 @@ func PlatformCalendars() ([]CalendarInfo, error) {
 	return nil, ErrNeedDarwin
 }
 
-func OpenPlatform(sel Selection) (CalendarSource, ContactSource, PhotoSource, error) {
-	return nil, nil, nil, ErrNeedDarwin
+func PlatformReminderLists() ([]CalendarInfo, error) {
+	return nil, ErrNeedDarwin
+}
+
+func OpenPlatform(sel Selection) (CalendarSource, ContactSource, PhotoSource, ReminderSource, error) {
+	return nil, nil, nil, nil, ErrNeedDarwin
 }
 
 func PlatformAlbums() ([]PhotoInfo, error) {

@@ -358,3 +358,28 @@ func TestCreateConflict(t *testing.T) {
 		t.Fatalf("%+v", res[0])
 	}
 }
+
+func TestCollectionMetadataMerge(t *testing.T) {
+	e := setup(t)
+	if err := e.eng.SetCollectionMetadata(e.ctx, e.col.ID, json.RawMessage(`{"keep":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.eng.PatchCollectionMetadata(e.ctx, e.col.ID, json.RawMessage(`{"color":"#FF0000"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got.Metadata, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["keep"] != true || m["color"] != "#FF0000" {
+		t.Fatalf("%s", got.Metadata)
+	}
+	again, err := e.eng.PatchCollectionMetadata(e.ctx, e.col.ID, json.RawMessage(`{"color":"#FF0000"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Revision != got.Revision {
+		t.Fatalf("unchanged color bumped revision %d -> %d", got.Revision, again.Revision)
+	}
+}

@@ -28,9 +28,8 @@ import (
 	"nubilo/internal/photos"
 	"nubilo/internal/protocol"
 	"nubilo/internal/server"
+	"nubilo/internal/version"
 )
-
-const version = "0.7.0-phase8"
 
 func Main(args []string) int {
 	if len(args) == 0 {
@@ -45,7 +44,7 @@ func Main(args []string) int {
 		usage(os.Stdout)
 		return 0
 	case "version":
-		fmt.Println(version)
+		fmt.Println(version.String)
 		return 0
 	case "init":
 		return runInit(g, rest)
@@ -83,6 +82,8 @@ func Main(args []string) int {
 		return runContacts(g, rest)
 	case "photos":
 		return runPhotos(g, rest)
+	case "ui":
+		return runUI(g, rest)
 	case "sync":
 		fmt.Fprintf(os.Stderr, "%s: adapter not implemented until a later phase (see IMPLEMENTATION.md)\n", cmd)
 		return 2
@@ -133,10 +134,14 @@ func usage(w io.Writer) {
 Usage:
   nubilo init [--data-dir DIR] [--listen ADDR]
   nubilo server [--data-dir DIR]
+  nubilo ui [--listen ADDR] [--open]
   nubilo agent [--data-dir DIR] [--insecure] [--interval SECONDS]
   nubilo agent calendars
   nubilo agent select ID
   nubilo agent unselect ID
+  nubilo agent reminder-lists
+  nubilo agent select-reminder ID
+  nubilo agent unselect-reminder ID
   nubilo agent contacts on|off
   nubilo agent photos on|off
   nubilo agent photos source all|albums|dates
@@ -309,6 +314,20 @@ func runAgent(g global, args []string) int {
 			return 2
 		}
 		return agentSelect(paths.AgentJSON, sel, rest[0], false)
+	case "reminder-lists":
+		return agentListReminderLists(sel)
+	case "select-reminder":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: nubilo agent select-reminder ID")
+			return 2
+		}
+		return agentSelectReminder(paths.AgentJSON, sel, rest[0], true)
+	case "unselect-reminder":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: nubilo agent unselect-reminder ID")
+			return 2
+		}
+		return agentSelectReminder(paths.AgentJSON, sel, rest[0], false)
 	case "contacts":
 		if len(rest) < 1 || (rest[0] != "on" && rest[0] != "off") {
 			fmt.Fprintln(os.Stderr, "usage: nubilo agent contacts on|off")
@@ -466,6 +485,64 @@ func agentSelect(path string, sel agent.Selection, id string, on bool) int {
 	return 0
 }
 
+func agentListReminderLists(sel agent.Selection) int {
+	lists, err := agent.PlatformReminderLists()
+	if err != nil {
+		return fatal(err)
+	}
+	chosen := map[string]bool{}
+	for _, c := range sel.Reminders {
+		chosen[c.LocalID] = true
+	}
+	if len(lists) == 0 {
+		fmt.Println("no EventKit reminder lists (grant Reminders access to Terminal / nubilo)")
+		return 0
+	}
+	for _, c := range lists {
+		mark := " "
+		if chosen[c.ID] {
+			mark = "*"
+		}
+		fmt.Printf("%s  %s  %s\n", mark, c.ID, c.Title)
+	}
+	return 0
+}
+
+func agentSelectReminder(path string, sel agent.Selection, id string, on bool) int {
+	if !on {
+		sel.UnselectReminder(id)
+		if err := agent.SaveSelection(path, sel); err != nil {
+			return fatal(err)
+		}
+		fmt.Printf("unselected reminder list %s\n", id)
+		return 0
+	}
+	lists, err := agent.PlatformReminderLists()
+	if err != nil {
+		return fatal(err)
+	}
+	title := ""
+	found := false
+	for _, c := range lists {
+		if c.ID == id {
+			title = c.Title
+			found = true
+			break
+		}
+	}
+	if !found {
+		fmt.Fprintf(os.Stderr, "unknown EventKit reminder list %q (run nubilo agent reminder-lists)\n", id)
+		return 2
+	}
+	sel.SelectReminder(id, title)
+	if err := agent.SaveSelection(path, sel); err != nil {
+		return fatal(err)
+	}
+	fmt.Printf("selected reminder list %s (%s)\n", id, title)
+	fmt.Println("restart the running agent (or wait for the next sync) so this list is created on the server")
+	return 0
+}
+
 func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure bool) int {
 	client, err := agent.LoadPairedClient(dir, insecure)
 	if err != nil {
@@ -485,31 +562,37 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 		return fatal(err)
 	}
 	defer mp.Close()
-	cal, book, pics, err := agent.OpenPlatform(sel)
+	cal, book, pics, rems, err := agent.OpenPlatform(sel)
 	if err != nil {
 		return fatal(err)
 	}
 	a := &agent.Agent{
-		Client:   client,
-		Map:      mp,
-		Sel:      sel,
-		SelPath:  paths.AgentJSON,
-		Cal:      cal,
-		Contacts: book,
-		Photos:   pics,
-		Log:      slog.Default(),
+		Client:    client,
+		Map:       mp,
+		Sel:       sel,
+		SelPath:   paths.AgentJSON,
+		Cal:       cal,
+		Reminders: rems,
+		Contacts:  book,
+		Photos:    pics,
+		Log:       slog.Default(),
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	fmt.Printf("agent running interval=%ds window=%dd calendars=%d contacts=%v photos=%v\n",
-		sel.IntervalSeconds, sel.WindowDays, len(sel.Calendars), sel.SyncContacts, sel.Photos.Enabled)
+	fmt.Printf("agent running interval=%ds window=%dd calendars=%d reminders=%d contacts=%v photos=%v\n",
+		sel.IntervalSeconds, sel.WindowDays, len(sel.Calendars), len(sel.Reminders), sel.SyncContacts, sel.Photos.Enabled)
 	for _, c := range sel.Calendars {
 		fmt.Printf("  calendar %s (%s)\n", c.LocalID, c.Title)
 	}
-	if len(sel.Calendars) == 0 {
-		fmt.Fprintln(os.Stderr, "warning: no calendars selected; iPhone CalDAV will stay empty")
+	for _, c := range sel.Reminders {
+		fmt.Printf("  reminders %s (%s)\n", c.LocalID, c.Title)
+	}
+	if len(sel.Calendars) == 0 && len(sel.Reminders) == 0 {
+		fmt.Fprintln(os.Stderr, "warning: no calendars or reminder lists selected; iPhone CalDAV will stay empty")
 		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" calendars")
 		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" select <eventkit-id>")
+		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" reminder-lists")
+		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" select-reminder <eventkit-id>")
 	}
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return fatal(err)
@@ -546,9 +629,9 @@ func runStatus(g global) int {
 		"listen":   rt.Cfg.Listen,
 		"head_seq": head,
 		"devices":  active,
-		"version":  version,
+		"version":  version.String,
 	}
-	return printOut(g, out, fmt.Sprintf("nubilo %s  listen=%s  head_seq=%d  devices=%d\n", version, rt.Cfg.Listen, head, active))
+	return printOut(g, out, fmt.Sprintf("nubilo %s  listen=%s  head_seq=%d  devices=%d\n", version.String, rt.Cfg.Listen, head, active))
 }
 
 func runPair(g global, args []string) int {

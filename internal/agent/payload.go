@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"net/url"
 	"strings"
 	"time"
 
@@ -24,6 +25,26 @@ type EventSpec struct {
 	ExDates      []time.Time
 	RecurrenceID time.Time
 	Exceptions   []EventSpec
+	URL          string
+	Status       string
+	Transp       string
+	Organizer    PersonSpec
+	Attendees    []PersonSpec
+	Alarms       []AlarmSpec
+}
+
+type PersonSpec struct {
+	Name     string
+	Email    string
+	PartStat string
+	Role     string
+}
+
+type AlarmSpec struct {
+	OffsetSec int64
+	Abs       time.Time
+	Action    string
+	Desc      string
 }
 
 func UIDFromICS(ics []byte) string {
@@ -97,6 +118,10 @@ func EncodeEventICS(spec EventSpec) ([]byte, error) {
 		}
 		cal.Children = append(cal.Children, encodeVEVENT(ex, true).Component)
 	}
+	if spec.TZ != "" && locationForTZ(spec.TZ) != time.UTC {
+		cal.Props.SetText("X-WR-TIMEZONE", spec.TZ)
+		appendVTimezone(cal, spec.TZ)
+	}
 	var buf bytes.Buffer
 	if err := ical.NewEncoder(&buf).Encode(cal); err != nil {
 		return nil, err
@@ -130,6 +155,29 @@ func encodeVEVENT(spec EventSpec, isOverride bool) *ical.Event {
 	}
 	if s := icsText(spec.Location); s != "" {
 		ev.Props.SetText(ical.PropLocation, s)
+	}
+	if spec.URL != "" {
+		setEventURL(ev.Props, spec.URL)
+	}
+	if s := strings.ToUpper(strings.TrimSpace(spec.Status)); s != "" {
+		ev.Props.SetText(ical.PropStatus, s)
+	}
+	if s := strings.ToUpper(strings.TrimSpace(spec.Transp)); s != "" {
+		ev.Props.SetText(ical.PropTransparency, s)
+	}
+	if addr := calAddress(spec.Organizer.Email); addr != "" {
+		ev.Props.Add(personProp(ical.PropOrganizer, spec.Organizer))
+	}
+	for _, a := range spec.Attendees {
+		if calAddress(a.Email) == "" && a.Name == "" {
+			continue
+		}
+		ev.Props.Add(personProp(ical.PropAttendee, a))
+	}
+	for _, al := range spec.Alarms {
+		if c := encodeVALARM(al); c != nil {
+			ev.Children = append(ev.Children, c)
+		}
 	}
 	if isOverride && !spec.RecurrenceID.IsZero() {
 		setEventTime(ev.Props, ical.PropRecurrenceID, spec.RecurrenceID, spec)
@@ -249,7 +297,115 @@ func specFromComp(c *ical.Component) EventSpec {
 			spec.ExDates = append(spec.ExDates, t)
 		}
 	}
+	if p := c.Props.Get(ical.PropURL); p != nil {
+		if u, err := p.URI(); err == nil && u != nil {
+			spec.URL = u.String()
+		} else {
+			spec.URL = strings.TrimSpace(p.Value)
+		}
+	}
+	spec.Status, _ = c.Props.Text(ical.PropStatus)
+	spec.Transp, _ = c.Props.Text(ical.PropTransparency)
+	if p := c.Props.Get(ical.PropOrganizer); p != nil {
+		spec.Organizer = parsePerson(p)
+	}
+	for _, p := range c.Props.Values(ical.PropAttendee) {
+		spec.Attendees = append(spec.Attendees, parsePerson(&p))
+	}
+	for _, child := range c.Children {
+		if child.Name != ical.CompAlarm {
+			continue
+		}
+		spec.Alarms = append(spec.Alarms, parseVALARM(child))
+	}
 	return spec
+}
+
+func setEventURL(props ical.Props, raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" {
+		props.SetText(ical.PropURL, icsText(raw))
+		return
+	}
+	props.SetURI(ical.PropURL, u)
+}
+
+func personProp(name string, p PersonSpec) *ical.Prop {
+	prop := ical.NewProp(name)
+	prop.SetValueType(ical.ValueCalendarAddress)
+	addr := calAddress(p.Email)
+	if addr == "" {
+		addr = calAddress(p.Name)
+	}
+	prop.Value = addr
+	if p.Name != "" {
+		prop.Params.Set(ical.ParamCommonName, p.Name)
+	}
+	if p.PartStat != "" {
+		prop.Params.Set(ical.ParamParticipationStatus, strings.ToUpper(p.PartStat))
+	}
+	if p.Role != "" {
+		prop.Params.Set(ical.ParamRole, strings.ToUpper(p.Role))
+	}
+	return prop
+}
+
+func parsePerson(p *ical.Prop) PersonSpec {
+	if p == nil {
+		return PersonSpec{}
+	}
+	return PersonSpec{
+		Name:     p.Params.Get(ical.ParamCommonName),
+		Email:    strings.TrimSpace(p.Value),
+		PartStat: p.Params.Get(ical.ParamParticipationStatus),
+		Role:     p.Params.Get(ical.ParamRole),
+	}
+}
+
+func encodeVALARM(al AlarmSpec) *ical.Component {
+	c := ical.NewComponent(ical.CompAlarm)
+	action := al.Action
+	if action == "" {
+		action = "DISPLAY"
+	}
+	c.Props.SetText(ical.PropAction, action)
+	desc := al.Desc
+	if desc == "" {
+		desc = "Reminder"
+	}
+	c.Props.SetText(ical.PropDescription, icsText(desc))
+	trig := ical.NewProp(ical.PropTrigger)
+	if !al.Abs.IsZero() {
+		trig.SetDateTime(al.Abs.UTC())
+	} else {
+		trig.SetDuration(time.Duration(al.OffsetSec) * time.Second)
+	}
+	c.Props.Set(trig)
+	return c
+}
+
+func parseVALARM(c *ical.Component) AlarmSpec {
+	al := AlarmSpec{Action: "DISPLAY"}
+	if s, err := c.Props.Text(ical.PropAction); err == nil && s != "" {
+		al.Action = s
+	}
+	al.Desc, _ = c.Props.Text(ical.PropDescription)
+	p := c.Props.Get(ical.PropTrigger)
+	if p == nil {
+		return al
+	}
+	if d, err := p.Duration(); err == nil && d != 0 {
+		al.OffsetSec = int64(d / time.Second)
+		return al
+	}
+	if t, err := p.DateTime(time.UTC); err == nil && !t.IsZero() {
+		al.Abs = t
+	}
+	return al
 }
 
 func expandRRule(rule string, start, from, to time.Time) []time.Time {

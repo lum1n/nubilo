@@ -8,22 +8,35 @@ import (
 
 // ekOccurrence is one EventKit row (expanded occurrence or detached instance).
 type ekOccurrence struct {
-	ID          string  `json:"id"`
-	EventID     string  `json:"event_id"`
-	CalendarID  string  `json:"calendar_id"`
-	UID         string  `json:"uid"`
-	Title       string  `json:"title"`
-	Notes       string  `json:"notes"`
-	Location    string  `json:"location"`
-	TZ          string  `json:"tz"`
-	Start       float64 `json:"start"`
-	End         float64 `json:"end"`
-	AllDay      int     `json:"all_day"`
-	Detached    int     `json:"detached"`
-	Occurrence  float64 `json:"occurrence"`
-	MasterStart float64 `json:"master_start"`
-	MasterEnd   float64 `json:"master_end"`
-	RRule       string  `json:"rrule"`
+	ID          string       `json:"id"`
+	EventID     string       `json:"event_id"`
+	CalendarID  string       `json:"calendar_id"`
+	UID         string       `json:"uid"`
+	Title       string       `json:"title"`
+	Notes       string       `json:"notes"`
+	Location    string       `json:"location"`
+	TZ          string       `json:"tz"`
+	Start       float64      `json:"start"`
+	End         float64      `json:"end"`
+	AllDay      int          `json:"all_day"`
+	Detached    int          `json:"detached"`
+	Occurrence  float64      `json:"occurrence"`
+	MasterStart float64      `json:"master_start"`
+	MasterEnd   float64      `json:"master_end"`
+	RRule       string       `json:"rrule"`
+	URL         string       `json:"url"`
+	Status      string       `json:"status"`
+	Transp      string       `json:"transp"`
+	Organizer   PersonSpec   `json:"organizer"`
+	Attendees   []PersonSpec `json:"attendees"`
+	Alarms      []ekAlarm    `json:"alarms"`
+}
+
+type ekAlarm struct {
+	Offset *float64 `json:"offset"`
+	Abs    *float64 `json:"abs"`
+	Action string   `json:"action"`
+	Desc   string   `json:"desc"`
 }
 
 type seriesAcc struct {
@@ -177,10 +190,24 @@ func specFromOccurrence(r ekOccurrence) EventSpec {
 	if uid == "" {
 		uid = r.ID
 	}
-	return EventSpec{
+	spec := EventSpec{
 		UID: uid, Summary: r.Title, Notes: r.Notes, Location: r.Location, TZ: r.TZ,
 		Start: st, End: en, AllDay: allDay,
+		URL: r.URL, Status: r.Status, Transp: r.Transp,
+		Organizer: r.Organizer, Attendees: r.Attendees,
 	}
+	for _, a := range r.Alarms {
+		al := AlarmSpec{Action: a.Action, Desc: a.Desc}
+		if a.Abs != nil && *a.Abs != 0 {
+			al.Abs = time.Unix(int64(*a.Abs), 0).UTC()
+		} else if a.Offset != nil {
+			al.OffsetSec = int64(*a.Offset)
+		} else {
+			continue
+		}
+		spec.Alarms = append(spec.Alarms, al)
+	}
+	return spec
 }
 
 func occTime(r ekOccurrence) time.Time {

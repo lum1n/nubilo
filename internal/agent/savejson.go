@@ -15,6 +15,12 @@ type eventSaveJSON struct {
 	Start      float64         `json:"start"`
 	End        float64         `json:"end"`
 	AllDay     int             `json:"all_day"`
+	URL        string          `json:"url,omitempty"`
+	Status     string          `json:"status,omitempty"`
+	Transp     string          `json:"transp,omitempty"`
+	Organizer  *PersonSpec     `json:"organizer,omitempty"`
+	Attendees  []PersonSpec    `json:"attendees,omitempty"`
+	Alarms     []ekAlarm       `json:"alarms,omitempty"`
 	RRule      *recurrenceJSON `json:"rrule,omitempty"`
 	ExDates    []float64       `json:"exdates,omitempty"`
 	Exceptions []exceptionJSON `json:"exceptions,omitempty"`
@@ -48,6 +54,22 @@ func specToSaveJSON(spec EventSpec) ([]byte, error) {
 	j := eventSaveJSON{
 		UID: spec.UID, Title: spec.Summary, Notes: spec.Notes, Location: spec.Location,
 		Start: float64(spec.Start.Unix()), End: float64(spec.End.Unix()),
+		URL: spec.URL, Status: spec.Status, Transp: spec.Transp, Attendees: spec.Attendees,
+	}
+	if spec.Organizer.Email != "" || spec.Organizer.Name != "" {
+		org := spec.Organizer
+		j.Organizer = &org
+	}
+	for _, al := range spec.Alarms {
+		ea := ekAlarm{Action: al.Action, Desc: al.Desc}
+		if !al.Abs.IsZero() {
+			v := float64(al.Abs.Unix())
+			ea.Abs = &v
+		} else {
+			v := float64(al.OffsetSec)
+			ea.Offset = &v
+		}
+		j.Alarms = append(j.Alarms, ea)
 	}
 	if spec.AllDay {
 		j.AllDay = 1
@@ -71,6 +93,55 @@ func specToSaveJSON(spec EventSpec) ([]byte, error) {
 			RID: float64(rid.Unix()), Title: ex.Summary, Notes: ex.Notes, Location: ex.Location,
 			Start: float64(ex.Start.Unix()), End: float64(ex.End.Unix()), AllDay: all,
 		})
+	}
+	return json.Marshal(j)
+}
+
+type todoSaveJSON struct {
+	UID       string          `json:"uid"`
+	Title     string          `json:"title"`
+	Notes     string          `json:"notes"`
+	Start     float64         `json:"start,omitempty"`
+	Due       float64         `json:"due,omitempty"`
+	Completed float64         `json:"completed,omitempty"`
+	AllDay    int             `json:"all_day"`
+	URL       string          `json:"url,omitempty"`
+	Status    string          `json:"status,omitempty"`
+	Priority  int             `json:"priority,omitempty"`
+	Alarms    []ekAlarm       `json:"alarms,omitempty"`
+	RRule     *recurrenceJSON `json:"rrule,omitempty"`
+}
+
+func todoToSaveJSON(spec TodoSpec) ([]byte, error) {
+	j := todoSaveJSON{
+		UID: spec.UID, Title: spec.Summary, Notes: spec.Notes,
+		URL: spec.URL, Status: spec.Status, Priority: spec.Priority,
+	}
+	if !spec.Start.IsZero() {
+		j.Start = float64(spec.Start.Unix())
+	}
+	if !spec.Due.IsZero() {
+		j.Due = float64(spec.Due.Unix())
+	}
+	if !spec.Completed.IsZero() {
+		j.Completed = float64(spec.Completed.Unix())
+	}
+	if spec.AllDay {
+		j.AllDay = 1
+	}
+	for _, al := range spec.Alarms {
+		ea := ekAlarm{Action: al.Action, Desc: al.Desc}
+		if !al.Abs.IsZero() {
+			v := float64(al.Abs.Unix())
+			ea.Abs = &v
+		} else {
+			v := float64(al.OffsetSec)
+			ea.Offset = &v
+		}
+		j.Alarms = append(j.Alarms, ea)
+	}
+	if spec.RRule != "" {
+		j.RRule = rruleToJSON(spec.RRule)
 	}
 	return json.Marshal(j)
 }

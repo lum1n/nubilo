@@ -52,9 +52,13 @@ func (c *Client) Collections() ([]syncengine.Collection, error) {
 	return wrap.Collections, nil
 }
 
-func (c *Client) EnsureCollection(kind, name string) (*syncengine.Collection, error) {
+func (c *Client) EnsureCollection(kind, name string, metadata json.RawMessage) (*syncengine.Collection, error) {
 	var col syncengine.Collection
-	err := c.doJSON(http.MethodPost, "/sync/v1/collection", map[string]any{"kind": kind, "name": name}, &col)
+	err := c.doJSON(http.MethodPost, "/sync/v1/collection", struct {
+		Kind     string          `json:"kind"`
+		Name     string          `json:"name"`
+		Metadata json.RawMessage `json:"metadata,omitempty"`
+	}{Kind: kind, Name: name, Metadata: metadata}, &col)
 	if err != nil {
 		return nil, err
 	}

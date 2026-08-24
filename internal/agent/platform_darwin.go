@@ -2,16 +2,16 @@
 
 package agent
 
-func OpenPlatform(sel Selection) (CalendarSource, ContactSource, PhotoSource, error) {
+func OpenPlatform(sel Selection) (CalendarSource, ContactSource, PhotoSource, ReminderSource, error) {
 	cal, err := openEventKit()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	var book ContactSource
 	if sel.SyncContacts {
 		c, err := openContacts()
 		if err != nil {
-			return cal, nil, nil, err
+			return cal, nil, nil, cal, err
 		}
 		book = c
 	}
@@ -19,11 +19,11 @@ func OpenPlatform(sel Selection) (CalendarSource, ContactSource, PhotoSource, er
 	if sel.Photos.Enabled {
 		p, err := openPhotoKit()
 		if err != nil {
-			return cal, book, nil, err
+			return cal, book, nil, cal, err
 		}
 		pics = p
 	}
-	return cal, book, pics, nil
+	return cal, book, pics, cal, nil
 }
 
 func PlatformCalendars() ([]CalendarInfo, error) {
@@ -32,6 +32,14 @@ func PlatformCalendars() ([]CalendarInfo, error) {
 		return nil, err
 	}
 	return ek.ListCalendars()
+}
+
+func PlatformReminderLists() ([]CalendarInfo, error) {
+	ek, err := openEventKit()
+	if err != nil {
+		return nil, err
+	}
+	return ek.ListReminderLists()
 }
 
 func PlatformAlbums() ([]PhotoInfo, error) {

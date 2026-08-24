@@ -4,6 +4,8 @@ A single-binary personal cloud: sync engine first, then CalDAV, CardDAV, WebDAV,
 
 This repository is in **Phase 8**. Foundation through photos are implemented, plus hardening: threat-model review, fuzz seeds, storage corruption tests, backup drills, blob/tombstone GC, and a SQLite-at-rest encryption evaluation.
 
+See [GAPS.md](GAPS.md) for what is still missing. Calendar is the current lock-in.
+
 Read, in order:
 
 1. [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -41,6 +43,8 @@ On a Mac, pair a **signing** agent (not a DAV password) into a separate data dir
 ./nubilo pair --data-dir ~/.nubilo-agent --server https://<host>:8443 --code XXXXX-XXXXX --name "Studio Mac"
 ./nubilo agent --data-dir ~/.nubilo-agent calendars
 ./nubilo agent --data-dir ~/.nubilo-agent select <eventkit-id>
+./nubilo agent --data-dir ~/.nubilo-agent reminder-lists
+./nubilo agent --data-dir ~/.nubilo-agent select-reminder <eventkit-id>
 ./nubilo agent --data-dir ~/.nubilo-agent contacts on
 ./nubilo agent --data-dir ~/.nubilo-agent
 ```
@@ -48,6 +52,8 @@ On a Mac, pair a **signing** agent (not a DAV password) into a separate data dir
 `init` writes a self-signed certificate covering localhost and local IPs. Pairing **pins** that cert (TOFU). You do not run `nubilo tls` and you do not pass `--insecure` on a normal setup. `--insecure` remains a debug escape hatch. `nubilo tls` only regenerates the cert (new IPs, expiry).
 
 Mount WebDAV at `https://<host>:8443/dav/` using the printed username (device id) and one-time password. CalDAV is at `/caldav/`. CardDAV is at `/carddav/`. iPhone Calendar/Contacts need a certificate Apple trusts: put [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) (or another TLS terminator) in front and keep Nubilo on loopback, or install `tls.crt` on the phone. The Mac agent does not need that; it uses the pairing pin.
+
+Browse and configure your cloud locally with `nubilo ui` (loopback web UI on port 8787). It covers browsing photos/calendar/contacts/files, creating collections, pairing, verify/gc, devices, and config. Backup/restore and agent calendar selection stay on the CLI.
 
 ### iPhone Calendar
 
@@ -102,10 +108,14 @@ Originals are stored byte-for-byte. Preview and thumbnail are derived JPEGs. GPS
 ```text
 nubilo init
 nubilo server
+nubilo ui
 nubilo agent
 nubilo agent calendars
 nubilo agent select ID
 nubilo agent unselect ID
+nubilo agent reminder-lists
+nubilo agent select-reminder ID
+nubilo agent unselect-reminder ID
 nubilo agent contacts on|off
 nubilo agent photos on|off
 nubilo agent photos source all|albums|dates

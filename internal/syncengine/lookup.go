@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/store"
 )
 
@@ -117,6 +118,79 @@ func (e *Engine) FindObjectByUID(ctx context.Context, collectionID, uid string) 
 		WHERE collection_id = ? AND deleted_at IS NULL AND json_extract(metadata, '$.uid') = ?
 	`, collectionID, uid)
 	return scanObject(row)
+}
+
+func (e *Engine) SetCollectionMetadata(ctx context.Context, id string, metadata json.RawMessage) error {
+	if len(metadata) == 0 {
+		metadata = json.RawMessage(`{}`)
+	}
+	if !json.Valid(metadata) {
+		return ErrCollection
+	}
+	c, err := e.GetCollection(ctx, id)
+	if err != nil {
+		return err
+	}
+	if c.DeletedAt != nil {
+		return ErrNotFound
+	}
+	hash := ncrypto.SHA256Hex(metadata)
+	if c.MetadataHash == hash {
+		return nil
+	}
+	now := store.NowMS()
+	res, err := e.Store.DB.ExecContext(ctx, `
+		UPDATE collections SET metadata = ?, metadata_hash = ?, updated_at = ?, revision = revision + 1
+		WHERE id = ? AND deleted_at IS NULL
+	`, string(metadata), hash, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (e *Engine) PatchCollectionMetadata(ctx context.Context, id string, patch json.RawMessage) (*Collection, error) {
+	c, err := e.GetCollection(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if c.DeletedAt != nil {
+		return nil, ErrNotFound
+	}
+	merged, err := MergeJSON(c.Metadata, patch)
+	if err != nil {
+		return nil, ErrCollection
+	}
+	if err := e.SetCollectionMetadata(ctx, id, merged); err != nil {
+		return nil, err
+	}
+	return e.GetCollection(ctx, id)
+}
+
+// MergeJSON shallow-merges patch object keys into base. Non-objects fail.
+func MergeJSON(base, patch json.RawMessage) (json.RawMessage, error) {
+	dst := map[string]any{}
+	if len(base) > 0 && string(base) != "null" {
+		if err := json.Unmarshal(base, &dst); err != nil {
+			return nil, err
+		}
+	}
+	if len(patch) == 0 || string(patch) == "null" {
+		b, err := json.Marshal(dst)
+		return b, err
+	}
+	var src map[string]any
+	if err := json.Unmarshal(patch, &src); err != nil {
+		return nil, err
+	}
+	for k, v := range src {
+		dst[k] = v
+	}
+	return json.Marshal(dst)
 }
 
 func (e *Engine) RenameCollection(ctx context.Context, id, name string) error {

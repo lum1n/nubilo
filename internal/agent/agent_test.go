@@ -40,6 +40,75 @@ type fakeCal struct {
 	listErr   error
 	seq       int
 	newIDs    bool
+	upsertErr error
+}
+
+type fakeReminders struct {
+	mu    sync.Mutex
+	lists []agent.CalendarInfo
+	todos map[string][]agent.LocalTodo
+	seq   int
+}
+
+func (f *fakeReminders) ListReminderLists() ([]agent.CalendarInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]agent.CalendarInfo(nil), f.lists...), nil
+}
+
+func (f *fakeReminders) ListReminders(listID string, start, end time.Time) ([]agent.LocalTodo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []agent.LocalTodo
+	for _, td := range f.todos[listID] {
+		cp := td
+		cp.ICS = append([]byte(nil), td.ICS...)
+		out = append(out, cp)
+	}
+	return out, nil
+}
+
+func (f *fakeReminders) UpsertReminder(listID, localID string, ics []byte) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if localID == "" {
+		f.seq++
+		localID = "rem-" + ids.New()[:8]
+	}
+	uid := agent.UIDFromICS(ics)
+	row := agent.LocalTodo{ID: localID, ListID: listID, UID: uid, ICS: append([]byte(nil), ics...), DueMS: agent.TodoDueMS(ics)}
+	list := f.todos[listID]
+	found := false
+	for i := range list {
+		if list[i].ID == localID {
+			list[i] = row
+			found = true
+			break
+		}
+	}
+	if !found {
+		list = append(list, row)
+	}
+	if f.todos == nil {
+		f.todos = map[string][]agent.LocalTodo{}
+	}
+	f.todos[listID] = list
+	return localID, nil
+}
+
+func (f *fakeReminders) DeleteReminder(localID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for lid, list := range f.todos {
+		out := list[:0]
+		for _, td := range list {
+			if td.ID != localID {
+				out = append(out, td)
+			}
+		}
+		f.todos[lid] = out
+	}
+	return nil
 }
 
 func (f *fakeCal) ListCalendars() ([]agent.CalendarInfo, error) {
@@ -71,6 +140,9 @@ func (f *fakeCal) ListEvents(calendarID string, start, end time.Time) ([]agent.L
 func (f *fakeCal) UpsertEvent(calendarID, localID string, ics []byte) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.upsertErr != nil {
+		return "", f.upsertErr
+	}
 	if localID == "" {
 		f.seq++
 		localID = "ek-" + ids.New()[:8]
@@ -297,6 +369,99 @@ func TestPushLocalEvent(t *testing.T) {
 	}
 }
 
+func TestPushCalendarColor(t *testing.T) {
+	h := startHarness(t)
+	cal := &fakeCal{
+		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work", Color: "#0E61B9"}},
+		events:    map[string][]agent.LocalEvent{},
+	}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
+	if err := newAgent(h, sel, cal, nil).SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	col := collection(t, h.eng, "calendar", "Work")
+	if dav.ParseCalendarColMeta(col.Metadata).Color != "#0E61B9" {
+		t.Fatalf("metadata %s", col.Metadata)
+	}
+}
+
+func TestPushReminders(t *testing.T) {
+	h := startHarness(t)
+	due := time.Now().UTC().Truncate(time.Second).Add(24 * time.Hour)
+	ics, err := agent.EncodeTodoICS(agent.TodoSpec{
+		UID: "todo-push", Summary: "Buy milk", Due: due, Status: "NEEDS-ACTION",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rems := &fakeReminders{
+		lists: []agent.CalendarInfo{{ID: "list-1", Title: "Errands", Color: "#FF2D55"}},
+		todos: map[string][]agent.LocalTodo{
+			"list-1": {{ID: "rem-1", ListID: "list-1", UID: "todo-push", ICS: ics, DueMS: due.UnixMilli()}},
+		},
+	}
+	sel := agent.Selection{
+		IntervalSeconds: 120, WindowDays: 730,
+		Reminders: []agent.CalendarSel{{LocalID: "list-1", Title: "Errands"}},
+	}
+	a := newAgent(h, sel, nil, nil)
+	a.Reminders = rems
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	col := collection(t, h.eng, "calendar", "Errands")
+	meta := dav.ParseCalendarColMeta(col.Metadata)
+	if meta.Comp != "VTODO" || meta.Color != "#FF2D55" {
+		t.Fatalf("meta %+v %s", meta, col.Metadata)
+	}
+	if n := liveCount(t, h.eng, "calendar", "Errands"); n != 1 {
+		t.Fatalf("live objects %d", n)
+	}
+	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "todo-push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt, err := h.st.GetBlobPlaintext(obj.BlobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pt), "BEGIN:VTODO") || !strings.Contains(string(pt), "Buy milk") {
+		t.Fatalf("blob %s", pt)
+	}
+}
+
+func TestReminderNameCollision(t *testing.T) {
+	h := startHarness(t)
+	cal := &fakeCal{
+		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Personal"}},
+		events:    map[string][]agent.LocalEvent{},
+	}
+	rems := &fakeReminders{
+		lists: []agent.CalendarInfo{{ID: "list-1", Title: "Personal"}},
+		todos: map[string][]agent.LocalTodo{},
+	}
+	sel := agent.Selection{
+		IntervalSeconds: 120, WindowDays: 730,
+		Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Personal"}},
+		Reminders: []agent.CalendarSel{{LocalID: "list-1", Title: "Personal"}},
+	}
+	a := newAgent(h, sel, cal, nil)
+	a.Reminders = rems
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.eng.FindChildCollection(context.Background(), "calendar", "", "Personal"); err != nil {
+		t.Fatal(err)
+	}
+	col, err := h.eng.FindChildCollection(context.Background(), "calendar", "", "Personal Reminders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dav.ParseCalendarColMeta(col.Metadata).Comp != "VTODO" {
+		t.Fatalf("%s", col.Metadata)
+	}
+}
+
 func TestPushRecurringSeriesOneObject(t *testing.T) {
 	h := startHarness(t)
 	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
@@ -510,6 +675,52 @@ func TestApplyChangeRebindsEventKitID(t *testing.T) {
 	}
 }
 
+func TestApplyChangeFailureDoesNotAck(t *testing.T) {
+	h := startHarness(t)
+	start := time.Now().UTC().Truncate(time.Second)
+	ev := testEvent(t, "uid-nack", "Original", start)
+	cal := &fakeCal{
+		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
+		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
+	}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
+	a := newAgent(h, sel, cal, nil)
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cur := a.Map.Cursor()
+	col := collection(t, h.eng, "calendar", "Work")
+	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-nack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := agent.EncodeICS("uid-nack", "Will fail", start, start.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := ncrypto.SHA256Hex(updated)
+	if _, _, err := h.st.PutBlob(context.Background(), strings.NewReader(string(updated)), hash); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.eng.Push(context.Background(), h.dev, ids.New(), []syncengine.ChangeInput{{
+		ObjectID: obj.ID, CollectionID: col.ID, Kind: "event", Op: syncengine.OpUpdate,
+		BaseRevision: obj.Revision, ContentHash: hash, BlobID: hash, Size: int64(len(updated)),
+		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "uid-nack.ics", UID: "uid-nack", Comp: "VEVENT"}),
+		Force:    true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cal.mu.Lock()
+	cal.upsertErr = errors.New("repeat field cannot be changed")
+	cal.mu.Unlock()
+	if err := a.SyncOnce(context.Background()); err == nil {
+		t.Fatal("expected apply failure")
+	}
+	if a.Map.Cursor() != cur {
+		t.Fatalf("cursor advanced %d -> %d", cur, a.Map.Cursor())
+	}
+}
+
 func TestPushContact(t *testing.T) {
 	h := startHarness(t)
 	book := &fakeBook{list: []agent.LocalContact{{
@@ -549,12 +760,15 @@ func TestOpenPlatformLinux(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("linux stub only")
 	}
-	_, _, _, err := agent.OpenPlatform(agent.DefaultSelection())
+	_, _, _, _, err := agent.OpenPlatform(agent.DefaultSelection())
 	if !errors.Is(err, agent.ErrNeedDarwin) {
 		t.Fatalf("got %v", err)
 	}
 	if _, err := agent.PlatformCalendars(); !errors.Is(err, agent.ErrNeedDarwin) {
 		t.Fatalf("calendars %v", err)
+	}
+	if _, err := agent.PlatformReminderLists(); !errors.Is(err, agent.ErrNeedDarwin) {
+		t.Fatalf("reminders %v", err)
 	}
 }
 
