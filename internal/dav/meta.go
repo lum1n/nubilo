@@ -88,3 +88,37 @@ func ValidDisplayName(name string) bool {
 	}
 	return true
 }
+
+// DAVResourceName makes a collection or object name safe for CalDAV/CardDAV hrefs.
+// EventKit UIDs and calendar titles can contain slashes; Apple Calendar then fails
+// the whole account with "Calendars could not update".
+func DAVResourceName(name, ext string) string {
+	name = strings.TrimSpace(name)
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r < 32, r == 0, r == '/', r == '\\':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	name = strings.Trim(b.String(), " .")
+	if name == "" || name == "." || name == ".." {
+		name = "item"
+	}
+	if len(name) > 200 {
+		name = name[:200]
+	}
+	if ext != "" && !strings.HasSuffix(strings.ToLower(name), strings.ToLower(ext)) {
+		name += ext
+	}
+	if !ValidDisplayName(name) {
+		if ext == "" {
+			return "Untitled"
+		}
+		return "item" + ext
+	}
+	return name
+}

@@ -22,8 +22,6 @@ import (
 	"nubilo/internal/syncengine"
 
 	"github.com/emersion/go-webdav"
-	"github.com/emersion/go-webdav/caldav"
-	"github.com/emersion/go-webdav/carddav"
 )
 
 type Server struct {
@@ -81,20 +79,18 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("GET /api/v1/photos/{id}/thumb", s.authedAny(s.handlePhotoThumb))
 	davAuth := dav.NewAuth(ids)
 	davH := davAuth.Middleware(dav.LockCompat(&webdav.Handler{FileSystem: dav.NewFS(eng, st)}))
-	calH := davAuth.Middleware(&caldav.Handler{Backend: dav.NewCalDAV(eng, st), Prefix: dav.CalDAVPrefix})
-	cardH := davAuth.Middleware(&carddav.Handler{Backend: dav.NewCardDAV(eng, st), Prefix: dav.CardDAVPrefix})
+	calH := davAuth.Middleware(dav.WrapCalDAV(dav.NewCalDAV(eng, st)))
+	cardH := davAuth.Middleware(dav.WrapCardDAV(dav.NewCardDAV(eng, st)))
 	mux.Handle("/dav/", davH)
 	mux.Handle("/dav", davH)
 	mux.Handle("/caldav/", calH)
 	mux.Handle("/caldav", calH)
 	mux.Handle("/carddav/", cardH)
 	mux.Handle("/carddav", cardH)
-	mux.HandleFunc("GET /.well-known/caldav", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, dav.CalDAVPrefix+"/user/", http.StatusPermanentRedirect)
-	})
-	mux.HandleFunc("GET /.well-known/carddav", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, dav.CardDAVPrefix+"/user/", http.StatusPermanentRedirect)
-	})
+	mux.Handle("/.well-known/caldav", dav.WellKnown(dav.CalDAVPrefix+"/user/", calH))
+	mux.Handle("/.well-known/caldav/", dav.WellKnown(dav.CalDAVPrefix+"/user/", calH))
+	mux.Handle("/.well-known/carddav", dav.WellKnown(dav.CardDAVPrefix+"/user/", cardH))
+	mux.Handle("/.well-known/carddav/", dav.WellKnown(dav.CardDAVPrefix+"/user/", cardH))
 	s.http = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           s.limitBody(mux),

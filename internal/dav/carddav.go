@@ -147,7 +147,7 @@ func (b *CardDAV) ListAddressObjects(ctx context.Context, path string, req *card
 		href := Join(b.Prefix, cardUserSeg, cardHomeSeg, col.Name, contactFileName(&objs[i]))
 		ao, err := b.toAddressObject(&objs[i], href)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		out = append(out, *ao)
 	}
@@ -471,13 +471,14 @@ func (b *CardDAV) toAddressObject(obj *syncengine.Object, href string) (*carddav
 
 func contactFileName(o *syncengine.Object) string {
 	m := ParseContactMeta(o.Metadata)
-	if m.Name != "" {
-		return m.Name
+	n := m.Name
+	if n == "" && m.UID != "" {
+		n = m.UID + ".vcf"
 	}
-	if m.UID != "" {
-		return m.UID + ".vcf"
+	if n == "" {
+		n = o.ID + ".vcf"
 	}
-	return o.ID + ".vcf"
+	return DAVResourceName(n, ".vcf")
 }
 
 var _ carddav.Backend = (*CardDAV)(nil)

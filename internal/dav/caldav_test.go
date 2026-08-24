@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/emersion/go-webdav"
-	"github.com/emersion/go-webdav/caldav"
 
 	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/dav"
@@ -63,15 +62,14 @@ func calServer(t *testing.T) (*httptest.Server, *identity.Device, string, *ident
 	}
 	auth := dav.NewAuth(idsvc)
 	davH := auth.Middleware(dav.LockCompat(&webdav.Handler{FileSystem: dav.NewFS(eng, st)}))
-	calH := auth.Middleware(&caldav.Handler{Backend: dav.NewCalDAV(eng, st), Prefix: dav.CalDAVPrefix})
+	calH := auth.Middleware(dav.WrapCalDAV(dav.NewCalDAV(eng, st)))
 	mux := http.NewServeMux()
 	mux.Handle("/dav/", davH)
 	mux.Handle("/dav", davH)
 	mux.Handle("/caldav/", calH)
 	mux.Handle("/caldav", calH)
-	mux.HandleFunc("GET /.well-known/caldav", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, dav.CalDAVPrefix+"/user/", http.StatusPermanentRedirect)
-	})
+	mux.Handle("/.well-known/caldav", dav.WellKnown(dav.CalDAVPrefix+"/user/", calH))
+	mux.Handle("/.well-known/caldav/", dav.WellKnown(dav.CalDAVPrefix+"/user/", calH))
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts, calDev, calPass, fileDev, filePass, eng
@@ -125,7 +123,7 @@ func TestWellKnownCalDAV(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusPermanentRedirect {
+	if resp.StatusCode != http.StatusMovedPermanently {
 		t.Fatalf("%d", resp.StatusCode)
 	}
 	if loc := resp.Header.Get("Location"); loc != "/caldav/user/" {
@@ -318,5 +316,78 @@ func TestCalDAVObjectIDNotInHref(t *testing.T) {
 	}
 	if objs[0].ID == "test-uid-1" || objs[0].ID == "test-uid-1.ics" {
 		t.Fatal("uid used as object id")
+	}
+}
+
+func TestWellKnownCalDAVPropfind(t *testing.T) {
+	ts, dev, pass, _, _, _ := calServer(t)
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	body := []byte(`<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:current-user-principal/></D:prop></D:propfind>`)
+	r, _ := http.NewRequest("PROPFIND", ts.URL+"/.well-known/caldav", bytes.NewReader(body))
+	r.SetBasicAuth(dev.ID, pass)
+	r.Header.Set("Depth", "0")
+	r.Header.Set("Content-Type", "application/xml")
+	resp, err := c.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		t.Fatalf("well-known propfind %d %s", resp.StatusCode, b)
+	}
+	if !bytes.Contains(b, []byte("current-user-principal")) && !bytes.Contains(b, []byte("calendar-home-set")) {
+		t.Fatalf("missing principal props %s", b)
+	}
+}
+
+func TestCalDAVPropPatchAppleColor(t *testing.T) {
+	ts, dev, pass, _, _, _ := calServer(t)
+	body := []byte(`<?xml version="1.0"?>
+<D:propertyupdate xmlns:D="DAV:" xmlns:A="http://apple.com/ns/ical/">
+  <D:set><D:prop><A:calendar-color>#FF0000</A:calendar-color></D:prop></D:set>
+</D:propertyupdate>`)
+	resp := calReq(t, ts, "PROPPATCH", "/caldav/user/calendars/Personal", dev.ID, pass, "application/xml", body)
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 207 {
+		t.Fatalf("proppatch %d %s", resp.StatusCode, b)
+	}
+	if !bytes.Contains(b, []byte("200 OK")) {
+		t.Fatalf("proppatch body %s", b)
+	}
+}
+
+func TestCalDAVPrincipalSlashRedirect(t *testing.T) {
+	ts, dev, pass, _, _, _ := calServer(t)
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	r, _ := http.NewRequest("PROPFIND", ts.URL+"/caldav/user", bytes.NewReader([]byte(`<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:displayname/></D:prop></D:propfind>`)))
+	r.SetBasicAuth(dev.ID, pass)
+	r.Header.Set("Depth", "0")
+	r.Header.Set("Content-Type", "application/xml")
+	resp, err := c.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPermanentRedirect {
+		t.Fatalf("%d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.HasSuffix(loc, "/caldav/user/") {
+		t.Fatalf("location %q", loc)
+	}
+}
+
+func TestDAVResourceName(t *testing.T) {
+	got := dav.DAVResourceName("icloud/abc==/def", ".ics")
+	if strings.Contains(got, "/") || !strings.HasSuffix(got, ".ics") {
+		t.Fatalf("%q", got)
+	}
+	if dav.DAVResourceName("Work", "") != "Work" {
+		t.Fatal("plain name")
 	}
 }

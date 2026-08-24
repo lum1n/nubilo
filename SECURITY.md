@@ -73,8 +73,8 @@ Nubilo authenticates every API, sync, and DAV request independently of the netwo
 
 - `POST /api/v1/pair/begin`
 - `POST /api/v1/pair/complete`
-- `GET /.well-known/caldav` (308 to `/caldav/user/`; no calendar data)
-- `GET /.well-known/carddav` (308 to `/carddav/user/`; no contact data)
+- `GET /.well-known/caldav` (301 to `/caldav/user/`; no calendar data)
+- `GET /.well-known/carddav` (301 to `/carddav/user/`; no contact data)
 
 Pairing endpoints are rate-limited, brute-force resistant, and cannot read or mutate user data. Well-known redirects only reveal DAV principal paths. There are no unauthenticated admin endpoints.
 

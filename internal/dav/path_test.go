@@ -46,3 +46,9 @@ func TestValidDisplayName(t *testing.T) {
 		t.Fatal("unicode/space name")
 	}
 }
+
+func TestDAVResourceNameSlash(t *testing.T) {
+	if dav.DAVResourceName("a/b", ".ics") != "a_b.ics" {
+		t.Fatalf("%q", dav.DAVResourceName("a/b", ".ics"))
+	}
+}

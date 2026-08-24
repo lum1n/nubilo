@@ -28,6 +28,7 @@ type Agent struct {
 	Client   *protocol.Client
 	Map      *Map
 	Sel      Selection
+	SelPath  string // agent.json; reloaded at the start of each SyncOnce
 	Cal      CalendarSource
 	Contacts ContactSource
 	Photos   PhotoSource
@@ -41,9 +42,24 @@ type route struct {
 	kind    string
 }
 
+func (a *Agent) reloadSelection() error {
+	if a.SelPath == "" {
+		return nil
+	}
+	sel, err := LoadSelection(a.SelPath)
+	if err != nil {
+		return err
+	}
+	a.Sel = sel
+	return nil
+}
+
 func (a *Agent) SyncOnce(ctx context.Context) error {
 	if a.Log == nil {
 		a.Log = slog.Default()
+	}
+	if err := a.reloadSelection(); err != nil {
+		return err
 	}
 	if err := a.bindRoutes(); err != nil {
 		return err
@@ -197,6 +213,7 @@ func (a *Agent) pushCalendars(ctx context.Context) error {
 			a.Log.Warn("list_events_failed", "calendar", sel.Title, "err", err.Error())
 			continue
 		}
+		a.Log.Info("push_calendar", "name", sel.Title, "events", len(events))
 		seen := map[string]bool{}
 		for _, ev := range events {
 			seen[ev.ID] = true
@@ -281,7 +298,7 @@ func (a *Agent) pushEvent(collectionID string, ev LocalEvent) error {
 		ContentHash:  hash,
 		BlobID:       hash,
 		Size:         int64(len(ev.ICS)),
-		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: uid + ".ics", UID: uid, Comp: "VEVENT"}),
+		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: dav.DAVResourceName(uid+".ics", ".ics"), UID: uid, Comp: "VEVENT"}),
 		Force:        true,
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -333,7 +350,7 @@ func (a *Agent) pushContact(collectionID string, c LocalContact) error {
 		ContentHash:  hash,
 		BlobID:       hash,
 		Size:         int64(len(c.VCard)),
-		Metadata:     dav.EncodeContactMeta(dav.ContactMeta{Name: uid + ".vcf", UID: uid}),
+		Metadata:     dav.EncodeContactMeta(dav.ContactMeta{Name: dav.DAVResourceName(uid+".vcf", ".vcf"), UID: uid}),
 		Force:        true,
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -594,6 +611,7 @@ func (a *Agent) ensureCollection(kind, name string) (*syncengine.Collection, err
 	if name == "" {
 		name = "Untitled"
 	}
+	name = dav.DAVResourceName(name, "")
 	cols, err := a.Client.Collections()
 	if err != nil {
 		return nil, err
@@ -606,10 +624,16 @@ func (a *Agent) ensureCollection(kind, name string) (*syncengine.Collection, err
 	return a.Client.EnsureCollection(kind, name)
 }
 
-func (a *Agent) Run(ctx context.Context) error {
+func (a *Agent) runSync(ctx context.Context) {
 	if err := a.SyncOnce(ctx); err != nil {
 		a.Log.Error("sync", "err", err.Error())
+		return
 	}
+	a.Log.Info("sync_ok", "calendars", len(a.Sel.Calendars), "contacts", a.Sel.SyncContacts, "photos", a.Sel.Photos.Enabled)
+}
+
+func (a *Agent) Run(ctx context.Context) error {
+	a.runSync(ctx)
 	d := time.Duration(a.Sel.IntervalSeconds) * time.Second
 	if d < 15*time.Second {
 		d = 15 * time.Second
@@ -621,9 +645,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			if err := a.SyncOnce(ctx); err != nil {
-				a.Log.Error("sync", "err", err.Error())
-			}
+			a.runSync(ctx)
 		}
 	}
 }

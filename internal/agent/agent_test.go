@@ -292,6 +292,42 @@ func TestPushLocalEvent(t *testing.T) {
 	}
 }
 
+func TestPushRecurringSeriesOneObject(t *testing.T) {
+	h := startHarness(t)
+	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	ics, err := agent.EncodeEventICS(agent.EventSpec{
+		UID: "uid-series", Summary: "Weekly standup", Start: start, End: start.Add(time.Hour),
+		RRule: "FREQ=WEEKLY;BYDAY=MO",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := agent.LocalEvent{ID: "series-1", CalendarID: "cal-1", UID: "uid-series", ICS: ics, StartMS: start.UnixMilli()}
+	cal := &fakeCal{
+		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
+		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
+	}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
+	if err := newAgent(h, sel, cal, nil).SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := liveCount(t, h.eng, "calendar", "Work"); n != 1 {
+		t.Fatalf("live objects %d", n)
+	}
+	col := collection(t, h.eng, "calendar", "Work")
+	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-series")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt, err := h.st.GetBlobPlaintext(obj.BlobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pt), "RRULE") || !strings.Contains(string(pt), "FREQ=WEEKLY") {
+		t.Fatalf("blob %s", pt)
+	}
+}
+
 func TestFailedListDoesNotDelete(t *testing.T) {
 	h := startHarness(t)
 	start := time.Now().UTC().Truncate(time.Second)
@@ -497,6 +533,39 @@ func TestSelectionPersistence(t *testing.T) {
 	got.UnselectCalendar("abc")
 	if len(got.Calendars) != 0 {
 		t.Fatalf("unselect %+v", got.Calendars)
+	}
+}
+
+func TestSelectionReloadPushesCalendar(t *testing.T) {
+	h := startHarness(t)
+	start := time.Now().UTC().Truncate(time.Second)
+	ev := testEvent(t, "uid-reload", "After select", start)
+	cal := &fakeCal{
+		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
+		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
+	}
+	path := filepath.Join(t.TempDir(), "agent.json")
+	sel := agent.DefaultSelection()
+	if err := agent.SaveSelection(path, sel); err != nil {
+		t.Fatal(err)
+	}
+	a := newAgent(h, sel, cal, nil)
+	a.SelPath = path
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := liveCount(t, h.eng, "calendar", "Work"); n != 0 {
+		t.Fatalf("pushed before select: %d", n)
+	}
+	sel.SelectCalendar("cal-1", "Work")
+	if err := agent.SaveSelection(path, sel); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := liveCount(t, h.eng, "calendar", "Work"); n != 1 {
+		t.Fatalf("after reload live objects %d", n)
 	}
 }
 

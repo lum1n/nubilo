@@ -136,7 +136,7 @@ func (b *CalDAV) ListCalendarObjects(ctx context.Context, path string, req *cald
 		href := Join(b.Prefix, calUserSeg, calHomeSeg, col.Name, eventFileName(&objs[i]))
 		co, err := b.toCalendarObject(&objs[i], href)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		out = append(out, *co)
 	}
@@ -303,7 +303,7 @@ func (b *CalDAV) DeleteCalendarObject(ctx context.Context, path string) error {
 	if fileName == "" {
 		return b.deleteCalendar(ctx, col)
 	}
-	obj, err := b.Engine.FindObjectByName(ctx, col.ID, fileName)
+	obj, err := b.findEventByName(ctx, col, fileName)
 	if err != nil {
 		if errors.Is(err, syncengine.ErrNotFound) {
 			return webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
@@ -375,6 +375,26 @@ func (b *CalDAV) calendarByPath(ctx context.Context, path string) (*syncengine.C
 	return col, nil
 }
 
+func (b *CalDAV) findEventByName(ctx context.Context, col *syncengine.Collection, fileName string) (*syncengine.Object, error) {
+	obj, err := b.Engine.FindObjectByName(ctx, col.ID, fileName)
+	if err == nil {
+		return obj, nil
+	}
+	if !errors.Is(err, syncengine.ErrNotFound) {
+		return nil, err
+	}
+	objs, err := b.Engine.ListObjects(ctx, col.ID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range objs {
+		if eventFileName(&objs[i]) == fileName {
+			return &objs[i], nil
+		}
+	}
+	return nil, syncengine.ErrNotFound
+}
+
 func (b *CalDAV) objectByPath(ctx context.Context, path string) (*syncengine.Collection, *syncengine.Object, string, error) {
 	_, calName, fileName, err := b.parseCalPath(path)
 	if err != nil {
@@ -390,7 +410,7 @@ func (b *CalDAV) objectByPath(ctx context.Context, path string) (*syncengine.Col
 		}
 		return nil, nil, "", err
 	}
-	obj, err := b.Engine.FindObjectByName(ctx, col.ID, fileName)
+	obj, err := b.findEventByName(ctx, col, fileName)
 	if err != nil {
 		if errors.Is(err, syncengine.ErrNotFound) {
 			return nil, nil, "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
@@ -467,13 +487,14 @@ func (b *CalDAV) toCalendarObject(obj *syncengine.Object, href string) (*caldav.
 
 func eventFileName(o *syncengine.Object) string {
 	m := ParseEventMeta(o.Metadata)
-	if m.Name != "" {
-		return m.Name
+	n := m.Name
+	if n == "" && m.UID != "" {
+		n = m.UID + ".ics"
 	}
-	if m.UID != "" {
-		return m.UID + ".ics"
+	if n == "" {
+		n = o.ID + ".ics"
 	}
-	return o.ID + ".ics"
+	return DAVResourceName(n, ".ics")
 }
 
 var _ caldav.Backend = (*CalDAV)(nil)

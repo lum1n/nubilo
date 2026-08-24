@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/emersion/go-webdav"
-	"github.com/emersion/go-webdav/carddav"
 
 	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/dav"
@@ -58,15 +57,14 @@ func cardServer(t *testing.T) (*httptest.Server, *identity.Device, string, *iden
 	}
 	auth := dav.NewAuth(idsvc)
 	davH := auth.Middleware(dav.LockCompat(&webdav.Handler{FileSystem: dav.NewFS(eng, st)}))
-	cardH := auth.Middleware(&carddav.Handler{Backend: dav.NewCardDAV(eng, st), Prefix: dav.CardDAVPrefix})
+	cardH := auth.Middleware(dav.WrapCardDAV(dav.NewCardDAV(eng, st)))
 	mux := http.NewServeMux()
 	mux.Handle("/dav/", davH)
 	mux.Handle("/dav", davH)
 	mux.Handle("/carddav/", cardH)
 	mux.Handle("/carddav", cardH)
-	mux.HandleFunc("GET /.well-known/carddav", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, dav.CardDAVPrefix+"/user/", http.StatusPermanentRedirect)
-	})
+	mux.Handle("/.well-known/carddav", dav.WellKnown(dav.CardDAVPrefix+"/user/", cardH))
+	mux.Handle("/.well-known/carddav/", dav.WellKnown(dav.CardDAVPrefix+"/user/", cardH))
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts, cardDev, cardPass, fileDev, filePass, eng
@@ -120,7 +118,7 @@ func TestWellKnownCardDAV(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusPermanentRedirect {
+	if resp.StatusCode != http.StatusMovedPermanently {
 		t.Fatalf("%d", resp.StatusCode)
 	}
 	if loc := resp.Header.Get("Location"); loc != "/carddav/user/" {

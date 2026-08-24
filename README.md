@@ -56,7 +56,7 @@ Settings → Calendar → Accounts → Add Account → Other → Add CalDAV Acco
 - Server: `https://<tailscale-ip>:8443` (not `127.0.0.1`; the phone cannot reach loopback on the server)
 - Username: the device id printed by `nubilo devices password --scope caldav`
 - Password: the one-time app password
-- Path / discovery: `/.well-known/caldav` redirects to `/caldav/user/`
+- Path / discovery: leave blank or `/.well-known/caldav`. SSL **on**. Apple will not sync to a self-signed cert: use Tailscale Serve, or install `~/.nubilo/tls.crt` on the phone first.
 
 A WebDAV-only password cannot access calendars, and a CalDAV-only password cannot access files.
 
@@ -77,7 +77,7 @@ The agent is a signing device over `/sync/v1` (Ed25519), not an app password. Pa
 
 macOS will prompt for Calendar, Contacts, and Photos access (TCC). Grant it to Terminal or the `nubilo` binary. The agent only reads EventKit/Contacts/PhotoKit data the OS already granted; corporate credentials never leave the Mac.
 
-Sync uses a time window (default ±730 days). Events outside that window are not treated as deletions. A failed EventKit, Contacts, or PhotoKit listing never pushes deletes. Change detection is periodic (default 120s).
+Sync uses a time window (default ±730 days). Recurring events are stored as one object with `RRULE` (plus `EXDATE` / exception instances). Events whose series never intersects that window are not pushed. A failed EventKit, Contacts, or PhotoKit listing never pushes deletes. Change detection is periodic (default 120s).
 
 ```bash
 ./nubilo agent --data-dir ~/.nubilo-agent photos on

@@ -462,6 +462,7 @@ func agentSelect(path string, sel agent.Selection, id string, on bool) int {
 		return fatal(err)
 	}
 	fmt.Printf("selected %s (%s)\n", id, title)
+	fmt.Println("restart the running agent (or wait for the next sync) so this calendar is created on the server")
 	return 0
 }
 
@@ -492,6 +493,7 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 		Client:   client,
 		Map:      mp,
 		Sel:      sel,
+		SelPath:  paths.AgentJSON,
 		Cal:      cal,
 		Contacts: book,
 		Photos:   pics,
@@ -501,6 +503,14 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 	defer stop()
 	fmt.Printf("agent running interval=%ds window=%dd calendars=%d contacts=%v photos=%v\n",
 		sel.IntervalSeconds, sel.WindowDays, len(sel.Calendars), sel.SyncContacts, sel.Photos.Enabled)
+	for _, c := range sel.Calendars {
+		fmt.Printf("  calendar %s (%s)\n", c.LocalID, c.Title)
+	}
+	if len(sel.Calendars) == 0 {
+		fmt.Fprintln(os.Stderr, "warning: no calendars selected; iPhone CalDAV will stay empty")
+		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" calendars")
+		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" select <eventkit-id>")
+	}
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return fatal(err)
 	}
@@ -594,6 +604,11 @@ func runPairClient(g global, serverURL, code, name string, insecure bool) int {
 		fmt.Fprintln(os.Stderr, "pair client requires --server, --code, and --name")
 		return 2
 	}
+	norm := ncrypto.NormalizePairingCode(code)
+	if len(norm) != 10 || norm == "XXXXXXXXXX" {
+		fmt.Fprintln(os.Stderr, "copy the code printed by the Linux server (nubilo pair --role agent), not the XXXXX-XXXXX placeholder; codes expire in 5 minutes")
+		return 2
+	}
 	dir, err := app.ResolveDataDir(g.dataDir)
 	if err != nil {
 		return fatal(err)
@@ -630,7 +645,11 @@ func runPairClient(g global, serverURL, code, name string, insecure bool) int {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
-		return fatal(fmt.Errorf("pair begin: %s %s", resp.Status, strings.TrimSpace(string(b))))
+		err := fmt.Errorf("pair begin: %s %s", resp.Status, strings.TrimSpace(string(b)))
+		if resp.StatusCode == http.StatusUnauthorized {
+			err = fmt.Errorf("%w (wrong or expired code: on Linux run nubilo pair --data-dir ~/.nubilo --role agent, then retry immediately with that printed code)", err)
+		}
+		return fatal(err)
 	}
 	var br struct {
 		PairingID string `json:"pairing_id"`
