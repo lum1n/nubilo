@@ -78,7 +78,21 @@ func (m *Map) SetCursor(seq int64) error {
 }
 
 func (m *Map) Put(row Mapping) error {
-	_, err := m.DB.Exec(`
+	tx, err := m.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// EventKit can return a new calendarItemIdentifier for the same server
+	// object (recurring save, pull-after-push). Rebind instead of inserting
+	// a second row, which trips UNIQUE(object_id).
+	if row.ObjectID != "" {
+		if _, err := tx.Exec(`DELETE FROM idmap WHERE object_id = ? AND (local_id != ? OR kind != ?)`,
+			row.ObjectID, row.LocalID, row.Kind); err != nil {
+			return err
+		}
+	}
+	_, err = tx.Exec(`
 		INSERT INTO idmap(local_id, kind, object_id, collection_id, content_hash, revision, start_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(local_id, kind) DO UPDATE SET
@@ -88,7 +102,10 @@ func (m *Map) Put(row Mapping) error {
 			revision = excluded.revision,
 			start_ms = excluded.start_ms
 	`, row.LocalID, row.Kind, row.ObjectID, row.CollectionID, row.ContentHash, row.Revision, row.StartMS)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (m *Map) ByLocal(kind, localID string) (Mapping, error) {

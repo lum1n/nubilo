@@ -383,13 +383,35 @@ char *nubilo_ek_save_event(const char *calendar_id, const char *item_id, const c
 	}
 	EKEvent *ev = nil;
 	NSString *iid = [NSString stringWithUTF8String:item_id ? item_id : ""];
+	NSString *uid = [j[@"uid"] isKindOfClass:[NSString class]] ? j[@"uid"] : @"";
 	if (iid.length > 0) {
 		EKCalendarItem *item = [store calendarItemWithIdentifier:iid];
 		if ([item isKindOfClass:[EKEvent class]]) {
 			ev = (EKEvent *)item;
 		}
 	}
-	if (!ev) {
+	if (!ev && uid.length > 0) {
+		for (EKCalendarItem *item in [store calendarItemsWithExternalIdentifier:uid]) {
+			if (![item isKindOfClass:[EKEvent class]]) {
+				continue;
+			}
+			EKEvent *cand = (EKEvent *)item;
+			if (cand.calendar && ![cand.calendar.calendarIdentifier isEqualToString:cid]) {
+				continue;
+			}
+			if (cand.isDetached) {
+				continue;
+			}
+			ev = cand;
+			break;
+		}
+	}
+	if (ev) {
+		EKEvent *master = [store eventWithIdentifier:ev.eventIdentifier];
+		if (master) {
+			ev = master;
+		}
+	} else {
 		ev = [EKEvent eventWithEventStore:store];
 	}
 	ev.calendar = cal;
@@ -449,7 +471,9 @@ char *nubilo_ek_save_event(const char *calendar_id, const char *item_id, const c
 		occ.allDay = [ex[@"all_day"] intValue] != 0;
 		[store saveEvent:occ span:EKSpanThisEvent commit:YES error:nil];
 	}
-	return nubilo_dup(ev.calendarItemIdentifier);
+	EKEvent *fresh = [store eventWithIdentifier:ev.eventIdentifier];
+	NSString *outID = fresh.calendarItemIdentifier.length ? fresh.calendarItemIdentifier : ev.calendarItemIdentifier;
+	return nubilo_dup(outID ?: @"");
 }
 
 int nubilo_ek_delete_event(const char *item_id, char **err) {

@@ -39,6 +39,7 @@ type fakeCal struct {
 	events    map[string][]agent.LocalEvent
 	listErr   error
 	seq       int
+	newIDs    bool
 }
 
 func (f *fakeCal) ListCalendars() ([]agent.CalendarInfo, error) {
@@ -74,13 +75,17 @@ func (f *fakeCal) UpsertEvent(calendarID, localID string, ics []byte) (string, e
 		f.seq++
 		localID = "ek-" + ids.New()[:8]
 	}
+	prevID := localID
+	if f.newIDs {
+		localID = prevID + "-n"
+	}
 	ev := agent.LocalEvent{
 		ID: localID, CalendarID: calendarID, UID: agent.UIDFromICS(ics),
 		ICS: append([]byte(nil), ics...), StartMS: agent.EventStartMS(ics),
 	}
 	list := f.events[calendarID]
 	for i := range list {
-		if list[i].ID == localID {
+		if list[i].ID == prevID || list[i].ID == localID {
 			list[i] = ev
 			f.events[calendarID] = list
 			return localID, nil
@@ -439,6 +444,69 @@ func TestRemoteChangeApplied(t *testing.T) {
 	got := cal.eventICS("cal-1", ev.ID)
 	if !strings.Contains(string(got), "Updated title") {
 		t.Fatalf("local source not updated: %s", got)
+	}
+}
+
+func TestApplyChangeRebindsEventKitID(t *testing.T) {
+	h := startHarness(t)
+	start := time.Now().UTC().Truncate(time.Second)
+	ev := testEvent(t, "uid-rebind", "Original", start)
+	cal := &fakeCal{
+		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
+		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
+	}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
+	a := newAgent(h, sel, cal, nil)
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	col := collection(t, h.eng, "calendar", "Work")
+	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-rebind")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := agent.EncodeICS("uid-rebind", "Rebound", start, start.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := ncrypto.SHA256Hex(updated)
+	if _, _, err := h.st.PutBlob(context.Background(), strings.NewReader(string(updated)), hash); err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.eng.Push(context.Background(), h.dev, ids.New(), []syncengine.ChangeInput{{
+		ObjectID: obj.ID, CollectionID: col.ID, Kind: "event", Op: syncengine.OpUpdate,
+		BaseRevision: obj.Revision, ContentHash: hash, BlobID: hash, Size: int64(len(updated)),
+		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "uid-rebind.ics", UID: "uid-rebind", Comp: "VEVENT"}),
+		Force:    true,
+	}})
+	if err != nil || len(res) == 0 || res[0].Status != "ok" {
+		t.Fatalf("push update %+v %v", res, err)
+	}
+	cal.mu.Lock()
+	cal.newIDs = true
+	cal.mu.Unlock()
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.Map.ByObject(obj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LocalID == ev.ID {
+		t.Fatal("expected rebind to new EventKit id")
+	}
+	rows, err := a.Map.ForCollection(col.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, r := range rows {
+		if r.ObjectID == obj.ID {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("object mapped %d times", n)
 	}
 }
 
