@@ -15,6 +15,7 @@ type ekOccurrence struct {
 	Title       string  `json:"title"`
 	Notes       string  `json:"notes"`
 	Location    string  `json:"location"`
+	TZ          string  `json:"tz"`
 	Start       float64 `json:"start"`
 	End         float64 `json:"end"`
 	AllDay      int     `json:"all_day"`
@@ -115,19 +116,15 @@ func localFromSeries(acc *seriesAcc, winStart, winEnd time.Time) (LocalEvent, er
 	m := acc.master
 	spec := specFromOccurrence(m)
 	if m.MasterStart != 0 {
-		spec.Start = time.Unix(int64(m.MasterStart), 0)
+		spec.Start = time.Unix(int64(m.MasterStart), 0).In(locationForTZ(m.TZ))
 		if m.AllDay != 0 {
 			spec.Start = dateOnly(spec.Start)
-		} else {
-			spec.Start = spec.Start.UTC()
 		}
 	}
 	if m.MasterEnd != 0 {
-		spec.End = time.Unix(int64(m.MasterEnd), 0)
+		spec.End = time.Unix(int64(m.MasterEnd), 0).In(locationForTZ(m.TZ))
 		if m.AllDay != 0 {
 			spec.End = dateOnly(spec.End)
-		} else {
-			spec.End = spec.End.UTC()
 		}
 	}
 	spec.RRule = strings.TrimSpace(m.RRule)
@@ -139,6 +136,9 @@ func localFromSeries(acc *seriesAcc, winStart, winEnd time.Time) (LocalEvent, er
 	for _, ex := range acc.exceptions {
 		es := specFromOccurrence(ex)
 		es.UID = spec.UID
+		if es.TZ == "" {
+			es.TZ = spec.TZ
+		}
 		es.RecurrenceID = occTime(ex)
 		if es.RecurrenceID.IsZero() {
 			es.RecurrenceID = es.Start
@@ -165,22 +165,20 @@ func localFromSeries(acc *seriesAcc, winStart, winEnd time.Time) (LocalEvent, er
 }
 
 func specFromOccurrence(r ekOccurrence) EventSpec {
-	st := time.Unix(int64(r.Start), 0)
-	en := time.Unix(int64(r.End), 0)
+	loc := locationForTZ(r.TZ)
+	st := time.Unix(int64(r.Start), 0).In(loc)
+	en := time.Unix(int64(r.End), 0).In(loc)
 	allDay := r.AllDay != 0
 	if allDay {
 		st = dateOnly(st)
 		en = dateOnly(en)
-	} else {
-		st = st.UTC()
-		en = en.UTC()
 	}
 	uid := r.UID
 	if uid == "" {
 		uid = r.ID
 	}
 	return EventSpec{
-		UID: uid, Summary: r.Title, Notes: r.Notes, Location: r.Location,
+		UID: uid, Summary: r.Title, Notes: r.Notes, Location: r.Location, TZ: r.TZ,
 		Start: st, End: en, AllDay: allDay,
 	}
 }

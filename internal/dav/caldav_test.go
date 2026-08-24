@@ -242,6 +242,34 @@ func TestCalDAVQueryAndMultiget(t *testing.T) {
 		t.Fatalf("event leaked outside range %s", obody)
 	}
 
+	weekly := `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//nubilo//test//EN
+BEGIN:VEVENT
+UID:weekly-old
+DTSTAMP:20200106T000000Z
+DTSTART;TZID=Europe/Oslo:20200106T100000
+DTEND;TZID=Europe/Oslo:20200106T110000
+RRULE:FREQ=WEEKLY;BYDAY=MO
+SUMMARY:Old standup
+END:VEVENT
+END:VCALENDAR
+`
+	resp = putEvent(t, ts, dev.ID, pass, "/caldav/user/calendars/Personal/weekly-old.ics", weekly)
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("put weekly %d", resp.StatusCode)
+	}
+	resp = calReq(t, ts, "REPORT", "/caldav/user/calendars/Personal", dev.ID, pass, "application/xml", []byte(query))
+	wbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		t.Fatalf("weekly query %d %s", resp.StatusCode, wbody)
+	}
+	if !bytes.Contains(wbody, []byte("Old standup")) {
+		t.Fatalf("recurring series missing from current-month query %s", wbody)
+	}
+
 	multiget := `<?xml version="1.0" encoding="utf-8"?>
 <C:calendar-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
   <D:prop>

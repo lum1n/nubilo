@@ -135,3 +135,56 @@ func TestEncodeRecurringICSRoundTrip(t *testing.T) {
 		t.Fatal(UIDFromICS(ics))
 	}
 }
+
+func TestEncodeEventICSKeepsLocalTimezone(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Oslo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2020, 1, 6, 0, 30, 0, 0, loc) // Monday 00:30 Oslo = Sunday UTC
+	ics, err := EncodeEventICS(EventSpec{
+		UID: "uid-tz", Summary: "Nightly", TZ: "Europe/Oslo",
+		Start: start, End: start.Add(time.Hour), RRule: "FREQ=WEEKLY;BYDAY=MO",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(ics)
+	if !strings.Contains(s, "TZID=Europe/Oslo") {
+		t.Fatalf("expected TZID: %s", s)
+	}
+	if strings.Contains(s, "DTSTART:20200105T") {
+		t.Fatalf("stored as UTC Sunday: %s", s)
+	}
+	spec, err := ParseEventICS(ics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.TZ != "Europe/Oslo" {
+		t.Fatalf("tz %q", spec.TZ)
+	}
+	if spec.Start.Weekday() != time.Monday {
+		t.Fatalf("weekday %s", spec.Start.Weekday())
+	}
+}
+
+func TestEncodeEventICSAllowsCRLFText(t *testing.T) {
+	start := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	ics, err := EncodeEventICS(EventSpec{
+		UID: "uid-crlf", Summary: "Title\rwith CR", Notes: "line1\r\nline2\rline3",
+		Location: "Office\r\nFloor 2", Start: start, End: start.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := ParseEventICS(ics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.UID != "uid-crlf" {
+		t.Fatalf("uid %q", spec.UID)
+	}
+	if !strings.Contains(spec.Notes, "line1") || !strings.Contains(spec.Notes, "line2") {
+		t.Fatalf("notes %q", spec.Notes)
+	}
+}

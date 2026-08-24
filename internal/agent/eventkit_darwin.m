@@ -257,6 +257,103 @@ static EKEvent *nubilo_ek_occurrence_near(EKEventStore *store, EKCalendar *cal, 
 	return nil;
 }
 
+static EKEvent *nubilo_ek_as_event(EKCalendarItem *item) {
+	if ([item isKindOfClass:[EKEvent class]]) {
+		return (EKEvent *)item;
+	}
+	return nil;
+}
+
+static NSString *nubilo_ek_series_id(NSString *eventID) {
+	NSRange slash = [eventID rangeOfString:@"/"];
+	if (slash.location == NSNotFound || slash.location == 0) {
+		return eventID;
+	}
+	return [eventID substringToIndex:slash.location];
+}
+
+static BOOL nubilo_ek_repeat_denied(NSError *e) {
+	if (!e) {
+		return NO;
+	}
+	NSString *d = e.localizedDescription ?: @"";
+	if ([d localizedCaseInsensitiveContainsString:@"repeat field"]) {
+		return YES;
+	}
+	return [e.domain isEqualToString:EKErrorDomain] && e.code == 28;
+}
+
+static BOOL nubilo_ek_rule_same(EKEvent *ev, EKRecurrenceRule *want) {
+	EKRecurrenceRule *have = nil;
+	if (ev.hasRecurrenceRules && ev.recurrenceRules.count) {
+		have = ev.recurrenceRules[0];
+	}
+	NSString *a = nubilo_ek_rrule(have, ev.allDay) ?: @"";
+	NSString *b = nubilo_ek_rrule(want, ev.allDay) ?: @"";
+	return [a isEqualToString:b];
+}
+
+static void nubilo_ek_apply_body(EKEvent *ev, EKCalendar *cal, NSDictionary *j) {
+	ev.calendar = cal;
+	ev.title = [j[@"title"] isKindOfClass:[NSString class]] ? j[@"title"] : @"";
+	ev.notes = [j[@"notes"] isKindOfClass:[NSString class]] ? j[@"notes"] : @"";
+	ev.location = [j[@"location"] isKindOfClass:[NSString class]] ? j[@"location"] : @"";
+	double start = [j[@"start"] doubleValue];
+	double end = [j[@"end"] doubleValue];
+	ev.startDate = [NSDate dateWithTimeIntervalSince1970:start];
+	ev.endDate = [NSDate dateWithTimeIntervalSince1970:end > start ? end : start + 3600];
+	ev.allDay = [j[@"all_day"] intValue] != 0;
+}
+
+static void nubilo_ek_apply_rule(EKEvent *ev, EKRecurrenceRule *rule) {
+	if (rule) {
+		ev.recurrenceRules = @[ rule ];
+	} else if (ev.hasRecurrenceRules) {
+		ev.recurrenceRules = @[];
+	}
+}
+
+// The object EventKit will let us change RRULE on is the calendar item, not an
+// expanded occurrence from eventWithIdentifier (that returns the first
+// occurrence and save then fails with "The repeat field cannot be changed").
+static EKEvent *nubilo_ek_writable(EKEventStore *store, EKCalendar *cal, NSString *itemID, NSString *uid) {
+	EKEvent *ev = nil;
+	if (uid.length > 0) {
+		for (EKCalendarItem *item in [store calendarItemsWithExternalIdentifier:uid]) {
+			EKEvent *cand = nubilo_ek_as_event(item);
+			if (!cand || cand.isDetached) {
+				continue;
+			}
+			if (cand.calendar && cal && ![cand.calendar.calendarIdentifier isEqualToString:cal.calendarIdentifier]) {
+				continue;
+			}
+			ev = cand;
+			break;
+		}
+	}
+	if (!ev && itemID.length > 0) {
+		ev = nubilo_ek_as_event([store calendarItemWithIdentifier:itemID]);
+	}
+	if (ev.isDetached) {
+		EKEvent *probe = [store eventWithIdentifier:nubilo_ek_series_id(ev.eventIdentifier ?: @"")];
+		if (probe.calendarItemIdentifier.length) {
+			EKEvent *series = nubilo_ek_as_event([store calendarItemWithIdentifier:probe.calendarItemIdentifier]);
+			if (series && !series.isDetached) {
+				ev = series;
+			}
+		}
+	}
+	if (ev.isDetached) {
+		return nil;
+	}
+	return ev;
+}
+
+static NSString *nubilo_ek_tzname(EKEvent *ev) {
+	NSTimeZone *tz = ev.timeZone ?: NSTimeZone.localTimeZone;
+	return tz.name ?: @"";
+}
+
 char *nubilo_ek_list_calendars(char **err) {
 	NSError *e = nil;
 	if (!nubilo_ek_access(&e)) {
@@ -309,6 +406,7 @@ char *nubilo_ek_list_events(const char *calendar_id, double start, double end, c
 	NSDate *to = [NSDate dateWithTimeIntervalSince1970:end];
 	NSPredicate *pred = [store predicateForEventsWithStartDate:from endDate:to calendars:@[ want ]];
 	NSMutableArray *out = [NSMutableArray array];
+	NSMutableDictionary *masters = [NSMutableDictionary dictionary];
 	for (EKEvent *ev in [store eventsMatchingPredicate:pred]) {
 		NSMutableDictionary *d = [NSMutableDictionary dictionary];
 		d[@"id"] = ev.calendarItemIdentifier ?: @"";
@@ -318,24 +416,37 @@ char *nubilo_ek_list_events(const char *calendar_id, double start, double end, c
 		d[@"title"] = ev.title ?: @"";
 		d[@"notes"] = ev.notes ?: @"";
 		d[@"location"] = ev.location ?: @"";
+		d[@"tz"] = nubilo_ek_tzname(ev);
 		d[@"start"] = @([ev.startDate timeIntervalSince1970]);
 		d[@"end"] = @([ev.endDate timeIntervalSince1970]);
 		d[@"all_day"] = @(ev.allDay ? 1 : 0);
 		d[@"detached"] = @(ev.isDetached ? 1 : 0);
 		d[@"occurrence"] = @([ev.occurrenceDate timeIntervalSince1970]);
-		if (ev.hasRecurrenceRules && !ev.isDetached) {
-			EKEvent *master = [store eventWithIdentifier:ev.eventIdentifier];
-			if (!master) {
+		if (!ev.isDetached) {
+			NSString *eid = nubilo_ek_series_id(ev.eventIdentifier ?: @"");
+			EKEvent *master = eid.length ? masters[eid] : nil;
+			if (!master && eid.length) {
+				master = [store eventWithIdentifier:eid];
+				if (master) {
+					masters[eid] = master;
+				}
+			}
+			if (!master && ev.hasRecurrenceRules) {
 				master = ev;
 			}
-			d[@"uid"] = master.calendarItemExternalIdentifier ?: master.calendarItemIdentifier ?: d[@"uid"];
-			d[@"title"] = master.title ?: d[@"title"];
-			d[@"notes"] = master.notes ?: @"";
-			d[@"location"] = master.location ?: @"";
-			d[@"master_start"] = @([master.startDate timeIntervalSince1970]);
-			d[@"master_end"] = @([master.endDate timeIntervalSince1970]);
-			d[@"rrule"] = nubilo_ek_rrule(master.recurrenceRules.firstObject, master.allDay);
-			d[@"all_day"] = @(master.allDay ? 1 : 0);
+			if (master.hasRecurrenceRules) {
+				d[@"id"] = master.calendarItemIdentifier ?: d[@"id"];
+				d[@"event_id"] = master.eventIdentifier ?: eid;
+				d[@"uid"] = master.calendarItemExternalIdentifier ?: master.calendarItemIdentifier ?: d[@"uid"];
+				d[@"title"] = master.title ?: d[@"title"];
+				d[@"notes"] = master.notes ?: @"";
+				d[@"location"] = master.location ?: @"";
+				d[@"tz"] = nubilo_ek_tzname(master);
+				d[@"master_start"] = @([master.startDate timeIntervalSince1970]);
+				d[@"master_end"] = @([master.endDate timeIntervalSince1970]);
+				d[@"rrule"] = nubilo_ek_rrule(master.recurrenceRules.firstObject, master.allDay);
+				d[@"all_day"] = @(master.allDay ? 1 : 0);
+			}
 		}
 		[out addObject:d];
 	}
@@ -381,64 +492,41 @@ char *nubilo_ek_save_event(const char *calendar_id, const char *item_id, const c
 		}
 		return NULL;
 	}
-	EKEvent *ev = nil;
 	NSString *iid = [NSString stringWithUTF8String:item_id ? item_id : ""];
 	NSString *uid = [j[@"uid"] isKindOfClass:[NSString class]] ? j[@"uid"] : @"";
-	if (iid.length > 0) {
-		EKCalendarItem *item = [store calendarItemWithIdentifier:iid];
-		if ([item isKindOfClass:[EKEvent class]]) {
-			ev = (EKEvent *)item;
-		}
-	}
-	if (!ev && uid.length > 0) {
-		for (EKCalendarItem *item in [store calendarItemsWithExternalIdentifier:uid]) {
-			if (![item isKindOfClass:[EKEvent class]]) {
-				continue;
-			}
-			EKEvent *cand = (EKEvent *)item;
-			if (cand.calendar && ![cand.calendar.calendarIdentifier isEqualToString:cid]) {
-				continue;
-			}
-			if (cand.isDetached) {
-				continue;
-			}
-			ev = cand;
-			break;
-		}
-	}
-	if (ev) {
-		EKEvent *master = [store eventWithIdentifier:ev.eventIdentifier];
-		if (master) {
-			ev = master;
-		}
-	} else {
-		ev = [EKEvent eventWithEventStore:store];
-	}
-	ev.calendar = cal;
-	ev.title = [j[@"title"] isKindOfClass:[NSString class]] ? j[@"title"] : @"";
-	ev.notes = [j[@"notes"] isKindOfClass:[NSString class]] ? j[@"notes"] : @"";
-	ev.location = [j[@"location"] isKindOfClass:[NSString class]] ? j[@"location"] : @"";
-	double start = [j[@"start"] doubleValue];
-	double end = [j[@"end"] doubleValue];
-	ev.startDate = [NSDate dateWithTimeIntervalSince1970:start];
-	ev.endDate = [NSDate dateWithTimeIntervalSince1970:end > start ? end : start + 3600];
-	ev.allDay = [j[@"all_day"] intValue] != 0;
-	BOOL hadRules = ev.hasRecurrenceRules;
 	EKRecurrenceRule *rule = nubilo_ek_rule_from_json(j[@"rrule"]);
-	if (rule) {
-		ev.recurrenceRules = @[ rule ];
-	} else {
-		ev.recurrenceRules = @[];
+	BOOL created = NO;
+	EKEvent *ev = nubilo_ek_writable(store, cal, iid, uid);
+	if (!ev) {
+		ev = [EKEvent eventWithEventStore:store];
+		created = YES;
 	}
-	EKSpan span = EKSpanThisEvent;
-	if (iid.length > 0 && (rule || hadRules)) {
-		span = EKSpanFutureEvents;
+	nubilo_ek_apply_body(ev, cal, j);
+	BOOL changeRule = created || !nubilo_ek_rule_same(ev, rule);
+	if (changeRule) {
+		nubilo_ek_apply_rule(ev, rule);
 	}
+	EKSpan span = (rule || ev.hasRecurrenceRules) ? EKSpanFutureEvents : EKSpanThisEvent;
 	if (![store saveEvent:ev span:span commit:YES error:&e]) {
-		if (err) {
-			*err = nubilo_dup(e.localizedDescription ?: @"save failed");
+		if (!nubilo_ek_repeat_denied(e)) {
+			if (err) {
+				*err = nubilo_dup(e.localizedDescription ?: @"save failed");
+			}
+			return NULL;
 		}
-		return NULL;
+		if (!created) {
+			[store removeEvent:ev span:EKSpanFutureEvents commit:YES error:nil];
+		}
+		ev = [EKEvent eventWithEventStore:store];
+		nubilo_ek_apply_body(ev, cal, j);
+		nubilo_ek_apply_rule(ev, rule);
+		e = nil;
+		if (![store saveEvent:ev span:EKSpanThisEvent commit:YES error:&e]) {
+			if (err) {
+				*err = nubilo_dup(e.localizedDescription ?: @"save failed");
+			}
+			return NULL;
+		}
 	}
 	for (NSNumber *ex in j[@"exdates"]) {
 		if (![ex isKindOfClass:[NSNumber class]]) {
@@ -471,9 +559,7 @@ char *nubilo_ek_save_event(const char *calendar_id, const char *item_id, const c
 		occ.allDay = [ex[@"all_day"] intValue] != 0;
 		[store saveEvent:occ span:EKSpanThisEvent commit:YES error:nil];
 	}
-	EKEvent *fresh = [store eventWithIdentifier:ev.eventIdentifier];
-	NSString *outID = fresh.calendarItemIdentifier.length ? fresh.calendarItemIdentifier : ev.calendarItemIdentifier;
-	return nubilo_dup(outID ?: @"");
+	return nubilo_dup(ev.calendarItemIdentifier ?: @"");
 }
 
 int nubilo_ek_delete_event(const char *item_id, char **err) {

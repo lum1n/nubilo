@@ -19,6 +19,7 @@ type EventSpec struct {
 	Start        time.Time
 	End          time.Time
 	AllDay       bool
+	TZ           string // IANA name; empty means UTC
 	RRule        string
 	ExDates      []time.Time
 	RecurrenceID time.Time
@@ -91,6 +92,9 @@ func EncodeEventICS(spec EventSpec) ([]byte, error) {
 	cal.Children = append(cal.Children, encodeVEVENT(spec, false).Component)
 	for _, ex := range spec.Exceptions {
 		ex.UID = spec.UID
+		if ex.TZ == "" {
+			ex.TZ = spec.TZ
+		}
 		cal.Children = append(cal.Children, encodeVEVENT(ex, true).Component)
 	}
 	var buf bytes.Buffer
@@ -102,11 +106,11 @@ func EncodeEventICS(spec EventSpec) ([]byte, error) {
 
 func encodeVEVENT(spec EventSpec, isOverride bool) *ical.Event {
 	ev := ical.NewEvent()
-	if spec.UID != "" {
-		ev.Props.SetText(ical.PropUID, spec.UID)
+	if uid := icsUID(spec.UID); uid != "" {
+		ev.Props.SetText(ical.PropUID, uid)
 	}
 	ev.Props.SetDateTime(ical.PropDateTimeStamp, time.Now().UTC())
-	setEventTime(ev.Props, ical.PropDateTimeStart, spec.Start, spec.AllDay)
+	setEventTime(ev.Props, ical.PropDateTimeStart, spec.Start, spec)
 	if !spec.End.IsZero() {
 		end := spec.End
 		if spec.AllDay {
@@ -116,19 +120,19 @@ func encodeVEVENT(spec EventSpec, isOverride bool) *ical.Event {
 				end = start.AddDate(0, 0, 1)
 			}
 		}
-		setEventTime(ev.Props, ical.PropDateTimeEnd, end, spec.AllDay)
+		setEventTime(ev.Props, ical.PropDateTimeEnd, end, spec)
 	}
-	if spec.Summary != "" {
-		ev.Props.SetText(ical.PropSummary, spec.Summary)
+	if s := icsText(spec.Summary); s != "" {
+		ev.Props.SetText(ical.PropSummary, s)
 	}
-	if spec.Notes != "" {
-		ev.Props.SetText(ical.PropDescription, spec.Notes)
+	if s := icsText(spec.Notes); s != "" {
+		ev.Props.SetText(ical.PropDescription, s)
 	}
-	if spec.Location != "" {
-		ev.Props.SetText(ical.PropLocation, spec.Location)
+	if s := icsText(spec.Location); s != "" {
+		ev.Props.SetText(ical.PropLocation, s)
 	}
 	if isOverride && !spec.RecurrenceID.IsZero() {
-		setEventTime(ev.Props, ical.PropRecurrenceID, spec.RecurrenceID, spec.AllDay)
+		setEventTime(ev.Props, ical.PropRecurrenceID, spec.RecurrenceID, spec)
 	}
 	if !isOverride && spec.RRule != "" {
 		if opt, err := rrule.StrToROption(spec.RRule); err == nil && opt != nil {
@@ -141,7 +145,7 @@ func encodeVEVENT(spec EventSpec, isOverride bool) *ical.Event {
 			if spec.AllDay {
 				p.SetDate(dateOnly(t))
 			} else {
-				p.SetDateTime(t.UTC())
+				p.SetDateTime(t.In(locationForTZ(spec.TZ)))
 			}
 			ev.Props.Add(p)
 		}
@@ -149,17 +153,42 @@ func encodeVEVENT(spec EventSpec, isOverride bool) *ical.Event {
 	return ev
 }
 
-func setEventTime(props ical.Props, name string, t time.Time, allDay bool) {
-	if allDay {
+func setEventTime(props ical.Props, name string, t time.Time, spec EventSpec) {
+	if spec.AllDay {
 		props.SetDate(name, dateOnly(t))
 		return
 	}
-	props.SetDateTime(name, t.UTC())
+	props.SetDateTime(name, t.In(locationForTZ(spec.TZ)))
+}
+
+func locationForTZ(tz string) *time.Location {
+	tz = strings.TrimSpace(tz)
+	if tz == "" || strings.EqualFold(tz, "UTC") || strings.EqualFold(tz, "GMT") {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 func dateOnly(t time.Time) time.Time {
 	l := t.In(time.Local)
 	return time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// go-ical SetText escapes LF but leaves CR in the value, and the encoder then
+// rejects the property. EventKit notes often contain CR or CRLF.
+func icsText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
+
+func icsUID(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	return strings.TrimSpace(s)
 }
 
 func ParseEventICS(ics []byte) (EventSpec, error) {
@@ -194,8 +223,12 @@ func specFromComp(c *ical.Component) EventSpec {
 	spec.Summary, _ = c.Props.Text(ical.PropSummary)
 	spec.Notes, _ = c.Props.Text(ical.PropDescription)
 	spec.Location, _ = c.Props.Text(ical.PropLocation)
-	if p := c.Props.Get(ical.PropDateTimeStart); p != nil && p.ValueType() == ical.ValueDate {
-		spec.AllDay = true
+	if p := c.Props.Get(ical.PropDateTimeStart); p != nil {
+		if p.ValueType() == ical.ValueDate {
+			spec.AllDay = true
+		} else {
+			spec.TZ = p.Params.Get(ical.PropTimezoneID)
+		}
 	}
 	if t, err := ev.DateTimeStart(time.Local); err == nil {
 		spec.Start = t
