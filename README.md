@@ -1,0 +1,134 @@
+# Nubilo
+
+A single-binary personal cloud: sync engine first, then CalDAV, CardDAV, WebDAV, and a macOS agent as adapters.
+
+This repository is in **Phase 8**. Foundation through photos are implemented, plus hardening: threat-model review, fuzz seeds, storage corruption tests, backup drills, blob/tombstone GC, and a SQLite-at-rest encryption evaluation.
+
+Read, in order:
+
+1. [ARCHITECTURE.md](ARCHITECTURE.md)
+2. [SECURITY.md](SECURITY.md)
+3. [SYNC.md](SYNC.md)
+4. [IMPLEMENTATION.md](IMPLEMENTATION.md)
+
+## Build
+
+```bash
+go build -o nubilo ./cmd/nubilo
+```
+
+## Quick start (local)
+
+```bash
+./nubilo init --data-dir ~/.nubilo
+./nubilo server --data-dir ~/.nubilo
+# another terminal
+./nubilo pair --data-dir ~/.nubilo
+./nubilo pair --server https://127.0.0.1:8443 --code XXXXX-XXXXX --name "this machine" --insecure
+./nubilo devices password --data-dir ~/.nubilo --name "iPhone Files" --scope webdav
+./nubilo devices password --data-dir ~/.nubilo --name "iPhone Calendar" --scope caldav
+./nubilo devices password --data-dir ~/.nubilo --name "iPhone Contacts" --scope carddav
+./nubilo verify --data-dir ~/.nubilo
+./nubilo gc --data-dir ~/.nubilo            # dry-run
+./nubilo gc --data-dir ~/.nubilo --apply    # unreferenced blobs + eligible tombstones
+```
+
+On a Mac, pair a **signing** agent (not a DAV password) into a separate data directory:
+
+```bash
+# server (Linux)
+./nubilo pair --data-dir ~/.nubilo --role agent
+# Mac
+./nubilo pair --data-dir ~/.nubilo-agent --server https://<host>:8443 --code XXXXX-XXXXX --name "Studio Mac"
+./nubilo agent --data-dir ~/.nubilo-agent calendars
+./nubilo agent --data-dir ~/.nubilo-agent select <eventkit-id>
+./nubilo agent --data-dir ~/.nubilo-agent contacts on
+./nubilo agent --data-dir ~/.nubilo-agent
+```
+
+Mount WebDAV at `http://127.0.0.1:8443/dav/` using the printed username (device id) and one-time password. CalDAV is at `http://127.0.0.1:8443/caldav/`. CardDAV is at `http://127.0.0.1:8443/carddav/`. On a non-loopback bind, TLS is required; use `https://`.
+
+`--insecure` skips TLS verification and is only valid for loopback.
+
+### iPhone Calendar
+
+Settings → Calendar → Accounts → Add Account → Other → Add CalDAV Account:
+
+- Server: `https://<tailscale-ip>:8443` (not `127.0.0.1`; the phone cannot reach loopback on the server)
+- Username: the device id printed by `nubilo devices password --scope caldav`
+- Password: the one-time app password
+- Path / discovery: `/.well-known/caldav` redirects to `/caldav/user/`
+
+A WebDAV-only password cannot access calendars, and a CalDAV-only password cannot access files.
+
+### iPhone Contacts
+
+Settings → Contacts → Accounts → Add Account → Other → Add CardDAV Account:
+
+- Server: `https://<tailscale-ip>:8443` (not `127.0.0.1`)
+- Username: the device id printed by `nubilo devices password --scope carddav`
+- Password: the one-time app password
+- Path / discovery: `/.well-known/carddav` redirects to `/carddav/user/`
+
+Protocol scopes are independent: a CalDAV password cannot read contacts, and a CardDAV password cannot read calendars or files.
+
+### macOS agent
+
+The agent is a signing device over `/sync/v1` (Ed25519), not an app password. Pair with `--role agent` on the server, then complete pairing on the Mac into the **Mac** data dir (`device.json` / `device.key`). Linux `nubilo agent` refuses to start.
+
+macOS will prompt for Calendar, Contacts, and Photos access (TCC). Grant it to Terminal or the `nubilo` binary. The agent only reads EventKit/Contacts/PhotoKit data the OS already granted; corporate credentials never leave the Mac.
+
+Sync uses a time window (default ±730 days). Events outside that window are not treated as deletions. A failed EventKit, Contacts, or PhotoKit listing never pushes deletes. Change detection is periodic (default 120s).
+
+```bash
+./nubilo agent --data-dir ~/.nubilo-agent photos on
+./nubilo agent --data-dir ~/.nubilo-agent albums
+./nubilo agent --data-dir ~/.nubilo-agent photos source all   # or albums|dates
+./nubilo agent --data-dir ~/.nubilo-agent photos select <album-id>
+```
+
+### Photos HTTP API
+
+Signing devices and app passwords with `--scope photos` can use:
+
+- `GET /api/v1/photos`
+- `POST /api/v1/photos?name=shot.jpg` (raw image body)
+- `GET /api/v1/photos/{id}`
+- `GET /api/v1/photos/{id}/original|preview|thumb`
+
+Originals are stored byte-for-byte. Preview and thumbnail are derived JPEGs. GPS stays in the encrypted original; it is not written to SQLite metadata. `photos.strip_gps_from_derivatives` (default true) keeps GPS out of derivatives.
+
+## Commands
+
+```text
+nubilo init
+nubilo server
+nubilo agent
+nubilo agent calendars
+nubilo agent select ID
+nubilo agent unselect ID
+nubilo agent contacts on|off
+nubilo agent photos on|off
+nubilo agent photos source all|albums|dates
+nubilo agent albums
+nubilo status
+nubilo pair
+nubilo devices
+nubilo devices revoke <id>
+nubilo devices rename <id>
+nubilo devices password --name NAME [--scope webdav|caldav|carddav|photos|all]
+nubilo files
+nubilo calendars
+nubilo contacts
+nubilo photos
+nubilo verify
+nubilo gc
+nubilo backup
+nubilo restore
+```
+
+`--json` is accepted on list/status commands for machine-readable output.
+
+## Security
+
+Tailscale is a network transport, not the security model. Every client has its own device identity. See [SECURITY.md](SECURITY.md).

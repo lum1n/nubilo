@@ -1,0 +1,9 @@
+/nubilo
+/nubilo.exe
+*.db
+*.db-wal
+*.db-shm
+/dist/
+.nubilo/
+*.test
+coverage.out
