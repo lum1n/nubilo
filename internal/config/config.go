@@ -36,6 +36,7 @@ type PhotosConfig struct {
 type TLSConfig struct {
 	Cert                  string `json:"cert"`
 	Key                   string `json:"key"`
+	Auto                  bool   `json:"auto"`
 	AllowInsecureLoopback bool   `json:"allow_insecure_loopback"`
 }
 
@@ -67,6 +68,7 @@ func Defaults(dataDir string) Config {
 		DataDir: dataDir,
 		Listen:  DefaultListen,
 		TLS: TLSConfig{
+			Auto:                  true,
 			AllowInsecureLoopback: true,
 		},
 		Log: LogConfig{
@@ -150,8 +152,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: listen: %w", err)
 	}
 	loopback := isLoopback(host)
-	if !loopback && (c.TLS.Cert == "" || c.TLS.Key == "") {
-		return fmt.Errorf("config: TLS cert and key are required for non-loopback listen %q", c.Listen)
+	if !loopback && !c.TLS.Auto && (c.TLS.Cert == "" || c.TLS.Key == "") {
+		return fmt.Errorf("config: TLS cert and key are required for non-loopback listen %q (or leave tls.auto=true)", c.Listen)
 	}
 	if c.Sync.MaxBatch <= 0 {
 		return fmt.Errorf("config: sync.max_batch must be positive")

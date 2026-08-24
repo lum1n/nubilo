@@ -77,7 +77,7 @@ iPhone / Mac / other clients
 
 Tailscale is the expected *network* path. It is not an authentication system, not an authorization system, and not encryption-at-rest. See [SECURITY.md](SECURITY.md).
 
-The server default listen address is loopback. Binding beyond loopback requires an explicit config change and TLS.
+The server default listen address is loopback. Binding beyond loopback is `init --listen 0.0.0.0:8443` (or editing `config.json`). TLS certificates are created automatically (`tls.auto`); operators do not generate them by hand.
 
 ## Core subsystems
 

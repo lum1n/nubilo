@@ -14,6 +14,7 @@ type pairingFile struct {
 	Server          string `json:"server"`
 	ServerPublicKey string `json:"server_public_key"`
 	Name            string `json:"name"`
+	ServerTLSCert   string `json:"server_tls_cert,omitempty"`
 }
 
 func LoadPairedClient(dataDir string, insecure bool) (*protocol.Client, error) {
@@ -41,5 +42,8 @@ func LoadPairedClient(dataDir string, insecure bool) (*protocol.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return protocol.NewClient(f.Server, f.DeviceID, priv, insecure), nil
+	return protocol.NewClient(f.Server, f.DeviceID, priv, protocol.TLS{
+		Insecure: insecure,
+		PinPEM:   f.ServerTLSCert,
+	}), nil
 }

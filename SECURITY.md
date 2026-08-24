@@ -214,9 +214,11 @@ Deny by default. A revoked device fails authentication, so authorization is neve
 
 ### Transport
 
-TLS 1.2+ (stdlib defaults, HTTP/1.1 and HTTP/2) is required for any non-loopback listener. Loopback may disable TLS only via `tls.allow_insecure_loopback=true` (the init default for `127.0.0.1`). There is no config flag that disables TLS on `0.0.0.0`.
+TLS 1.2+ is required for any non-loopback listener. `tls.auto` (default true) writes a self-signed certificate at init/server start covering localhost and local interface IPs. Pairing pins that leaf (TOFU) in `device.json`; later agent requests require the same cert. Public CA or Tailscale Serve certificates are verified against system roots and are not pinned.
 
-Tailscale does not replace this. If a TLS terminator exists in front, the server should still bind loopback and treat the terminator as part of the host trust domain.
+Loopback may disable TLS only if there is no certificate on disk and `tls.allow_insecure_loopback=true`. There is no config flag that disables TLS on `0.0.0.0`.
+
+Tailscale does not replace this. If a TLS terminator exists in front (Tailscale Serve, Caddy, …), the server should still bind loopback and treat the terminator as part of the host trust domain. That is the path Apple CalDAV/CardDAV clients should use, because they will not honor Nubilo's pairing pin.
 
 ### At rest
 

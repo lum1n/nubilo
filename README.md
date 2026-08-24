@@ -20,23 +20,22 @@ go build -o nubilo ./cmd/nubilo
 ## Quick start (local)
 
 ```bash
-./nubilo init --data-dir ~/.nubilo
+./nubilo init --data-dir ~/.nubilo --listen 0.0.0.0:8443
 ./nubilo server --data-dir ~/.nubilo
 # another terminal
-./nubilo pair --data-dir ~/.nubilo
-./nubilo pair --server https://127.0.0.1:8443 --code XXXXX-XXXXX --name "this machine" --insecure
+./nubilo pair --data-dir ~/.nubilo --role agent
+# Mac
+./nubilo pair --data-dir ~/.nubilo-agent --server https://<lan-or-tailscale-ip>:8443 --code XXXXX-XXXXX --name "Eika Mac"
 ./nubilo devices password --data-dir ~/.nubilo --name "iPhone Files" --scope webdav
 ./nubilo devices password --data-dir ~/.nubilo --name "iPhone Calendar" --scope caldav
 ./nubilo devices password --data-dir ~/.nubilo --name "iPhone Contacts" --scope carddav
 ./nubilo verify --data-dir ~/.nubilo
-./nubilo gc --data-dir ~/.nubilo            # dry-run
-./nubilo gc --data-dir ~/.nubilo --apply    # unreferenced blobs + eligible tombstones
 ```
 
 On a Mac, pair a **signing** agent (not a DAV password) into a separate data directory:
 
 ```bash
-# server (Linux)
+# server (Linux) — already running
 ./nubilo pair --data-dir ~/.nubilo --role agent
 # Mac
 ./nubilo pair --data-dir ~/.nubilo-agent --server https://<host>:8443 --code XXXXX-XXXXX --name "Studio Mac"
@@ -46,9 +45,9 @@ On a Mac, pair a **signing** agent (not a DAV password) into a separate data dir
 ./nubilo agent --data-dir ~/.nubilo-agent
 ```
 
-Mount WebDAV at `http://127.0.0.1:8443/dav/` using the printed username (device id) and one-time password. CalDAV is at `http://127.0.0.1:8443/caldav/`. CardDAV is at `http://127.0.0.1:8443/carddav/`. On a non-loopback bind, TLS is required; use `https://`.
+`init` writes a self-signed certificate covering localhost and local IPs. Pairing **pins** that cert (TOFU). You do not run `nubilo tls` and you do not pass `--insecure` on a normal setup. `--insecure` remains a debug escape hatch. `nubilo tls` only regenerates the cert (new IPs, expiry).
 
-`--insecure` skips TLS verification and is only valid for loopback.
+Mount WebDAV at `https://<host>:8443/dav/` using the printed username (device id) and one-time password. CalDAV is at `/caldav/`. CardDAV is at `/carddav/`. iPhone Calendar/Contacts need a certificate Apple trusts: put [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) (or another TLS terminator) in front and keep Nubilo on loopback, or install `tls.crt` on the phone. The Mac agent does not need that; it uses the pairing pin.
 
 ### iPhone Calendar
 

@@ -2,6 +2,8 @@ package crypto_test
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	ncrypto "nubilo/internal/crypto"
@@ -75,5 +77,18 @@ func TestEd25519(t *testing.T) {
 	}
 	if ncrypto.VerifyEd25519(pub, []byte("other"), sig) {
 		t.Fatal("should fail")
+	}
+}
+
+func TestGenerateTLS(t *testing.T) {
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "tls.crt")
+	key := filepath.Join(dir, "tls.key")
+	if err := ncrypto.GenerateTLS(cert, key, []string{"127.0.0.1", "localhost", "192.168.1.180"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(key)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("key mode %v %v", st, err)
 	}
 }

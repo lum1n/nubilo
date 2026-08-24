@@ -14,6 +14,9 @@ func TestInitStatusVerify(t *testing.T) {
 	if code := cli.Main([]string{"init", "--data-dir", dir, "--listen", "127.0.0.1:18443"}); code != 0 {
 		t.Fatalf("init %d", code)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "tls.crt")); err != nil {
+		t.Fatal("init should auto-write tls.crt")
+	}
 	if _, err := os.Stat(filepath.Join(dir, "master.key")); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +40,12 @@ func TestInitStatusVerify(t *testing.T) {
 	}
 	if code := cli.Main([]string{"gc", "--data-dir", dir}); code != 0 {
 		t.Fatalf("gc %d", code)
+	}
+	if code := cli.Main([]string{"tls", "--data-dir", dir, "--listen", "127.0.0.1:18443"}); code != 0 {
+		t.Fatalf("tls %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tls.crt")); err != nil {
+		t.Fatal(err)
 	}
 	if runtime.GOOS != "darwin" {
 		if code := cli.Main([]string{"agent"}); code != 2 {

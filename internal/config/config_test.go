@@ -11,11 +11,20 @@ import (
 func TestNonLoopbackRequiresTLS(t *testing.T) {
 	c := config.Defaults(t.TempDir())
 	c.Listen = "0.0.0.0:8443"
+	c.TLS.Auto = false
 	if err := c.Validate(); err == nil {
-		t.Fatal("expected TLS required")
+		t.Fatal("expected TLS required when auto is off")
 	}
 	c.TLS.Cert = "c.pem"
 	c.TLS.Key = "k.pem"
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNonLoopbackAutoOK(t *testing.T) {
+	c := config.Defaults(t.TempDir())
+	c.Listen = "0.0.0.0:8443"
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}

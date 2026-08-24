@@ -210,7 +210,7 @@ func startHarness(t *testing.T) *harness {
 	t.Cleanup(func() { mp.Close() })
 	return &harness{
 		ts: ts, eng: eng, st: st, dev: dev,
-		client: protocol.NewClient(ts.URL, dev.ID, devPriv, false),
+		client: protocol.NewClient(ts.URL, dev.ID, devPriv, protocol.TLS{}),
 		m:      mp,
 	}
 }

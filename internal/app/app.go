@@ -73,6 +73,9 @@ func Init(dataDir string, listen string) error {
 	if listen != "" {
 		cfg.Listen = listen
 	}
+	if _, err := EnsureAutoTLS(&cfg); err != nil {
+		return err
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -114,8 +117,16 @@ func Open(dataDir string) (*Runtime, error) {
 		cfg = config.Defaults(dataDir)
 	}
 	cfg.DataDir = dataDir
+	wasEmpty := cfg.TLS.Cert == "" || cfg.TLS.Key == ""
+	created, err := EnsureAutoTLS(&cfg)
+	if err != nil {
+		return nil, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+	if created || (cfg.TLS.Auto && wasEmpty) {
+		_ = cfg.Save(p.Config)
 	}
 	master, err := ncrypto.ReadKeyFile(p.MasterKey, ncrypto.MasterKeySize)
 	if err != nil {
@@ -189,6 +200,32 @@ func Open(dataDir string) (*Runtime, error) {
 
 func (r *Runtime) Close() error {
 	return r.Store.Close()
+}
+
+// EnsureAutoTLS writes a self-signed certificate covering localhost and
+// local interface IPs when tls.auto is true and the files are missing.
+func EnsureAutoTLS(cfg *config.Config) (created bool, err error) {
+	if cfg == nil || !cfg.TLS.Auto {
+		return false, nil
+	}
+	if cfg.DataDir == "" {
+		return false, fmt.Errorf("tls: data_dir is required")
+	}
+	if cfg.TLS.Cert == "" {
+		cfg.TLS.Cert = filepath.Join(cfg.DataDir, "tls.crt")
+	}
+	if cfg.TLS.Key == "" {
+		cfg.TLS.Key = filepath.Join(cfg.DataDir, "tls.key")
+	}
+	_, err1 := os.Stat(cfg.TLS.Cert)
+	_, err2 := os.Stat(cfg.TLS.Key)
+	if err1 == nil && err2 == nil {
+		return false, nil
+	}
+	if err := ncrypto.GenerateTLS(cfg.TLS.Cert, cfg.TLS.Key, ncrypto.LocalListenHosts(), 0); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func ResolveDataDir(flag string) (string, error) {

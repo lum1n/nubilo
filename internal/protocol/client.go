@@ -3,7 +3,6 @@ package protocol
 import (
 	"bytes"
 	"crypto/ed25519"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -26,19 +25,13 @@ type Client struct {
 	HTTP     *http.Client
 }
 
-func NewClient(base, deviceID string, priv ed25519.PrivateKey, insecure bool) *Client {
-	c := &Client{
+func NewClient(base, deviceID string, priv ed25519.PrivateKey, tlsPol TLS) *Client {
+	return &Client{
 		Base:     strings.TrimRight(base, "/"),
 		DeviceID: deviceID,
 		Priv:     priv,
-		HTTP:     &http.Client{Timeout: 60 * time.Second},
+		HTTP:     HTTPClient(60*time.Second, tlsPol),
 	}
-	if insecure {
-		c.HTTP.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
-	return c
 }
 
 func (c *Client) Hello(cursor int64, restoreHint bool) (syncengine.HelloResult, error) {

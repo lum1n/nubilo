@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -25,6 +26,7 @@ import (
 	"nubilo/internal/identity"
 	"nubilo/internal/integrity"
 	"nubilo/internal/photos"
+	"nubilo/internal/protocol"
 	"nubilo/internal/server"
 )
 
@@ -58,6 +60,8 @@ func Main(args []string) int {
 		return runStatus(g)
 	case "pair":
 		return runPair(g, rest)
+	case "tls":
+		return runTLS(g, rest)
 	case "devices":
 		return runDevices(g, rest)
 	case "verify":
@@ -141,6 +145,7 @@ Usage:
   nubilo status [--json]
   nubilo pair [--wait] [--role agent|client]
   nubilo pair --server URL --code XXXXX-XXXXX --name NAME [--insecure]
+  nubilo tls [--listen ADDR] [--hosts HOSTS]   # optional: regenerate auto cert
   nubilo devices [list]
   nubilo devices revoke <id>
   nubilo devices rename <id> <name>
@@ -177,6 +182,54 @@ func runInit(g global, args []string) int {
 		return fatal(err)
 	}
 	fmt.Printf("initialized %s\n", dir)
+	if *listen == config.DefaultListen {
+		fmt.Fprintln(os.Stderr, "listening on loopback only; for a Mac/phone set listen to 0.0.0.0:8443 in config.json (TLS is created automatically)")
+	}
+	return 0
+}
+
+func runTLS(g global, args []string) int {
+	fs := flag.NewFlagSet("tls", flag.ContinueOnError)
+	listen := fs.String("listen", "0.0.0.0:8443", "listen address written to config.json")
+	extra := fs.String("hosts", "", "comma-separated extra SAN DNS names or IPs")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	dir, err := app.ResolveDataDir(g.dataDir)
+	if err != nil {
+		return fatal(err)
+	}
+	hosts := ncrypto.LocalListenHosts()
+	if *extra != "" {
+		for _, h := range strings.Split(*extra, ",") {
+			h = strings.TrimSpace(h)
+			if h != "" {
+				hosts = append(hosts, h)
+			}
+		}
+	}
+	p := config.Paths(dir)
+	cert := filepath.Join(dir, "tls.crt")
+	key := filepath.Join(dir, "tls.key")
+	if err := ncrypto.GenerateTLS(cert, key, hosts, 0); err != nil {
+		return fatal(err)
+	}
+	cfg, err := config.Load(p.Config)
+	if err != nil {
+		return fatal(err)
+	}
+	cfg.DataDir = dir
+	cfg.Listen = *listen
+	cfg.TLS.Cert = cert
+	cfg.TLS.Key = key
+	if err := cfg.Validate(); err != nil {
+		return fatal(err)
+	}
+	if err := cfg.Save(p.Config); err != nil {
+		return fatal(err)
+	}
+	fmt.Printf("wrote %s\nwrote %s\nlisten %s\ncertificate SAN: %s\nrestart the server to apply: nubilo server --data-dir %s\n",
+		cert, key, *listen, strings.Join(hosts, ", "), dir)
 	return 0
 }
 
@@ -215,7 +268,7 @@ func runAgent(g global, args []string) int {
 		return 2
 	}
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
-	insecure := fs.Bool("insecure", false, "skip TLS verify (loopback only)")
+	insecure := fs.Bool("insecure", false, "skip TLS certificate verification (self-signed)")
 	interval := fs.Int("interval", 0, "sync interval seconds (overrides agent.json for this run)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -424,10 +477,7 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 		return fatal(err)
 	}
 	if insecure {
-		if !strings.Contains(client.Base, "127.0.0.1") && !strings.Contains(client.Base, "localhost") {
-			fmt.Fprintln(os.Stderr, "--insecure is only allowed for loopback servers")
-			return 2
-		}
+		fmt.Fprintln(os.Stderr, "warning: TLS certificate verification disabled (--insecure)")
 	}
 	mp, err := agent.OpenMap(paths.AgentDB)
 	if err != nil {
@@ -498,7 +548,7 @@ func runPair(g global, args []string) int {
 	name := fs.String("name", "", "device name")
 	role := fs.String("role", "client", "role for server-issued pairing")
 	wait := fs.Bool("wait", true, "wait for client to complete (server mode)")
-	insecure := fs.Bool("insecure", false, "skip TLS verify (loopback only)")
+	insecure := fs.Bool("insecure", false, "skip TLS certificate verification (self-signed)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -555,14 +605,19 @@ func runPairClient(g global, serverURL, code, name string, insecure bool) int {
 	if err != nil {
 		return fatal(err)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	if insecure {
-		if !strings.Contains(serverURL, "127.0.0.1") && !strings.Contains(serverURL, "localhost") {
-			fmt.Fprintln(os.Stderr, "--insecure is only allowed for loopback servers")
-			return 2
-		}
-		// http:// on loopback is the init default
+	var pinned string
+	pol := protocol.TLS{
+		Insecure: insecure,
+		OnPeer: func(pem string, systemTrusted bool) {
+			if !systemTrusted && pem != "" {
+				pinned = pem
+			}
+		},
 	}
+	if insecure {
+		fmt.Fprintln(os.Stderr, "warning: TLS certificate verification disabled (--insecure)")
+	}
+	client := protocol.HTTPClient(30*time.Second, pol)
 	beginBody, _ := json.Marshal(map[string]string{
 		"code":       code,
 		"name":       name,
@@ -613,16 +668,27 @@ func runPairClient(g global, serverURL, code, name string, insecure bool) int {
 	if err := ncrypto.WriteKeyFile(p.DeviceKey, ncrypto.PrivateKeyBytes(priv)); err != nil {
 		return fatal(err)
 	}
-	dj, _ := json.MarshalIndent(map[string]string{
-		"device_id":         cr.DeviceID,
-		"server":            serverURL,
-		"server_public_key": cr.ServerPublicKey,
-		"name":              name,
-	}, "", "  ")
+	out := struct {
+		DeviceID        string `json:"device_id"`
+		Server          string `json:"server"`
+		ServerPublicKey string `json:"server_public_key"`
+		Name            string `json:"name"`
+		ServerTLSCert   string `json:"server_tls_cert,omitempty"`
+	}{
+		DeviceID: cr.DeviceID, Server: serverURL, ServerPublicKey: cr.ServerPublicKey,
+		Name: name, ServerTLSCert: pinned,
+	}
+	dj, _ := json.MarshalIndent(out, "", "  ")
 	if err := os.WriteFile(p.DeviceJSON, append(dj, '\n'), 0o600); err != nil {
 		return fatal(err)
 	}
 	fmt.Printf("paired as %s\n", cr.DeviceID)
+	if pinned != "" {
+		cert, err := ncrypto.ParseCertPEM(pinned)
+		if err == nil {
+			fmt.Printf("pinned TLS cert sha256:%s\n", ncrypto.CertFingerprint(cert))
+		}
+	}
 	return 0
 }
 
