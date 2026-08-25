@@ -46,6 +46,7 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 - Mac agent configuration UI: `nubilo agent ui` (loopback, same look as `nubilo ui`) for sync selection and setup; CLI selection remains.
 - Still out: iPhone Photos.app / share sheet / Camera Upload; proprietary edit recipes beyond original resource bytes.
 - Identical plaintext bytes dedup to one blob. Default 64 MiB cap.
+- Blob PUT/GET use a 15m client timeout (JSON sync stays at 60s). Oversized bodies return 413; truncated uploads no longer trip the auth fail → 429 cascade.
 
 ## Contacts
 

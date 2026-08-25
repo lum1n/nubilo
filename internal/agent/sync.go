@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -442,7 +443,7 @@ func (a *Agent) pushEvent(collectionID string, ev LocalEvent) error {
 	if err == nil && row.ContentHash == hash {
 		return nil
 	}
-	if err := a.Client.PutBlob(hash, ev.ICS); err != nil {
+	if err := a.putBlob(hash, ev.ICS); err != nil {
 		return err
 	}
 	uid := ev.UID
@@ -494,7 +495,7 @@ func (a *Agent) pushTodo(collectionID string, td LocalTodo) error {
 	if err == nil && row.ContentHash == hash {
 		return nil
 	}
-	if err := a.Client.PutBlob(hash, td.ICS); err != nil {
+	if err := a.putBlob(hash, td.ICS); err != nil {
 		return err
 	}
 	uid := td.UID
@@ -546,7 +547,7 @@ func (a *Agent) pushContact(collectionID string, c LocalContact) error {
 	if err == nil && row.ContentHash == hash {
 		return nil
 	}
-	if err := a.Client.PutBlob(hash, c.VCard); err != nil {
+	if err := a.putBlob(hash, c.VCard); err != nil {
 		return err
 	}
 	uid := c.UID
@@ -615,7 +616,7 @@ func (a *Agent) pushPhotos(ctx context.Context) error {
 		seen[p.ID] = true
 		if err := a.pushPhoto(col.ID, p); err != nil {
 			fail++
-			a.Log.Warn("push_photo", "err", err.Error(), "local", p.ID)
+			a.Log.Warn("push_photo", "err", err.Error(), "local", p.ID, "kind", p.Kind, "filename", p.Filename)
 		} else {
 			ok++
 		}
@@ -766,7 +767,7 @@ func (a *Agent) pushFile(collectionID string, f LocalFile) error {
 	if err == nil && row.ContentHash == hash && row.CollectionID == collectionID {
 		return nil
 	}
-	if err := a.Client.PutBlob(hash, f.Data); err != nil {
+	if err := a.putBlob(hash, f.Data); err != nil {
 		return err
 	}
 	mime := http.DetectContentType(f.Data)
@@ -800,6 +801,13 @@ func (a *Agent) pushFile(collectionID string, f LocalFile) error {
 		LocalID: f.AbsPath, Kind: kindFile, ObjectID: in.ObjectID, CollectionID: collectionID,
 		ContentHash: hash, Revision: res[0].Revision,
 	})
+}
+
+func (a *Agent) putBlob(hash string, payload []byte) error {
+	if err := a.Client.PutBlob(hash, payload); err != nil {
+		return fmt.Errorf("%w (bytes=%d)", err, len(payload))
+	}
+	return nil
 }
 
 func (a *Agent) pushPhoto(collectionID string, p LocalPhoto) error {
@@ -848,7 +856,7 @@ func (a *Agent) pushPhoto(collectionID string, p LocalPhoto) error {
 		}
 		if len(live) > 0 {
 			lh := ncrypto.SHA256Hex(live)
-			if err := a.Client.PutBlob(lh, live); err != nil {
+			if err := a.putBlob(lh, live); err != nil {
 				return err
 			}
 			prep.Meta.LivePairHash = lh
@@ -857,19 +865,19 @@ func (a *Agent) pushPhoto(collectionID string, p LocalPhoto) error {
 	}
 	origHash := ncrypto.SHA256Hex(prep.Original)
 	prep.Meta.Checksum = origHash
-	if err := a.Client.PutBlob(origHash, prep.Original); err != nil {
+	if err := a.putBlob(origHash, prep.Original); err != nil {
 		return err
 	}
 	if len(prep.Preview) > 0 {
 		ph := ncrypto.SHA256Hex(prep.Preview)
-		if err := a.Client.PutBlob(ph, prep.Preview); err != nil {
+		if err := a.putBlob(ph, prep.Preview); err != nil {
 			return err
 		}
 		prep.Meta.PreviewHash = ph
 	}
 	if len(prep.Thumb) > 0 {
 		th := ncrypto.SHA256Hex(prep.Thumb)
-		if err := a.Client.PutBlob(th, prep.Thumb); err != nil {
+		if err := a.putBlob(th, prep.Thumb); err != nil {
 			return err
 		}
 		prep.Meta.ThumbHash = th

@@ -30,6 +30,7 @@ var (
 	ErrNoKey        = errors.New("auth: device has no public key")
 	ErrAdminToken   = errors.New("auth: invalid admin token")
 	ErrBodyTooLarge = errors.New("auth: request body too large")
+	ErrBodyRead     = errors.New("auth: incomplete request body")
 )
 
 const scheme = "Nubilo-Sig"
@@ -216,13 +217,31 @@ func (a *Authenticator) readBody(r *http.Request) ([]byte, error) {
 	}
 	b, err := io.ReadAll(io.LimitReader(r.Body, max+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrBodyRead, err)
 	}
 	if int64(len(b)) > max {
 		return nil, ErrBodyTooLarge
 	}
 	r.Body = io.NopCloser(bytes.NewReader(b))
 	return b, nil
+}
+
+// CountsTowardFailLimit reports whether a failed auth should burn the per-IP
+// attempt budget (signature abuse). Size / transport errors should not.
+func CountsTowardFailLimit(err error) bool {
+	if err == nil ||
+		errors.Is(err, ErrMissingAuth) ||
+		errors.Is(err, ErrBodyTooLarge) ||
+		errors.Is(err, ErrBodyRead) {
+		return false
+	}
+	return errors.Is(err, ErrSignature) ||
+		errors.Is(err, ErrMalformed) ||
+		errors.Is(err, ErrReplay) ||
+		errors.Is(err, ErrSkew) ||
+		errors.Is(err, ErrRevoked) ||
+		errors.Is(err, ErrNoKey) ||
+		errors.Is(err, ErrAdminToken)
 }
 
 func isLoopbackAddr(remote string) bool {

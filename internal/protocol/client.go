@@ -23,6 +23,9 @@ type Client struct {
 	DeviceID string
 	Priv     ed25519.PrivateKey
 	HTTP     *http.Client
+	// BlobHTTP is used for blob PUT/GET; large originals need a longer timeout
+	// than JSON sync calls (default HTTP is 60s).
+	BlobHTTP *http.Client
 }
 
 func NewClient(base, deviceID string, priv ed25519.PrivateKey, tlsPol TLS) *Client {
@@ -31,6 +34,7 @@ func NewClient(base, deviceID string, priv ed25519.PrivateKey, tlsPol TLS) *Clie
 		DeviceID: deviceID,
 		Priv:     priv,
 		HTTP:     HTTPClient(60*time.Second, tlsPol),
+		BlobHTTP: HTTPClient(15*time.Minute, tlsPol),
 	}
 }
 
@@ -102,7 +106,7 @@ func (c *Client) Reconcile(collectionID string, objects []syncengine.InventoryIt
 
 func (c *Client) PutBlob(hash string, payload []byte) error {
 	path := "/sync/v1/blob/" + strings.ToLower(hash)
-	resp, err := c.do(http.MethodPut, path, "application/octet-stream", payload)
+	resp, err := c.doClient(c.blobHTTP(), http.MethodPut, path, "application/octet-stream", payload)
 	if err != nil {
 		return err
 	}
@@ -116,7 +120,7 @@ func (c *Client) PutBlob(hash string, payload []byte) error {
 
 func (c *Client) GetBlob(hash string) ([]byte, error) {
 	path := "/sync/v1/blob/" + strings.ToLower(hash)
-	resp, err := c.do(http.MethodGet, path, "", nil)
+	resp, err := c.doClient(c.blobHTTP(), http.MethodGet, path, "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +132,13 @@ func (c *Client) GetBlob(hash string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+func (c *Client) blobHTTP() *http.Client {
+	if c.BlobHTTP != nil {
+		return c.BlobHTTP
+	}
+	return c.HTTP
+}
+
 func (c *Client) doJSON(method, path string, body any, out any) error {
 	var raw []byte
 	if body != nil {
@@ -137,7 +148,7 @@ func (c *Client) doJSON(method, path string, body any, out any) error {
 			return err
 		}
 	}
-	resp, err := c.do(method, path, "application/json", raw)
+	resp, err := c.doClient(c.HTTP, method, path, "application/json", raw)
 	if err != nil {
 		return err
 	}
@@ -156,6 +167,13 @@ func (c *Client) doJSON(method, path string, body any, out any) error {
 }
 
 func (c *Client) do(method, path, contentType string, body []byte) (*http.Response, error) {
+	return c.doClient(c.HTTP, method, path, contentType, body)
+}
+
+func (c *Client) doClient(hc *http.Client, method, path, contentType string, body []byte) (*http.Response, error) {
+	if hc == nil {
+		hc = http.DefaultClient
+	}
 	if body == nil {
 		body = []byte{}
 	}
@@ -175,5 +193,5 @@ func (c *Client) do(method, path, contentType string, body []byte) (*http.Respon
 		return nil, err
 	}
 	req.Header.Set("Authorization", auth.SignRequest(c.Priv, c.DeviceID, method, path, body, time.Now().UnixMilli(), hex.EncodeToString(n)))
-	return c.HTTP.Do(req)
+	return hc.Do(req)
 }

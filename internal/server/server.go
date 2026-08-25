@@ -148,7 +148,19 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) rejectAuth(w http.ResponseWriter, r *http.Request, err error) {
-	if err != nil && !errors.Is(err, auth.ErrMissingAuth) {
+	if errors.Is(err, auth.ErrBodyTooLarge) {
+		s.Log.Info("auth_failed", "err", err.Error(), "path", r.URL.Path)
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if errors.Is(err, auth.ErrBodyRead) {
+		s.Log.Info("auth_failed", "err", err.Error(), "path", r.URL.Path)
+		http.Error(w, "incomplete body", http.StatusBadRequest)
+		return
+	}
+	// Only count intentional auth abuse toward the ban window. Truncated uploads
+	// (client timeout) and similar read errors must not cascade into 429s.
+	if auth.CountsTowardFailLimit(err) {
 		if s.sigFail != nil && !s.sigFail.Allow(clientIP(r)) {
 			http.Error(w, "too many attempts", http.StatusTooManyRequests)
 			return

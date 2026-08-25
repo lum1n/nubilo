@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -149,8 +150,24 @@ func TestBodyTooLarge(t *testing.T) {
 	hdr := auth.SignRequest(priv, dev.ID, "POST", "/x", body, time.Now().UnixMilli(), "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
 	r := httptest.NewRequest("POST", "/x", bytes.NewReader(body))
 	r.Header.Set("Authorization", hdr)
-	if _, err := a.AuthenticateRequest(r); err == nil {
-		t.Fatal("expected too large")
+	_, err := a.AuthenticateRequest(r)
+	if !errors.Is(err, auth.ErrBodyTooLarge) {
+		t.Fatalf("got %v", err)
+	}
+	if auth.CountsTowardFailLimit(err) {
+		t.Fatal("body too large should not burn fail budget")
+	}
+}
+
+func TestCountsTowardFailLimit(t *testing.T) {
+	if auth.CountsTowardFailLimit(auth.ErrSignature) != true {
+		t.Fatal("signature")
+	}
+	if auth.CountsTowardFailLimit(auth.ErrBodyRead) {
+		t.Fatal("body read")
+	}
+	if auth.CountsTowardFailLimit(auth.ErrMissingAuth) {
+		t.Fatal("missing")
 	}
 }
 
