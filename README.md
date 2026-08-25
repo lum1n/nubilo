@@ -49,6 +49,25 @@ On a Mac, pair a **signing** agent (not a DAV password) into a separate data dir
 ./nubilo agent --data-dir ~/.nubilo-agent
 ```
 
+### Always-on (user services)
+
+Install so the process survives closing the terminal. User-level only (no root): LaunchAgent on macOS, `systemd --user` on Linux.
+
+```bash
+# Server (Linux or Mac) — after init
+nubilo server install --data-dir ~/.nubilo
+nubilo server service
+# Linux: logout stops the unit unless: loginctl enable-linger $USER
+# nubilo server uninstall
+
+# Agent (Mac only) — after pairing + selection; copies into ~/Applications/Nubilo.app for TCC
+nubilo agent install --data-dir ~/.nubilo-agent
+nubilo agent service
+# nubilo agent uninstall
+```
+
+Logs: `$data_dir/logs/server.log` and `$data_dir/logs/agent.log`. The server runs on Linux or macOS; the agent stays macOS-only. Same Mac can host both with **separate** data dirs (do not share one `--data-dir`).
+
 ### Mac Photos permission
 
 PhotoKit dialogs are attributed to the **process that calls the API**. When you run `nubilo` from Terminal, macOS often asks for Terminal — or never prompts.

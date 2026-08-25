@@ -66,6 +66,31 @@ func put(t *testing.T, e *env, payload []byte) string {
 	return got
 }
 
+func TestCountLiveObjectsByKindNested(t *testing.T) {
+	e := setup(t)
+	child, err := e.eng.CreateCollection(e.ctx, "files", "sub", e.col.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := put(t, e, []byte("root"))
+	push(t, e, ids.New(), syncengine.ChangeInput{
+		ObjectID: ids.New(), CollectionID: e.col.ID, Kind: "file", Op: syncengine.OpCreate,
+		ContentHash: blob, BlobID: blob, Size: 4, Metadata: json.RawMessage(`{"name":"a.txt"}`),
+	})
+	blob2 := put(t, e, []byte("nested!"))
+	push(t, e, ids.New(), syncengine.ChangeInput{
+		ObjectID: ids.New(), CollectionID: child.ID, Kind: "file", Op: syncengine.OpCreate,
+		ContentHash: blob2, BlobID: blob2, Size: 7, Metadata: json.RawMessage(`{"name":"b.txt"}`),
+	})
+	n, err := e.eng.CountLiveObjectsByKind(e.ctx, "files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("count %d want 2 (root + nested)", n)
+	}
+}
+
 func TestCreateUpdateDelete(t *testing.T) {
 	e := setup(t)
 	oid := ids.New()

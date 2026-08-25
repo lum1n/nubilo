@@ -245,6 +245,7 @@
         return;
       }
       let active = cols[0].id;
+      let rootActive = cols[0].id;
       const tabs = `<div class="tabs-row">
         <div class="tabs">${cols
           .map(
@@ -256,7 +257,8 @@
           <button type="button" class="btn sm" id="rename-col">rename</button>
           <button type="button" class="btn sm danger" id="delete-col">delete</button>
         </div>
-      </div>`;
+      </div>
+      <div id="folder-trail" class="folder-trail hidden"></div>`;
       content.innerHTML = tabs + '<div id="browse-list"></div>';
       const listEl = $("#browse-list");
       if (kind === "files") {
@@ -288,13 +290,31 @@
         listEl.innerHTML = '<div class="empty">loading</div>';
         const res = await api("/collections/" + encodeURIComponent(id) + "/objects");
         const objs = res.objects || [];
-        if (!objs.length) {
+        const children = res.children || [];
+        if (!objs.length && !children.length) {
           listEl.innerHTML = '<div class="empty">empty</div>';
           return;
         }
-        listEl.innerHTML = `<div class="block"><ul class="list">${objs
-          .map((o) => itemRow(kind, o))
-          .join("")}</ul></div>`;
+        const folderRows = children
+          .map(
+            (c) => `<li class="list-item folder-item" data-folder-id="${esc(c.id)}" data-folder-name="${esc(c.name)}">
+              <div class="list-item-main"><p class="list-item-title">${esc(c.name)}/</p><p class="list-item-sub">folder</p></div>
+            </li>`
+          )
+          .join("");
+        const fileRows = objs.map((o) => itemRow(kind, o)).join("");
+        listEl.innerHTML = `<div class="block"><ul class="list">${folderRows}${fileRows}</ul></div>`;
+        listEl.querySelectorAll(".folder-item").forEach((el) => {
+          el.addEventListener("click", () => {
+            const fid = el.dataset.folderId;
+            const fname = el.dataset.folderName || "folder";
+            if (kind === "files" && typeof pushFolder === "function") {
+              pushFolder(fid, fname);
+            } else {
+              loadCol(fid);
+            }
+          });
+        });
         listEl.querySelectorAll(".list-item[data-blob]").forEach((el) => {
           el.querySelector(".open-item")?.addEventListener("click", (ev) => {
             ev.stopPropagation();
@@ -306,7 +326,7 @@
             try {
               await api("/objects/" + encodeURIComponent(el.dataset.id), { method: "DELETE" });
               toast("deleted");
-              loadCol(active);
+              loadCol(id);
             } catch (e) {
               toast(e.message);
             }
@@ -314,13 +334,53 @@
         });
       }
 
+      let folderStack = [];
+      function renderTrail() {
+        const trail = $("#folder-trail");
+        if (!trail) return;
+        if (kind !== "files" || folderStack.length <= 1) {
+          trail.innerHTML = "";
+          trail.classList.add("hidden");
+          return;
+        }
+        trail.classList.remove("hidden");
+        trail.innerHTML = folderStack
+          .map((s, i) => {
+            if (i === folderStack.length - 1) {
+              return `<span class="trail-here">${esc(s.name)}</span>`;
+            }
+            return `<button type="button" class="tab trail-seg" data-idx="${i}">${esc(s.name)}</button>`;
+          })
+          .join(` <span class="muted">/</span> `);
+        trail.querySelectorAll(".trail-seg").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const idx = parseInt(btn.dataset.idx, 10);
+            folderStack = folderStack.slice(0, idx + 1);
+            active = folderStack[folderStack.length - 1].id;
+            renderTrail();
+            loadCol(active);
+          });
+        });
+      }
+      function pushFolder(fid, fname) {
+        folderStack.push({ id: fid, name: fname });
+        active = fid;
+        renderTrail();
+        loadCol(active);
+      }
+      function resetFolderStack(rootId, rootName) {
+        folderStack = [{ id: rootId, name: rootName || "root" }];
+        active = rootId;
+        renderTrail();
+      }
+
       function bindColActions() {
         $("#rename-col").onclick = async () => {
-          const cur = cols.find((c) => c.id === active);
+          const cur = cols.find((c) => c.id === rootActive);
           const name = prompt("new name:", cur?.name || "");
           if (!name) return;
           try {
-            await api("/collections/" + encodeURIComponent(active) + "/rename", {
+            await api("/collections/" + encodeURIComponent(rootActive) + "/rename", {
               method: "POST",
               body: JSON.stringify({ name }),
             });
@@ -331,10 +391,10 @@
           }
         };
         $("#delete-col").onclick = async () => {
-          const cur = cols.find((c) => c.id === active);
+          const cur = cols.find((c) => c.id === rootActive);
           if (!confirm(`delete collection "${cur?.name}" and all items?`)) return;
           try {
-            await api("/collections/" + encodeURIComponent(active), { method: "DELETE" });
+            await api("/collections/" + encodeURIComponent(rootActive), { method: "DELETE" });
             toast("deleted collection");
             renderBrowse(kind, emptyMsg, createLabel);
           } catch (e) {
@@ -343,14 +403,20 @@
         };
       }
 
-      content.querySelectorAll(".tab").forEach((btn) => {
+      content.querySelectorAll(".tabs .tab").forEach((btn) => {
         btn.addEventListener("click", () => {
-          active = btn.dataset.id;
-          content.querySelectorAll(".tab").forEach((c) => c.classList.toggle("active", c.dataset.id === active));
+          rootActive = btn.dataset.id;
+          content.querySelectorAll(".tabs .tab").forEach((c) => c.classList.toggle("active", c.dataset.id === rootActive));
+          const cur = cols.find((c) => c.id === rootActive);
+          resetFolderStack(rootActive, cur?.name || "root");
           loadCol(active);
         });
       });
       bindColActions();
+      {
+        const cur = cols.find((c) => c.id === rootActive);
+        resetFolderStack(rootActive, cur?.name || "root");
+      }
       await loadCol(active);
     } catch (e) {
       content.innerHTML = `<div class="empty">${esc(e.message)}</div>`;

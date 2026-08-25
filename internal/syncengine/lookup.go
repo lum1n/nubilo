@@ -57,6 +57,19 @@ func (e *Engine) ListObjects(ctx context.Context, collectionID string) ([]Object
 	return out, rows.Err()
 }
 
+// CountLiveObjectsByKind returns live objects in all live collections of kind
+// (including nested file folders).
+func (e *Engine) CountLiveObjectsByKind(ctx context.Context, kind string) (int, error) {
+	var n int
+	err := e.Store.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM objects o
+		JOIN collections c ON c.id = o.collection_id
+		WHERE c.kind = ? AND c.deleted_at IS NULL AND o.deleted_at IS NULL
+	`, kind).Scan(&n)
+	return n, err
+}
+
 func (e *Engine) ChildCollections(ctx context.Context, kind, parentID string) ([]Collection, error) {
 	var rows *sql.Rows
 	var err error

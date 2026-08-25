@@ -7,10 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"nubilo/internal/config"
 	"nubilo/internal/dav"
 )
 
-const maxFileBytes = 64 << 20
+var maxFileBytes = config.DefaultMaxBlobBytes
 
 type LocalFile struct {
 	AbsPath string

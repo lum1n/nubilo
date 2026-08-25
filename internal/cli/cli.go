@@ -27,6 +27,7 @@ import (
 	"nubilo/internal/integrity"
 	"nubilo/internal/photos"
 	"nubilo/internal/server"
+	"nubilo/internal/service"
 	"nubilo/internal/version"
 )
 
@@ -137,8 +138,14 @@ func usage(w io.Writer) {
 Usage:
   nubilo init [--data-dir DIR] [--listen ADDR]
   nubilo server [--data-dir DIR]
+  nubilo server install [--data-dir DIR]
+  nubilo server uninstall
+  nubilo server service
   nubilo ui [--listen ADDR] [--open]
   nubilo agent [--data-dir DIR] [--insecure] [--interval SECONDS]
+  nubilo agent install [--data-dir DIR] [--insecure]
+  nubilo agent uninstall
+  nubilo agent service
   nubilo agent ui [--listen ADDR] [--open]
   nubilo agent calendars
   nubilo agent select ID
@@ -248,6 +255,23 @@ func runTLS(g global, args []string) int {
 }
 
 func runServer(g global, args []string) int {
+	sub := "run"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+	}
+	switch sub {
+	case "install":
+		return runServiceInstall(g, service.KindServer, false)
+	case "uninstall":
+		return runServiceUninstall(service.KindServer)
+	case "service":
+		return runServiceStatus(service.KindServer)
+	case "run":
+		// continue below
+	default:
+		fmt.Fprintf(os.Stderr, "unknown server command %q\n", sub)
+		return 2
+	}
 	dir, err := app.ResolveDataDir(g.dataDir)
 	if err != nil {
 		return fatal(err)
@@ -276,6 +300,63 @@ func runServer(g global, args []string) int {
 			return fatal(err)
 		}
 	}
+	return 0
+}
+
+func runServiceInstall(g global, kind service.Kind, insecure bool) int {
+	dir, err := app.ResolveDataDir(g.dataDir)
+	if err != nil {
+		return fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fatal(err)
+	}
+	exe, err := service.ResolveExe()
+	if err != nil {
+		return fatal(err)
+	}
+	if kind == service.KindAgent {
+		appPath, err := agent.InstallAppBundle()
+		if err != nil {
+			return fatal(err)
+		}
+		exe = filepath.Join(appPath, "Contents", "MacOS", "nubilo")
+	}
+	path, err := service.Install(service.Spec{
+		Kind:     kind,
+		Exe:      exe,
+		DataDir:  dir,
+		Insecure: insecure,
+	})
+	if err != nil {
+		return fatal(err)
+	}
+	fmt.Printf("installed %s service\n  unit: %s\n  binary: %s\n  data-dir: %s\n  log: %s\n",
+		kind.String(), path, exe, dir, service.LogPath(dir, kind))
+	if kind == service.KindServer && runtime.GOOS == "linux" {
+		fmt.Fprintln(os.Stderr, "note: systemd --user stops on logout unless you run: loginctl enable-linger $USER")
+	}
+	return 0
+}
+
+func runServiceUninstall(kind service.Kind) int {
+	if err := service.Uninstall(kind); err != nil {
+		return fatal(err)
+	}
+	fmt.Printf("uninstalled %s service\n", kind.String())
+	return 0
+}
+
+func runServiceStatus(kind service.Kind) int {
+	st, err := service.Status(kind)
+	if err != nil && !st.Installed {
+		return fatal(err)
+	}
+	fmt.Printf("%s service\n", kind.String())
+	fmt.Printf("  installed: %v\n", st.Installed)
+	fmt.Printf("  loaded: %v\n", st.Loaded)
+	fmt.Printf("  path: %s\n", st.Path)
+	fmt.Printf("  detail: %s\n", st.Detail)
 	return 0
 }
 
@@ -361,6 +442,12 @@ func runAgent(g global, args []string) int {
 		return runAgentUI(g, rest)
 	case "files":
 		return agentFiles(paths.AgentJSON, sel, rest)
+	case "install":
+		return runServiceInstall(g, service.KindAgent, *insecure)
+	case "uninstall":
+		return runServiceUninstall(service.KindAgent)
+	case "service":
+		return runServiceStatus(service.KindAgent)
 	case "run":
 		return agentRun(dir, paths, sel, *insecure)
 	default:

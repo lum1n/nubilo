@@ -10,6 +10,7 @@ Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 - iPhone CalDAV (app password, Apple-trusted TLS).
 - WebDAV files, CardDAV (contacts with name/email/phone/address/birthday), PhotoKit **push + pull write-back**, photo HTTP API and `nubilo ui` gallery.
 - Pairing, backup/restore (CLI + UI), enroll/rotate, TLS regen, verify, gc, optional server auto-backup.
+- Always-on user services: `nubilo server install` (Linux systemd `--user` or macOS LaunchAgent), `nubilo agent install` (macOS LaunchAgent via Nubilo.app).
 
 ## Calendar (lock-in)
 
@@ -58,9 +59,9 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 
 - iOS Files / Finder can mount `/dav/` (nested folders, file + collection COPY, MOVE across folders).
 - Mac agent can sync selected local folders: `nubilo agent files add PATH`, `files on`. Nested dirs become nested collections; pull writes back to disk.
-- `nubilo ui` can upload into a files collection.
+- `nubilo ui` can upload into a files collection; files browser drills into nested subfolders (agent syncs nested dirs as child collections).
 - LOCK/UNLOCK remain compatibility no-ops. `nubilo client` is still a stub (agent folder sync covers the common case).
-- Symlinks, dotfiles, `.git`, and files over 64 MiB are skipped by the agent walker.
+- Symlinks, dotfiles, `.git`, and files over `sync.max_blob_bytes` are skipped by the agent walker.
 
 ## Integrity / sync
 
@@ -76,6 +77,7 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 - **Auto-backup:** `config.backup` (`enabled`, `interval_hours`, `passphrase_file`, `keep`) runs in `nubilo server`; archives under `data_dir/backups/`. Passphrase stays in a file on disk, not in JSON.
 - **UI ops:** create encrypted backup + one-shot download; restore to an empty **non-live** destination (confirm `RESTORE`); enroll/rotate device pubkeys; TLS regen; richer status (blobs, devices, last backup).
 - Restore onto the running live `data_dir` stays CLI-only (`nubilo restore` after stop).
+- **Always-on:** `nubilo server install` / `nubilo agent install` (user-level: LaunchAgent on macOS; systemd `--user` on Linux for the server). Agent install is macOS-only. Linux user units stop on logout unless `loginctl enable-linger` is set.
 - **HA:** out of scope — single-node personal cloud; no multi-server failover.
 - Metrics: ops/status panel only (not Prometheus).
 

@@ -49,3 +49,15 @@ func TestLocalFilesListAndWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSlashRelDir(t *testing.T) {
+	if got := slashRelDir("a.txt"); got != "" {
+		t.Fatalf("%q", got)
+	}
+	if got := slashRelDir("docs/b.txt"); got != "docs" {
+		t.Fatalf("%q", got)
+	}
+	if got := slashRelDir("docs/nested/c.txt"); got != "docs/nested" {
+		t.Fatalf("%q", got)
+	}
+}

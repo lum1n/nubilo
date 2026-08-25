@@ -42,12 +42,12 @@ Feature count is subordinate to those priorities. If a feature would weaken auth
 
 | Mode | Typical host | Role |
 | --- | --- | --- |
-| `server` | Always-on Linux | System of record. Serves sync protocol, HTTP API, CalDAV, CardDAV, and WebDAV. |
+| `server` | Always-on Linux or macOS | System of record. Serves sync protocol, HTTP API, CalDAV, CardDAV, and WebDAV. OS-agnostic. |
 | `agent` | macOS | Trusted connector. Reads EventKit / PhotoKit / Contacts / selected files and pushes into the server over the sync protocol. Never stores corporate credentials on Linux. |
 | `client` | Linux or macOS | Generic sync client for files and photos without macOS frameworks. |
 | CLI | Either | Local administration, pairing, verify, gc, backup, restore. |
 
-All modes share the same packages. Platform-specific APIs are isolated behind build tags (`darwin` for EventKit/PhotoKit). Linux builds of `nubilo agent` refuse to start with an explicit error.
+All modes share the same packages. Platform-specific APIs are isolated behind build tags (`darwin` for EventKit/PhotoKit). Linux builds of `nubilo agent` refuse to start with an explicit error. `nubilo server install` / `nubilo agent install` register user-level always-on services (systemd `--user` on Linux; LaunchAgent on macOS). Agent install is macOS-only and runs the binary from `~/Applications/Nubilo.app` for TCC attribution.
 
 ## Trust and deployment shape
 
@@ -93,6 +93,7 @@ internal/authz      per-device, per-collection authorization
 internal/syncengine generic objects, journal, cursors, conflicts
 internal/protocol   versioned /sync/v1 HTTP mapping
 internal/server     HTTP server, TLS, rate limits
+internal/service    user-level always-on install (LaunchAgent / systemd --user)
 internal/integrity  verify command
 internal/backup     encrypted backup and restore
 internal/audit      structured audit events

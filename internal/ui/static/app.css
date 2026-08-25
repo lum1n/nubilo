@@ -374,6 +374,17 @@ a { color: var(--accent); }
   margin: 0.5rem 0;
 }
 
+.folder-trail {
+  margin: 0 0 0.5rem;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.folder-trail .trail-here { color: var(--accent); }
+
+.folder-item { cursor: pointer; }
+.folder-item:hover .list-item-title { color: var(--accent); }
+
 table.data {
   width: 100%;
   border-collapse: collapse;

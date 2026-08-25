@@ -683,26 +683,30 @@ func (a *Agent) pushFileFolder(ctx context.Context, folder FileFolderSel) error 
 		a.Log.Warn("list_files_failed", "path", root, "err", err.Error())
 		return nil
 	}
+	a.Log.Info("files_list", "path", root, "n", len(list))
 	seen := map[string]bool{}
 	colCache := map[string]string{"": rootCol.ID}
+	ok, fail := 0, 0
 	for _, f := range list {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		dir := filepath.ToSlash(filepath.Dir(f.RelPath))
-		if dir == "." {
-			dir = ""
-		}
+		dir := slashRelDir(f.RelPath)
 		colID, err := a.ensureFileDirCollection(root, rootCol.ID, dir, colCache)
 		if err != nil {
+			fail++
 			a.Log.Warn("ensure_file_dir", "dir", dir, "err", err.Error())
 			continue
 		}
 		seen[f.AbsPath] = true
 		if err := a.pushFile(colID, f); err != nil {
+			fail++
 			a.Log.Warn("push_file", "err", err.Error(), "local", f.AbsPath)
+		} else {
+			ok++
 		}
 	}
+	a.Log.Info("files_push", "path", root, "ok", ok, "fail", fail)
 	for colID, rt := range a.routes {
 		if rt.kind != kindFile || rt.rootPath != root {
 			continue
@@ -734,7 +738,7 @@ func (a *Agent) ensureFileDirCollection(root, rootColID, relDir string, cache ma
 	parentID := rootColID
 	cur := ""
 	for _, p := range parts {
-		if p == "" {
+		if p == "" || p == "." {
 			continue
 		}
 		if cur == "" {
@@ -756,6 +760,16 @@ func (a *Agent) ensureFileDirCollection(root, rootColID, relDir string, cache ma
 	}
 	cache[relDir] = parentID
 	return parentID, nil
+}
+
+// slashRelDir returns the parent directory of a slash-separated relative path.
+func slashRelDir(rel string) string {
+	rel = filepath.ToSlash(rel)
+	i := strings.LastIndex(rel, "/")
+	if i <= 0 {
+		return ""
+	}
+	return rel[:i]
 }
 
 func (a *Agent) pushFile(collectionID string, f LocalFile) error {

@@ -1162,3 +1162,63 @@ func TestPhotoWriteBackImport(t *testing.T) {
 		t.Fatalf("expected import, got %d", n)
 	}
 }
+
+func TestNestedFilesPush(t *testing.T) {
+	h := startHarness(t)
+	root := t.TempDir()
+	sub := filepath.Join(root, "docs", "nested")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "top.txt"), []byte("top"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "mid.txt"), []byte("mid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "deep.txt"), []byte("deep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sel := agent.Selection{
+		IntervalSeconds: 120,
+		Files: agent.FilesSel{
+			Enabled: true,
+			Folders: []agent.FileFolderSel{{Path: root, Name: "SyncRoot"}},
+		},
+	}
+	a := newAgent(h, sel, nil, nil)
+	a.Files = agent.OpenFiles()
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rootCol := collection(t, h.eng, "files", "SyncRoot")
+	rootObjs, err := h.eng.ListObjects(context.Background(), rootCol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootObjs) != 1 {
+		t.Fatalf("root objects %d want 1 (top.txt only)", len(rootObjs))
+	}
+	docs, err := h.eng.FindChildCollection(context.Background(), "files", rootCol.ID, "docs")
+	if err != nil {
+		t.Fatalf("docs child: %v", err)
+	}
+	docsObjs, err := h.eng.ListObjects(context.Background(), docs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docsObjs) != 1 {
+		t.Fatalf("docs objects %d want 1", len(docsObjs))
+	}
+	nested, err := h.eng.FindChildCollection(context.Background(), "files", docs.ID, "nested")
+	if err != nil {
+		t.Fatalf("nested child: %v", err)
+	}
+	nestedObjs, err := h.eng.ListObjects(context.Background(), nested.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nestedObjs) != 1 {
+		t.Fatalf("nested objects %d want 1", len(nestedObjs))
+	}
+}

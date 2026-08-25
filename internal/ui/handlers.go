@@ -21,17 +21,9 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	head, _ := s.RT.Engine.HeadSeq(ctx)
 	counts := map[string]int{}
 	for _, kind := range []string{"calendar", "addressbook", "files", "photos"} {
-		cols, err := s.RT.Engine.ChildCollections(ctx, kind, "")
+		n, err := s.RT.Engine.CountLiveObjectsByKind(ctx, kind)
 		if err != nil {
 			continue
-		}
-		n := 0
-		for i := range cols {
-			objs, err := s.RT.Engine.ListObjects(ctx, cols[i].ID)
-			if err != nil {
-				continue
-			}
-			n += len(objs)
 		}
 		counts[kind] = n
 	}
@@ -504,7 +496,23 @@ func (s *Server) handleCollectionObjects(w http.ResponseWriter, r *http.Request)
 		}
 		out = append(out, row)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"collection": col, "objects": out})
+	payload := map[string]any{"collection": col, "objects": out}
+	if col.Kind == "files" {
+		children, err := s.RT.Engine.ChildCollections(r.Context(), "files", id)
+		if err != nil {
+			http.Error(w, "internal", http.StatusInternalServerError)
+			return
+		}
+		ch := make([]map[string]any, 0, len(children))
+		for i := range children {
+			c := &children[i]
+			ch = append(ch, map[string]any{
+				"id": c.ID, "name": c.Name, "kind": "folder",
+			})
+		}
+		payload["children"] = ch
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func objectLabel(colKind string, o *syncengine.Object) string {
