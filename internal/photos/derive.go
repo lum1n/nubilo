@@ -40,25 +40,36 @@ type Prepared struct {
 	Meta     Meta
 }
 
-// Prepare inspects original bytes, builds preview/thumbnail JPEGs, and fills metadata.
-// The original slice is never mutated.
+// Prepare inspects original bytes, builds preview/thumbnail JPEGs when decodable, and fills metadata.
+// The original slice is never mutated. hintKind may be image|video|live|raw.
 func Prepare(original []byte, name string, opt Options) (Prepared, error) {
+	return PrepareKind(original, name, "", 0, opt)
+}
+
+func PrepareKind(original []byte, name, hintKind string, durationMS int64, opt Options) (Prepared, error) {
 	opt = opt.withDefaults()
 	info := Inspect(original)
 	name = Filename(name, info.MIME)
+	kind := KindFromMIME(info.MIME, hintKind)
 	p := Prepared{
 		Original: original,
 		Meta: Meta{
 			Name:        name,
 			MIME:        info.MIME,
+			Kind:        kind,
 			Width:       info.Width,
 			Height:      info.Height,
 			Orientation: info.Orientation,
 			CameraMake:  info.CameraMake,
 			CameraModel: info.CameraModel,
 			TakenAtMS:   info.TakenAtMS,
+			DurationMS:  durationMS,
 			HasGPS:      info.HasGPS,
 		},
+	}
+	if kind == "video" || kind == "raw" {
+		// No JPEG derivatives for opaque video/RAW originals.
+		return p, nil
 	}
 	img, err := Decode(original)
 	if err != nil {

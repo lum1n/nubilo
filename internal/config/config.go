@@ -24,6 +24,7 @@ type Config struct {
 	Pairing PairConfig   `json:"pairing"`
 	HTTP    HTTPConfig   `json:"http"`
 	Photos  PhotosConfig `json:"photos"`
+	Backup  BackupConfig `json:"backup"`
 }
 
 type PhotosConfig struct {
@@ -31,6 +32,17 @@ type PhotosConfig struct {
 	PerceptualHash          bool `json:"perceptual_hash"`
 	ThumbMaxPx              int  `json:"thumb_max_px"`
 	PreviewMaxPx            int  `json:"preview_max_px"`
+}
+
+// BackupConfig controls optional automatic encrypted backups (server process).
+// Passphrase is never stored in config; only a path to a passphrase file on disk.
+type BackupConfig struct {
+	Enabled            bool   `json:"enabled"`
+	IntervalHours      int    `json:"interval_hours"`
+	PassphraseFile     string `json:"passphrase_file"`
+	Keep               int    `json:"keep"`
+	LastBackupUnixMS   int64  `json:"last_backup_unix_ms,omitempty"`
+	LastBackupError    string `json:"last_backup_error,omitempty"`
 }
 
 type TLSConfig struct {
@@ -93,6 +105,11 @@ func Defaults(dataDir string) Config {
 			StripGPSFromDerivatives: true,
 			ThumbMaxPx:              256,
 			PreviewMaxPx:            1280,
+		},
+		Backup: BackupConfig{
+			Enabled:       false,
+			IntervalHours: 24,
+			Keep:          7,
 		},
 	}
 }

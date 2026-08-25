@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"unsafe"
 )
 
@@ -85,16 +87,22 @@ func (p *pkSource) ListPhotos(filter PhotoFilter) ([]LocalPhoto, error) {
 		Taken    float64  `json:"taken"`
 		Mod      float64  `json:"mod"`
 		Albums   []string `json:"albums"`
+		Kind     string   `json:"kind"`
+		Duration float64  `json:"duration"`
 	}
 	if err := json.Unmarshal([]byte(s), &rows); err != nil {
 		return nil, err
 	}
 	out := make([]LocalPhoto, 0, len(rows))
 	for _, r := range rows {
+		kind := r.Kind
+		if kind == "" {
+			kind = "image"
+		}
 		out = append(out, LocalPhoto{
-			ID: r.ID, Filename: r.Filename,
+			ID: r.ID, Filename: r.Filename, Kind: kind,
 			TakenAtMS: int64(r.Taken * 1000), ModMS: int64(r.Mod * 1000),
-			Albums: r.Albums,
+			DurationMS: int64(r.Duration * 1000), Albums: r.Albums,
 		})
 	}
 	return out, nil
@@ -117,4 +125,62 @@ func (p *pkSource) ReadOriginal(id string) ([]byte, error) {
 		return nil, pkErr(&cerr)
 	}
 	return os.ReadFile(path)
+}
+
+func (p *pkSource) ReadLiveMovie(id string) ([]byte, error) {
+	tmp, err := os.CreateTemp("", "nubilo-pk-live-*.mov")
+	if err != nil {
+		return nil, err
+	}
+	path := tmp.Name()
+	tmp.Close()
+	defer os.Remove(path)
+	cid := C.CString(id)
+	defer C.free(unsafe.Pointer(cid))
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	var cerr *C.char
+	if C.nubilo_pk_export_live_movie(cid, cpath, &cerr) == 0 {
+		if cerr != nil {
+			return nil, pkErr(&cerr)
+		}
+		return nil, nil
+	}
+	return os.ReadFile(path)
+}
+
+func (p *pkSource) ImportOriginal(data []byte, filename string, albumID string) (string, error) {
+	ext := filepath.Ext(filename)
+	if ext == "" {
+		ext = ".bin"
+	}
+	tmp, err := os.CreateTemp("", "nubilo-pk-import-*"+ext)
+	if err != nil {
+		return "", err
+	}
+	path := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(path)
+		return "", err
+	}
+	tmp.Close()
+	defer os.Remove(path)
+
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	calbum := C.CString(albumID)
+	defer C.free(unsafe.Pointer(calbum))
+	cname := C.CString(filename)
+	defer C.free(unsafe.Pointer(cname))
+	var outID *C.char
+	var cerr *C.char
+	if C.nubilo_pk_import(cpath, calbum, cname, &outID, &cerr) == 0 {
+		return "", pkErr(&cerr)
+	}
+	id := pkStr(outID)
+	if strings.TrimSpace(id) == "" {
+		return "", errors.New("import returned empty id")
+	}
+	return id, nil
 }

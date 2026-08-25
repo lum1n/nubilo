@@ -53,7 +53,7 @@ On a Mac, pair a **signing** agent (not a DAV password) into a separate data dir
 
 Mount WebDAV at `https://<host>:8443/dav/` using the printed username (device id) and one-time password. CalDAV is at `/caldav/`. CardDAV is at `/carddav/`. iPhone Calendar/Contacts need a certificate Apple trusts: put [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) (or another TLS terminator) in front and keep Nubilo on loopback, or install `tls.crt` on the phone. The Mac agent does not need that; it uses the pairing pin.
 
-Browse and configure your cloud locally with `nubilo ui` (loopback web UI on port 8787). It covers browsing photos/calendar/contacts/files, creating collections, pairing, verify/gc, devices, and config. Backup/restore and agent calendar selection stay on the CLI.
+Browse and configure your cloud locally with `nubilo ui` (loopback web UI on port 8787). It covers browsing photos/calendar/contacts/files, creating collections, pairing, verify/gc, backup create/download, restore to a non-live dest, device enroll/rotate/password, TLS regen, auto-backup settings, and config. Agent calendar/album/folder selection stays on the CLI. Restoring onto the live data dir still requires stopping the server and `nubilo restore`.
 
 ### iPhone Calendar
 
@@ -90,7 +90,11 @@ Sync uses a time window (default ±730 days). Recurring events are stored as one
 ./nubilo agent --data-dir ~/.nubilo-agent albums
 ./nubilo agent --data-dir ~/.nubilo-agent photos source all   # or albums|dates
 ./nubilo agent --data-dir ~/.nubilo-agent photos select <album-id>
+./nubilo agent --data-dir ~/.nubilo-agent files add ~/Documents/Nubilo
+./nubilo agent --data-dir ~/.nubilo-agent files on
 ```
+
+`files add` selects a local folder to push/pull under WebDAV `/dav/files/<name>/`. Nested directories become nested collections.
 
 ### Photos HTTP API
 
@@ -99,7 +103,7 @@ Signing devices and app passwords with `--scope photos` can use:
 - `GET /api/v1/photos`
 - `POST /api/v1/photos?name=shot.jpg` (raw image body)
 - `GET /api/v1/photos/{id}`
-- `GET /api/v1/photos/{id}/original|preview|thumb`
+- `GET /api/v1/photos/{id}/original|preview|thumb|live`
 
 Originals are stored byte-for-byte. Preview and thumbnail are derived JPEGs. GPS stays in the encrypted original; it is not written to SQLite metadata. `photos.strip_gps_from_derivatives` (default true) keeps GPS out of derivatives.
 

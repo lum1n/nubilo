@@ -451,23 +451,149 @@ func (f *FS) Copy(ctx context.Context, name, dest string, options *webdav.CopyOp
 	if err != nil {
 		return false, err
 	}
-	if src.kind != nodeFile {
-		return false, webdav.NewHTTPError(http.StatusForbidden, errors.New("copy collections is not implemented"))
-	}
-	if err := f.allow(ctx, false, src.col.ID); err != nil {
-		return false, err
-	}
-	if options != nil && options.NoOverwrite {
-		if _, err := f.resolve(ctx, dest); err == nil {
-			return false, os.ErrExist
+	noOverwrite := options != nil && options.NoOverwrite
+	switch src.kind {
+	case nodeFile:
+		if err := f.allow(ctx, false, src.col.ID); err != nil {
+			return false, err
 		}
+		if noOverwrite {
+			if _, err := f.resolve(ctx, dest); err == nil {
+				return false, os.ErrExist
+			}
+		}
+		body, err := f.Open(ctx, name)
+		if err != nil {
+			return false, err
+		}
+		_, created, err := f.Create(ctx, dest, body, nil)
+		return created, err
+	case nodeCollection:
+		if err := f.allow(ctx, false, src.col.ID); err != nil {
+			return false, err
+		}
+		return f.copyCollection(ctx, src, dest, noOverwrite)
+	default:
+		return false, webdav.NewHTTPError(http.StatusForbidden, errors.New("cannot copy"))
 	}
-	body, err := f.Open(ctx, name)
+}
+
+func (f *FS) copyCollection(ctx context.Context, src *node, dest string, noOverwrite bool) (bool, error) {
+	dp, err := Normalize(dest)
+	if err != nil {
+		return false, webdav.NewHTTPError(http.StatusBadRequest, err)
+	}
+	parentPath, newName, err := splitParent(dp)
+	if err != nil || !ValidDisplayName(newName) {
+		return false, webdav.NewHTTPError(http.StatusBadRequest, err)
+	}
+	parent, err := f.resolve(ctx, parentPath)
 	if err != nil {
 		return false, err
 	}
-	_, created, err := f.Create(ctx, dest, body, nil)
-	return created, err
+	if parent.kind != nodeFilesHome && parent.kind != nodeCollection {
+		return false, webdav.NewHTTPError(http.StatusConflict, errors.New("dest parent"))
+	}
+	parentID := ""
+	if parent.kind == nodeCollection {
+		parentID = parent.col.ID
+		if parentID == src.col.ID || isAncestor(ctx, f.Engine, src.col.ID, parentID) {
+			return false, webdav.NewHTTPError(http.StatusConflict, errors.New("cannot copy into self"))
+		}
+		if err := f.allow(ctx, true, parentID); err != nil {
+			return false, err
+		}
+	} else if err := f.allow(ctx, true, ""); err != nil {
+		return false, err
+	}
+	existing, findErr := f.Engine.FindChildCollection(ctx, "files", parentID, newName)
+	created := errors.Is(findErr, syncengine.ErrNotFound)
+	if findErr != nil && !created {
+		return false, findErr
+	}
+	var destCol *syncengine.Collection
+	if created {
+		destCol, err = f.Engine.CreateCollection(ctx, "files", newName, parentID, nil)
+		if err != nil {
+			return false, err
+		}
+	} else {
+		if noOverwrite {
+			return false, os.ErrExist
+		}
+		destCol = existing
+	}
+	if err := f.copyCollectionContents(ctx, src.col, destCol); err != nil {
+		return false, err
+	}
+	return created, nil
+}
+
+func (f *FS) copyCollectionContents(ctx context.Context, src, dest *syncengine.Collection) error {
+	dev := DeviceFrom(ctx)
+	objs, err := f.Engine.ListObjects(ctx, src.ID)
+	if err != nil {
+		return err
+	}
+	for i := range objs {
+		o := &objs[i]
+		meta := ParseFileMeta(o.Metadata)
+		name := meta.Name
+		if name == "" {
+			continue
+		}
+		pt, err := f.Store.GetBlobPlaintext(o.BlobID)
+		if err != nil {
+			return err
+		}
+		sum := ncrypto.SHA256Hex(pt)
+		blobID, size, err := f.Store.PutBlob(ctx, bytes.NewReader(pt), sum)
+		if err != nil {
+			return err
+		}
+		existing, findErr := f.Engine.FindObjectByName(ctx, dest.ID, name)
+		in := syncengine.ChangeInput{
+			CollectionID: dest.ID,
+			Kind:         "file",
+			ContentHash:  blobID,
+			BlobID:       blobID,
+			Size:         size,
+			Metadata:     EncodeFileMeta(FileMeta{Name: name, MIME: meta.MIME}),
+			Force:        true,
+		}
+		if errors.Is(findErr, syncengine.ErrNotFound) {
+			in.ObjectID = ids.New()
+			in.Op = syncengine.OpCreate
+		} else if findErr != nil {
+			return findErr
+		} else {
+			in.ObjectID = existing.ID
+			in.Op = syncengine.OpUpdate
+			in.BaseRevision = existing.Revision
+		}
+		res, err := f.Engine.Push(ctx, dev, ids.New(), []syncengine.ChangeInput{in})
+		if err != nil {
+			return err
+		}
+		if len(res) == 0 || res[0].Status != "ok" {
+			return webdav.NewHTTPError(http.StatusConflict, errors.New("copy object failed"))
+		}
+	}
+	children, err := f.Engine.ChildCollections(ctx, "files", src.ID)
+	if err != nil {
+		return err
+	}
+	for i := range children {
+		child := &children[i]
+		sub, err := f.Engine.EnsureChildCollection(ctx, "files", dest.ID, child.Name)
+		if err != nil {
+			return err
+		}
+		if err := f.copyCollectionContents(ctx, child, sub); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *FS) Move(ctx context.Context, name, dest string, options *webdav.MoveOptions) (bool, error) {

@@ -257,7 +257,7 @@ func (b *CardDAV) PutAddressObject(ctx context.Context, path string, card vcard.
 		ContentHash:  blobID,
 		BlobID:       blobID,
 		Size:         size,
-		Metadata:     EncodeContactMeta(ContactMeta{Name: fileName, UID: uid}),
+		Metadata:     EncodeContactMeta(ContactMetaFromVCard(fileName, uid, payload)),
 	}
 	if created {
 		in.ObjectID = ids.New()

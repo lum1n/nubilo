@@ -146,6 +146,12 @@ func (s *Store) ListBlobFiles() ([]string, error) {
 	return hashes, err
 }
 
+// BlobStats returns count and total size from the metadata table (no disk walk).
+func (s *Store) BlobStats(ctx context.Context) (count int, bytes int64, err error) {
+	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size), 0) FROM blobs`).Scan(&count, &bytes)
+	return count, bytes, err
+}
+
 func (s *Store) IncBlobRef(tx *sql.Tx, hash string) error {
 	if hash == "" {
 		return nil

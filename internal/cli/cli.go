@@ -147,6 +147,10 @@ Usage:
   nubilo agent photos source all|albums|dates
   nubilo agent photos select ALBUM_ID
   nubilo agent albums
+  nubilo agent files on|off
+  nubilo agent files list
+  nubilo agent files add PATH [NAME]
+  nubilo agent files remove PATH
   nubilo status [--json]
   nubilo pair [--wait] [--role agent|client]
   nubilo pair --server URL --code XXXXX-XXXXX --name NAME [--insecure]
@@ -248,6 +252,9 @@ func runServer(g global, args []string) int {
 		return fatal(err)
 	}
 	defer rt.Close()
+	ab := &app.AutoBackup{RT: rt, Log: rt.Log}
+	ab.Start()
+	defer ab.Stop()
 	srv := server.New(rt.Cfg, rt.Store, rt.IDs, rt.Auth, rt.Engine, rt.Audit, rt.Log, rt.ServerPub)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -343,6 +350,8 @@ func runAgent(g global, args []string) int {
 		return agentPhotos(paths.AgentJSON, sel, rest)
 	case "albums":
 		return agentListAlbums(sel)
+	case "files":
+		return agentFiles(paths.AgentJSON, sel, rest)
 	case "run":
 		return agentRun(dir, paths, sel, *insecure)
 	default:
@@ -423,6 +432,82 @@ func agentPhotos(path string, sel agent.Selection, args []string) int {
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown photos command %q\n", args[0])
+		return 2
+	}
+}
+
+func agentFiles(path string, sel agent.Selection, args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: nubilo agent files on|off|list|add|remove")
+		return 2
+	}
+	switch args[0] {
+	case "on", "off":
+		sel.Files.Enabled = args[0] == "on"
+		if err := agent.SaveSelection(path, sel); err != nil {
+			return fatal(err)
+		}
+		fmt.Printf("files sync %s\n", args[0])
+		return 0
+	case "list":
+		if len(sel.Files.Folders) == 0 {
+			fmt.Println("(no folders)")
+			return 0
+		}
+		for _, f := range sel.Files.Folders {
+			name := f.Name
+			if name == "" {
+				name = filepath.Base(f.Path)
+			}
+			fmt.Printf("%s  %s\n", f.Path, name)
+		}
+		return 0
+	case "add":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: nubilo agent files add PATH [NAME]")
+			return 2
+		}
+		abs, err := filepath.Abs(args[1])
+		if err != nil {
+			return fatal(err)
+		}
+		st, err := os.Stat(abs)
+		if err != nil {
+			return fatal(err)
+		}
+		if !st.IsDir() {
+			return fatal(fmt.Errorf("%s is not a directory", abs))
+		}
+		name := ""
+		if len(args) >= 3 {
+			name = strings.Join(args[2:], " ")
+		}
+		sel.AddFileFolder(abs, name)
+		sel.Files.Enabled = true
+		if err := agent.SaveSelection(path, sel); err != nil {
+			return fatal(err)
+		}
+		fmt.Printf("added folder %s\n", abs)
+		return 0
+	case "remove":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: nubilo agent files remove PATH")
+			return 2
+		}
+		abs, err := filepath.Abs(args[1])
+		if err != nil {
+			return fatal(err)
+		}
+		sel.RemoveFileFolder(abs)
+		// also try the raw path in case it was stored differently
+		sel.RemoveFileFolder(args[1])
+		if err := agent.SaveSelection(path, sel); err != nil {
+			return fatal(err)
+		}
+		fmt.Printf("removed folder %s\n", abs)
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown files command %q\n", args[0])
 		return 2
 	}
 }
@@ -575,17 +660,25 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 		Reminders: rems,
 		Contacts:  book,
 		Photos:    pics,
+		Files:     agent.OpenFiles(),
 		Log:       slog.Default(),
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	fmt.Printf("agent running interval=%ds window=%dd calendars=%d reminders=%d contacts=%v photos=%v\n",
-		sel.IntervalSeconds, sel.WindowDays, len(sel.Calendars), len(sel.Reminders), sel.SyncContacts, sel.Photos.Enabled)
+	fmt.Printf("agent running interval=%ds window=%dd calendars=%d reminders=%d contacts=%v photos=%v files=%v\n",
+		sel.IntervalSeconds, sel.WindowDays, len(sel.Calendars), len(sel.Reminders), sel.SyncContacts, sel.Photos.Enabled, sel.Files.Enabled)
 	for _, c := range sel.Calendars {
 		fmt.Printf("  calendar %s (%s)\n", c.LocalID, c.Title)
 	}
 	for _, c := range sel.Reminders {
 		fmt.Printf("  reminders %s (%s)\n", c.LocalID, c.Title)
+	}
+	for _, f := range sel.Files.Folders {
+		name := f.Name
+		if name == "" {
+			name = filepath.Base(f.Path)
+		}
+		fmt.Printf("  files %s (%s)\n", f.Path, name)
 	}
 	if len(sel.Calendars) == 0 && len(sel.Reminders) == 0 {
 		fmt.Fprintln(os.Stderr, "warning: no calendars or reminder lists selected; iPhone CalDAV will stay empty")

@@ -228,6 +228,23 @@ func EnsureAutoTLS(cfg *config.Config) (created bool, err error) {
 	return true, nil
 }
 
+// RegenerateTLS always writes a new self-signed cert/key for local hosts and updates cfg paths.
+func RegenerateTLS(cfg *config.Config, extraHosts []string) error {
+	if cfg == nil || cfg.DataDir == "" {
+		return fmt.Errorf("tls: data_dir is required")
+	}
+	cert := filepath.Join(cfg.DataDir, "tls.crt")
+	key := filepath.Join(cfg.DataDir, "tls.key")
+	hosts := ncrypto.LocalListenHosts()
+	hosts = append(hosts, extraHosts...)
+	if err := ncrypto.GenerateTLS(cert, key, hosts, 0); err != nil {
+		return err
+	}
+	cfg.TLS.Cert = cert
+	cfg.TLS.Key = key
+	return nil
+}
+
 func ResolveDataDir(flag string) (string, error) {
 	if flag != "" {
 		return filepath.Abs(flag)

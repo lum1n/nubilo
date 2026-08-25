@@ -91,14 +91,19 @@ func (e *Engine) CreateCollection(ctx context.Context, kind, name, parentID stri
 }
 
 func (e *Engine) EnsureNamedCollection(ctx context.Context, kind, name string) (*Collection, error) {
-	c, err := e.FindChildCollection(ctx, kind, "", name)
+	return e.EnsureChildCollection(ctx, kind, "", name)
+}
+
+// EnsureChildCollection returns an existing live child collection or creates one.
+func (e *Engine) EnsureChildCollection(ctx context.Context, kind, parentID, name string) (*Collection, error) {
+	c, err := e.FindChildCollection(ctx, kind, parentID, name)
 	if err == nil {
 		return c, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	return e.CreateCollection(ctx, kind, name, "", nil)
+	return e.CreateCollection(ctx, kind, name, parentID, nil)
 }
 
 func (e *Engine) GetCollections(ctx context.Context, dev *identity.Device) ([]Collection, error) {
@@ -385,9 +390,9 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 		newRev := obj.Revision + 1
 		oldBlob := obj.BlobID
 		if _, err := tx.Exec(`
-			UPDATE objects SET revision=?, content_hash=?, metadata_hash=?, blob_id=?, size=?, origin_device=?, metadata=?, updated_at=?
+			UPDATE objects SET collection_id=?, revision=?, content_hash=?, metadata_hash=?, blob_id=?, size=?, origin_device=?, metadata=?, updated_at=?
 			WHERE id=?
-		`, newRev, in.ContentHash, in.MetadataHash, nullIfEmpty(in.BlobID), in.Size, dev.ID, string(in.Metadata), now, in.ObjectID); err != nil {
+		`, in.CollectionID, newRev, in.ContentHash, in.MetadataHash, nullIfEmpty(in.BlobID), in.Size, dev.ID, string(in.Metadata), now, in.ObjectID); err != nil {
 			return res, err
 		}
 		if oldBlob != in.BlobID {

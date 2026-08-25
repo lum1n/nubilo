@@ -48,7 +48,12 @@
   <div id="toast" class="toast hidden"></div>
   <div id="lightbox" class="lightbox hidden">
     <button type="button" class="lightbox-close" aria-label="Close">esc</button>
-    <img id="lightbox-img" alt="">
+    <div class="lightbox-body">
+      <img id="lightbox-img" alt="">
+      <video id="lightbox-video" class="hidden" controls playsinline></video>
+    </div>
+    <div class="lightbox-meta" id="lightbox-meta"></div>
+    <div class="lightbox-actions" id="lightbox-actions"></div>
   </div>
 
   <script src="/assets/app.js"></script>

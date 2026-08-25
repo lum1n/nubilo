@@ -132,6 +132,80 @@ func TestMkcolAndNestedPut(t *testing.T) {
 	}
 }
 
+func TestCopyCollectionAndMoveFile(t *testing.T) {
+	ts, dev, pass, eng := davServer(t)
+	resp := req(t, ts, "MKCOL", "/dav/files/Src", dev.ID, pass, nil)
+	resp.Body.Close()
+	resp = req(t, ts, http.MethodPut, "/dav/files/Src/note.txt", dev.ID, pass, []byte("hello"))
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("put %d", resp.StatusCode)
+	}
+	resp = req(t, ts, "MKCOL", "/dav/files/Src/sub", dev.ID, pass, nil)
+	resp.Body.Close()
+	resp = req(t, ts, http.MethodPut, "/dav/files/Src/sub/inner.txt", dev.ID, pass, []byte("inner"))
+	resp.Body.Close()
+
+	r, _ := http.NewRequest("COPY", ts.URL+"/dav/files/Src", nil)
+	r.SetBasicAuth(dev.ID, pass)
+	r.Header.Set("Destination", ts.URL+"/dav/files/Dst")
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("copy %d", resp.StatusCode)
+	}
+	resp = req(t, ts, http.MethodGet, "/dav/files/Dst/note.txt", dev.ID, pass, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(body) != "hello" {
+		t.Fatalf("dst note %d %q", resp.StatusCode, body)
+	}
+	resp = req(t, ts, http.MethodGet, "/dav/files/Dst/sub/inner.txt", dev.ID, pass, nil)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(body) != "inner" {
+		t.Fatalf("dst inner %d %q", resp.StatusCode, body)
+	}
+
+	resp = req(t, ts, "MKCOL", "/dav/files/Other", dev.ID, pass, nil)
+	resp.Body.Close()
+	r, _ = http.NewRequest("MOVE", ts.URL+"/dav/files/Src/note.txt", nil)
+	r.SetBasicAuth(dev.ID, pass)
+	r.Header.Set("Destination", ts.URL+"/dav/files/Other/moved.txt")
+	resp, err = http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("move %d", resp.StatusCode)
+	}
+	resp = req(t, ts, http.MethodGet, "/dav/files/Other/moved.txt", dev.ID, pass, nil)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(body) != "hello" {
+		t.Fatalf("moved %d %q", resp.StatusCode, body)
+	}
+	cols, _ := eng.ChildCollections(context.Background(), "files", "")
+	var otherID string
+	for _, c := range cols {
+		if c.Name == "Other" {
+			otherID = c.ID
+		}
+	}
+	objs, _ := eng.ListObjects(context.Background(), otherID)
+	if len(objs) != 1 {
+		t.Fatalf("other objs %d", len(objs))
+	}
+	meta := dav.ParseFileMeta(objs[0].Metadata)
+	if meta.Name != "moved.txt" {
+		t.Fatalf("meta %+v", meta)
+	}
+}
+
 func TestPathTraversalHTTP(t *testing.T) {
 	ts, dev, pass, _ := davServer(t)
 	resp := req(t, ts, http.MethodGet, "/dav/files/Files/../../etc/passwd", dev.ID, pass, nil)

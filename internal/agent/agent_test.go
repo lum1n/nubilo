@@ -867,9 +867,10 @@ func TestEncodeICSRoundTrip(t *testing.T) {
 }
 
 type fakePhotos struct {
-	mu      sync.Mutex
-	list    []agent.LocalPhoto
-	listErr error
+	mu       sync.Mutex
+	list     []agent.LocalPhoto
+	listErr  error
+	imported []string
 }
 
 func (f *fakePhotos) ListAlbums() ([]agent.PhotoInfo, error) {
@@ -906,6 +907,32 @@ func (f *fakePhotos) ReadOriginal(id string) ([]byte, error) {
 		}
 	}
 	return nil, errors.New("missing")
+}
+
+func (f *fakePhotos) ReadLiveMovie(id string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.list {
+		if p.ID == id {
+			if len(p.LiveMovie) == 0 {
+				return nil, nil
+			}
+			return append([]byte(nil), p.LiveMovie...), nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakePhotos) ImportOriginal(data []byte, filename, albumID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := "imported-" + filename
+	f.list = append(f.list, agent.LocalPhoto{
+		ID: id, Filename: filename, Original: append([]byte(nil), data...),
+		ModMS: time.Now().UnixMilli(), Kind: "image",
+	})
+	f.imported = append(f.imported, id)
+	return id, nil
 }
 
 func testJPEGBytes(t *testing.T, w, h int) []byte {
@@ -1025,5 +1052,113 @@ func TestPhotoDateRangeIsNotDelete(t *testing.T) {
 	}
 	if n := liveCount(t, h.eng, "photos", "Photos"); n != 1 {
 		t.Fatalf("out-of-range treated as delete, live=%d", n)
+	}
+}
+
+func TestPushPhotoModChangeRepushes(t *testing.T) {
+	h := startHarness(t)
+	orig1 := testJPEGBytes(t, 40, 40)
+	orig2 := testJPEGBytes(t, 48, 48)
+	src := &fakePhotos{list: []agent.LocalPhoto{{
+		ID: "pk-mod", Filename: "m.jpg", TakenAtMS: time.Now().UnixMilli(), ModMS: 1000, Original: orig1,
+	}}}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	a := newAgent(h, sel, nil, nil)
+	a.Photos = src
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	col := collection(t, h.eng, "photos", "Photos")
+	objs, err := h.eng.ListObjects(context.Background(), col.ID)
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("objs %v %d", err, len(objs))
+	}
+	firstHash := objs[0].ContentHash
+	src.mu.Lock()
+	src.list[0].Original = orig2
+	src.list[0].ModMS = 2000
+	src.mu.Unlock()
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	objs, err = h.eng.ListObjects(context.Background(), col.ID)
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("after %v %d", err, len(objs))
+	}
+	if objs[0].ContentHash == firstHash {
+		t.Fatal("expected content update after mod change")
+	}
+	row, err := a.Map.ByLocal("photo", "pk-mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ModMS != 2000 {
+		t.Fatalf("mod_ms %d", row.ModMS)
+	}
+}
+
+func TestPushVideoMeta(t *testing.T) {
+	h := startHarness(t)
+	// Minimal ftyp/isom box so DetectMIME returns video/mp4.
+	vid := []byte{
+		0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm',
+	}
+	src := &fakePhotos{list: []agent.LocalPhoto{{
+		ID: "pk-vid", Filename: "clip.mp4", Kind: "video", DurationMS: 3500,
+		TakenAtMS: time.Now().UnixMilli(), ModMS: 1, Original: vid,
+	}}}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	a := newAgent(h, sel, nil, nil)
+	a.Photos = src
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	col := collection(t, h.eng, "photos", "Photos")
+	objs, err := h.eng.ListObjects(context.Background(), col.ID)
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("%v %d", err, len(objs))
+	}
+	m := photos.ParseMeta(objs[0].Metadata)
+	if m.Kind != "video" {
+		t.Fatalf("kind %q", m.Kind)
+	}
+	if m.DurationMS != 3500 {
+		t.Fatalf("duration %d", m.DurationMS)
+	}
+	if m.ThumbHash != "" {
+		t.Fatal("video should not have thumb")
+	}
+}
+
+func TestPhotoWriteBackImport(t *testing.T) {
+	h := startHarness(t)
+	orig := testJPEGBytes(t, 24, 24)
+	src := &fakePhotos{}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	// Separate idmap so this agent does not already know the object a2 pushed.
+	mp, err := agent.OpenMap(filepath.Join(t.TempDir(), "agent-b.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mp.Close() })
+	a := newAgent(h, sel, nil, nil)
+	a.Map = mp
+	a.Photos = src
+	src2 := &fakePhotos{list: []agent.LocalPhoto{{
+		ID: "remote-1", Filename: "r.jpg", TakenAtMS: time.Now().UnixMilli(), ModMS: 5, Original: orig,
+	}}}
+	a2 := newAgent(h, sel, nil, nil)
+	a2.Photos = src2
+	if err := a2.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	src.mu.Lock()
+	n := len(src.imported)
+	src.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("expected import, got %d", n)
 	}
 }

@@ -18,6 +18,16 @@ type PhotosSel struct {
 	BeforeMS int64    `json:"before_ms"`
 }
 
+type FileFolderSel struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+type FilesSel struct {
+	Enabled bool            `json:"enabled"`
+	Folders []FileFolderSel `json:"folders"`
+}
+
 type Selection struct {
 	IntervalSeconds int           `json:"interval_seconds"`
 	WindowDays      int           `json:"window_days"`
@@ -25,6 +35,7 @@ type Selection struct {
 	Reminders       []CalendarSel `json:"reminders"`
 	SyncContacts    bool          `json:"sync_contacts"`
 	Photos          PhotosSel     `json:"photos"`
+	Files           FilesSel      `json:"files"`
 }
 
 func DefaultSelection() Selection {
@@ -137,4 +148,26 @@ func (s Selection) PhotoFilter() PhotoFilter {
 		src = "all"
 	}
 	return PhotoFilter{Source: src, Albums: s.Photos.Albums, AfterMS: s.Photos.AfterMS, BeforeMS: s.Photos.BeforeMS}
+}
+
+func (s *Selection) AddFileFolder(path, name string) {
+	for i := range s.Files.Folders {
+		if s.Files.Folders[i].Path == path {
+			if name != "" {
+				s.Files.Folders[i].Name = name
+			}
+			return
+		}
+	}
+	s.Files.Folders = append(s.Files.Folders, FileFolderSel{Path: path, Name: name})
+}
+
+func (s *Selection) RemoveFileFolder(path string) {
+	out := s.Files.Folders[:0]
+	for _, f := range s.Files.Folders {
+		if f.Path != path {
+			out = append(out, f)
+		}
+	}
+	s.Files.Folders = out
 }

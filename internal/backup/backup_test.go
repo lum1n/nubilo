@@ -72,6 +72,42 @@ func TestBackupRestore(t *testing.T) {
 	_ = integrity.Issue{}
 }
 
+func TestRotateCreateKeepsLastN(t *testing.T) {
+	ncrypto.Argon2Memory = 8
+	ncrypto.Argon2Time = 1
+	dir := t.TempDir()
+	master, _ := ncrypto.GenerateMasterKey()
+	_ = os.WriteFile(filepath.Join(dir, "master.key"), master, 0o600)
+	key, _ := ncrypto.DeriveKey(master, ncrypto.BlobKeyInfo)
+	st, err := store.Open(dir, filepath.Join(dir, "metadata.db"), filepath.Join(dir, "blobs"), filepath.Join(dir, "tmp"), key, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for i := 0; i < 5; i++ {
+		if _, err := backup.RotateCreate(context.Background(), st, dir, "pass", 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("keep last 2, got %d", n)
+	}
+	same, err := backup.SameDataDir(dir, dir)
+	if err != nil || !same {
+		t.Fatalf("same %v %v", same, err)
+	}
+}
+
 func TestBackupRestorePhotosDrill(t *testing.T) {
 	ncrypto.Argon2Memory = 8
 	ncrypto.Argon2Time = 1

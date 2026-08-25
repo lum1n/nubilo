@@ -2,8 +2,10 @@ package ui_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"nubilo/internal/app"
+	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/ui"
 )
 
@@ -162,6 +165,8 @@ func authedJSON(t *testing.T, base string, cookie *http.Cookie, method, path str
 }
 
 func TestUICreateCollectionAndPair(t *testing.T) {
+	ncrypto.Argon2Memory = 8
+	ncrypto.Argon2Time = 1
 	rt := testRuntime(t)
 	srv, err := ui.New(rt, ui.DefaultListen, nil)
 	if err != nil {
@@ -230,5 +235,102 @@ func TestUICreateCollectionAndPair(t *testing.T) {
 	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/gc", map[string]any{"apply": false})
 	if code != 200 {
 		t.Fatalf("gc %d %v", code, out)
+	}
+
+	code, out = authedJSON(t, ts.URL, cookie, "GET", "/api/status", nil)
+	if code != 200 {
+		t.Fatalf("status %d %v", code, out)
+	}
+	if _, ok := out["blob_count"]; !ok {
+		t.Fatalf("status missing blob_count: %v", out)
+	}
+	if _, ok := out["verify_issue_count"]; ok {
+		t.Fatal("status should not run integrity.Check on every load")
+	}
+
+	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/backup", map[string]any{"passphrase": "test-pass-phrase"})
+	if code != 200 {
+		t.Fatalf("backup %d %v", code, out)
+	}
+	tok, _ := out["token"].(string)
+	if tok == "" {
+		t.Fatalf("no token %v", out)
+	}
+	req, err := http.NewRequest("GET", ts.URL+"/api/backup/download/"+tok, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(cookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || len(body) < 8 {
+		t.Fatalf("download %d len=%d", resp.StatusCode, len(body))
+	}
+	// Second download of same token must fail.
+	req, _ = http.NewRequest("GET", ts.URL+"/api/backup/download/"+tok, nil)
+	req.AddCookie(cookie)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("reuse token %d", resp.StatusCode)
+	}
+
+	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/tls", map[string]any{})
+	if code != 200 {
+		t.Fatalf("tls %d %v", code, out)
+	}
+	if out["cert"] == nil {
+		t.Fatalf("%v", out)
+	}
+
+	pub := make([]byte, 32)
+	for i := range pub {
+		pub[i] = byte(i + 1)
+	}
+	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/devices/enroll", map[string]any{
+		"name": "ui-enroll", "pubkey": hex.EncodeToString(pub), "role": "client",
+	})
+	if code != 200 {
+		t.Fatalf("enroll %d %v", code, out)
+	}
+	devID, _ := out["id"].(string)
+	pub2 := make([]byte, 32)
+	for i := range pub2 {
+		pub2[i] = byte(100 + i)
+	}
+	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/devices/rotate", map[string]any{
+		"id": devID, "pubkey": hex.EncodeToString(pub2),
+	})
+	if code != 200 {
+		t.Fatalf("rotate %d %v", code, out)
+	}
+
+	// Restore onto live data_dir must be refused.
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("passphrase", "x")
+	_ = mw.WriteField("dest", rt.Cfg.DataDir)
+	_ = mw.WriteField("confirm", "RESTORE")
+	fw, _ := mw.CreateFormFile("archive", "b.nuback")
+	_, _ = fw.Write(body)
+	mw.Close()
+	req, _ = http.NewRequest("POST", ts.URL+"/api/restore", &buf)
+	req.AddCookie(cookie)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 400 || !strings.Contains(string(raw), "live") {
+		t.Fatalf("restore live %d %s", resp.StatusCode, raw)
 	}
 }

@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	ncrypto "nubilo/internal/crypto"
@@ -23,6 +27,8 @@ const (
 	kindBook    = "addressbook"
 	kindPhoto   = "photo"
 	kindPhotos  = "photos"
+	kindFile    = "file"
+	kindFiles   = "files"
 )
 
 type Agent struct {
@@ -34,14 +40,17 @@ type Agent struct {
 	Reminders ReminderSource
 	Contacts  ContactSource
 	Photos    PhotoSource
+	Files     FileSource
 	Log       *slog.Logger
 
 	routes map[string]route
 }
 
 type route struct {
-	localID string
-	kind    string
+	localID  string
+	kind     string
+	rootPath string // selected folder absolute path (files)
+	relDir   string // relative dir of this collection within root (files)
 }
 
 func (a *Agent) reloadSelection() error {
@@ -139,6 +148,12 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 			if rt.kind == kindContact && a.Contacts != nil {
 				_ = a.Contacts.DeleteContact(existing.LocalID)
 			}
+			if rt.kind == kindFile && a.Files != nil {
+				_ = a.Files.DeleteFile(existing.LocalID)
+			}
+			if rt.kind == kindPhoto {
+				// Do not delete from Photos.app on remote tombstone (safe default).
+			}
 			return a.Map.DeleteObject(ch.ObjectID)
 		}
 		return nil
@@ -156,6 +171,7 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 	}
 	var localID string
 	var startMS int64
+	var modMS int64
 	switch rt.kind {
 	case kindEvent:
 		if a.Cal == nil {
@@ -198,12 +214,56 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 			return err
 		}
 		localID = id
+	case kindFile:
+		if a.Files == nil || rt.rootPath == "" {
+			return nil
+		}
+		meta := dav.ParseFileMeta(ch.Metadata)
+		name := meta.Name
+		if skipFileName(name) {
+			return nil
+		}
+		abs := filepath.Join(rt.rootPath, filepath.FromSlash(rt.relDir), name)
+		if err := a.Files.WriteFile(abs, payload); err != nil {
+			return err
+		}
+		localID = abs
+	case kindPhoto:
+		if a.Photos == nil {
+			return nil
+		}
+		if mapErr == nil {
+			// Already mapped locally; last-writer-wins only if content changed.
+			if existing.ContentHash == ch.ContentHash {
+				return a.Map.Put(Mapping{
+					LocalID: existing.LocalID, Kind: kindPhoto, ObjectID: ch.ObjectID, CollectionID: ch.CollectionID,
+					ContentHash: ch.ContentHash, Revision: ch.Revision, StartMS: existing.StartMS, ModMS: existing.ModMS,
+				})
+			}
+			// Content changed remotely: import a new asset (do not mutate existing Photos).
+		}
+		pm := photos.ParseMeta(ch.Metadata)
+		name := pm.Name
+		if name == "" {
+			name = "photo.bin"
+		}
+		albumID := ""
+		if len(a.Sel.Photos.Albums) > 0 {
+			albumID = a.Sel.Photos.Albums[0]
+		}
+		id, err := a.Photos.ImportOriginal(payload, name, albumID)
+		if err != nil {
+			return err
+		}
+		localID = id
+		startMS = pm.TakenAtMS
+		modMS = time.Now().UnixMilli()
 	default:
 		return nil
 	}
 	return a.Map.Put(Mapping{
 		LocalID: localID, Kind: rt.kind, ObjectID: ch.ObjectID, CollectionID: ch.CollectionID,
-		ContentHash: ch.ContentHash, Revision: ch.Revision, StartMS: startMS,
+		ContentHash: ch.ContentHash, Revision: ch.Revision, StartMS: startMS, ModMS: modMS,
 	})
 }
 
@@ -217,7 +277,10 @@ func (a *Agent) pushLocal(ctx context.Context) error {
 	if err := a.pushContacts(ctx); err != nil {
 		return err
 	}
-	return a.pushPhotos(ctx)
+	if err := a.pushPhotos(ctx); err != nil {
+		return err
+	}
+	return a.pushFiles(ctx)
 }
 
 func (a *Agent) pushCalendars(ctx context.Context) error {
@@ -499,7 +562,7 @@ func (a *Agent) pushContact(collectionID string, c LocalContact) error {
 		ContentHash:  hash,
 		BlobID:       hash,
 		Size:         int64(len(c.VCard)),
-		Metadata:     dav.EncodeContactMeta(dav.ContactMeta{Name: dav.DAVResourceName(uid+".vcf", ".vcf"), UID: uid}),
+		Metadata:     dav.EncodeContactMeta(dav.ContactMetaFromVCard(dav.DAVResourceName(uid+".vcf", ".vcf"), uid, c.VCard)),
 		Force:        true,
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -575,28 +638,212 @@ func (a *Agent) pushPhotos(ctx context.Context) error {
 	return nil
 }
 
+func (a *Agent) pushFiles(ctx context.Context) error {
+	if a.Files == nil || !a.Sel.Files.Enabled {
+		return nil
+	}
+	for _, folder := range a.Sel.Files.Folders {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := a.pushFileFolder(ctx, folder); err != nil {
+			a.Log.Warn("push_files", "path", folder.Path, "err", err.Error())
+		}
+	}
+	return nil
+}
+
+func (a *Agent) pushFileFolder(ctx context.Context, folder FileFolderSel) error {
+	root, err := filepath.Abs(folder.Path)
+	if err != nil {
+		return err
+	}
+	name := folder.Name
+	if name == "" {
+		name = filepath.Base(root)
+	}
+	rootCol, err := a.ensureCollection(kindFiles, name)
+	if err != nil {
+		return err
+	}
+	a.routes[rootCol.ID] = route{kind: kindFile, rootPath: root, relDir: ""}
+	list, err := a.Files.ListFiles(root)
+	if err != nil {
+		a.Log.Warn("list_files_failed", "path", root, "err", err.Error())
+		return nil
+	}
+	seen := map[string]bool{}
+	colCache := map[string]string{"": rootCol.ID}
+	for _, f := range list {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		dir := filepath.ToSlash(filepath.Dir(f.RelPath))
+		if dir == "." {
+			dir = ""
+		}
+		colID, err := a.ensureFileDirCollection(root, rootCol.ID, dir, colCache)
+		if err != nil {
+			a.Log.Warn("ensure_file_dir", "dir", dir, "err", err.Error())
+			continue
+		}
+		seen[f.AbsPath] = true
+		if err := a.pushFile(colID, f); err != nil {
+			a.Log.Warn("push_file", "err", err.Error(), "local", f.AbsPath)
+		}
+	}
+	for colID, rt := range a.routes {
+		if rt.kind != kindFile || rt.rootPath != root {
+			continue
+		}
+		mapped, err := a.Map.ForCollection(colID)
+		if err != nil {
+			return err
+		}
+		for _, row := range mapped {
+			if seen[row.LocalID] {
+				continue
+			}
+			if !strings.HasPrefix(row.LocalID, root+string(os.PathSeparator)) && row.LocalID != root {
+				continue
+			}
+			if err := a.pushDelete(row); err != nil {
+				a.Log.Warn("push_delete", "err", err.Error(), "object", row.ObjectID)
+			}
+		}
+	}
+	return nil
+}
+
+func (a *Agent) ensureFileDirCollection(root, rootColID, relDir string, cache map[string]string) (string, error) {
+	if id, ok := cache[relDir]; ok {
+		return id, nil
+	}
+	parts := strings.Split(relDir, "/")
+	parentID := rootColID
+	cur := ""
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if cur == "" {
+			cur = p
+		} else {
+			cur = cur + "/" + p
+		}
+		if id, ok := cache[cur]; ok {
+			parentID = id
+			continue
+		}
+		col, err := a.ensureChildFilesCollection(parentID, p)
+		if err != nil {
+			return "", err
+		}
+		a.routes[col.ID] = route{kind: kindFile, rootPath: root, relDir: cur}
+		cache[cur] = col.ID
+		parentID = col.ID
+	}
+	cache[relDir] = parentID
+	return parentID, nil
+}
+
+func (a *Agent) pushFile(collectionID string, f LocalFile) error {
+	if skipFileName(f.Name) {
+		return nil
+	}
+	hash := ncrypto.SHA256Hex(f.Data)
+	row, err := a.Map.ByLocal(kindFile, f.AbsPath)
+	if err == nil && row.ContentHash == hash && row.CollectionID == collectionID {
+		return nil
+	}
+	if err := a.Client.PutBlob(hash, f.Data); err != nil {
+		return err
+	}
+	mime := http.DetectContentType(f.Data)
+	in := syncengine.ChangeInput{
+		CollectionID: collectionID,
+		Kind:         kindFile,
+		ContentHash:  hash,
+		BlobID:       hash,
+		Size:         f.Size,
+		Metadata:     dav.EncodeFileMeta(dav.FileMeta{Name: f.Name, MIME: mime}),
+		Force:        true,
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		in.ObjectID = ids.New()
+		in.Op = syncengine.OpCreate
+	} else if err != nil {
+		return err
+	} else {
+		in.ObjectID = row.ObjectID
+		in.Op = syncengine.OpUpdate
+		in.BaseRevision = row.Revision
+	}
+	res, err := a.Client.Push(ids.New(), []syncengine.ChangeInput{in})
+	if err != nil {
+		return err
+	}
+	if len(res) == 0 || res[0].Status != "ok" {
+		return errors.New("push file rejected")
+	}
+	return a.Map.Put(Mapping{
+		LocalID: f.AbsPath, Kind: kindFile, ObjectID: in.ObjectID, CollectionID: collectionID,
+		ContentHash: hash, Revision: res[0].Revision,
+	})
+}
+
 func (a *Agent) pushPhoto(collectionID string, p LocalPhoto) error {
 	row, mapErr := a.Map.ByLocal(kindPhoto, p.ID)
-	orig := p.Original
-	if len(orig) == 0 {
-		if mapErr == nil {
+	if mapErr == nil {
+		// Skip re-export when mapped and PhotoKit modificationDate unchanged.
+		if p.ModMS > 0 && row.ModMS == p.ModMS {
 			return nil
 		}
+		if p.ModMS == 0 && len(p.Original) == 0 {
+			// No mod signal and no in-memory bytes: keep prior skip-if-mapped behavior.
+			return nil
+		}
+	}
+	orig := p.Original
+	if len(orig) == 0 {
 		var err error
 		orig, err = a.Photos.ReadOriginal(p.ID)
 		if err != nil {
 			return err
 		}
-	} else if mapErr == nil && row.ContentHash == ncrypto.SHA256Hex(orig) {
+	}
+	if mapErr == nil && len(orig) > 0 && row.ContentHash == ncrypto.SHA256Hex(orig) {
+		if p.ModMS > 0 && row.ModMS != p.ModMS {
+			row.ModMS = p.ModMS
+			return a.Map.Put(row)
+		}
 		return nil
 	}
-	prep, err := photos.Prepare(orig, p.Filename, photos.DefaultOptions())
+	kind := p.Kind
+	if kind == "" {
+		kind = "image"
+	}
+	prep, err := photos.PrepareKind(orig, p.Filename, kind, p.DurationMS, photos.DefaultOptions())
 	if err != nil {
 		return err
 	}
 	prep.Meta.Albums = p.Albums
 	if p.TakenAtMS != 0 && prep.Meta.TakenAtMS == 0 {
 		prep.Meta.TakenAtMS = p.TakenAtMS
+	}
+	if kind == "live" {
+		live := p.LiveMovie
+		if len(live) == 0 {
+			live, _ = a.Photos.ReadLiveMovie(p.ID)
+		}
+		if len(live) > 0 {
+			lh := ncrypto.SHA256Hex(live)
+			if err := a.Client.PutBlob(lh, live); err != nil {
+				return err
+			}
+			prep.Meta.LivePairHash = lh
+			prep.Meta.Kind = "live"
+		}
 	}
 	origHash := ncrypto.SHA256Hex(prep.Original)
 	prep.Meta.Checksum = origHash
@@ -645,7 +892,7 @@ func (a *Agent) pushPhoto(collectionID string, p LocalPhoto) error {
 	}
 	return a.Map.Put(Mapping{
 		LocalID: p.ID, Kind: kindPhoto, ObjectID: in.ObjectID, CollectionID: collectionID,
-		ContentHash: origHash, Revision: res[0].Revision, StartMS: prep.Meta.TakenAtMS,
+		ContentHash: origHash, Revision: res[0].Revision, StartMS: prep.Meta.TakenAtMS, ModMS: p.ModMS,
 	})
 }
 
@@ -769,7 +1016,86 @@ func (a *Agent) bindRoutes() error {
 		}
 		a.routes[col.ID] = route{kind: kindContact}
 	}
+	if a.Sel.Photos.Enabled {
+		col, err := a.ensureCollection(kindPhotos, photos.DefaultName)
+		if err != nil {
+			return err
+		}
+		a.routes[col.ID] = route{kind: kindPhoto}
+	}
+	if a.Sel.Files.Enabled && a.Files != nil {
+		for _, folder := range a.Sel.Files.Folders {
+			if err := a.bindFileFolder(folder); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+func (a *Agent) bindFileFolder(folder FileFolderSel) error {
+	root, err := filepath.Abs(folder.Path)
+	if err != nil {
+		return err
+	}
+	name := folder.Name
+	if name == "" {
+		name = filepath.Base(root)
+	}
+	col, err := a.ensureCollection(kindFiles, name)
+	if err != nil {
+		return err
+	}
+	a.routes[col.ID] = route{kind: kindFile, rootPath: root, relDir: ""}
+	return a.bindFileSubdirs(root, col.ID, "")
+}
+
+func (a *Agent) bindFileSubdirs(root, parentColID, relDir string) error {
+	dir := filepath.Join(root, filepath.FromSlash(relDir))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == ".git" || name == "node_modules" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !dav.ValidDisplayName(name) {
+			continue
+		}
+		childRel := name
+		if relDir != "" {
+			childRel = relDir + "/" + name
+		}
+		col, err := a.ensureChildFilesCollection(parentColID, name)
+		if err != nil {
+			return err
+		}
+		a.routes[col.ID] = route{kind: kindFile, rootPath: root, relDir: childRel}
+		if err := a.bindFileSubdirs(root, col.ID, childRel); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Agent) ensureChildFilesCollection(parentID, name string) (*syncengine.Collection, error) {
+	name = dav.DAVResourceName(name, "")
+	cols, err := a.Client.Collections()
+	if err != nil {
+		return nil, err
+	}
+	for i := range cols {
+		c := &cols[i]
+		if c.Kind == kindFiles && c.Name == name && c.ParentID == parentID && c.DeletedAt == nil {
+			return c, nil
+		}
+	}
+	return a.Client.EnsureChildCollection(kindFiles, parentID, name, nil)
 }
 
 func (a *Agent) ensureCollection(kind, name string) (*syncengine.Collection, error) {
@@ -851,7 +1177,7 @@ func (a *Agent) runSync(ctx context.Context) {
 		a.Log.Error("sync", "err", err.Error())
 		return
 	}
-	a.Log.Info("sync_ok", "calendars", len(a.Sel.Calendars), "reminders", len(a.Sel.Reminders), "contacts", a.Sel.SyncContacts, "photos", a.Sel.Photos.Enabled)
+	a.Log.Info("sync_ok", "calendars", len(a.Sel.Calendars), "reminders", len(a.Sel.Reminders), "contacts", a.Sel.SyncContacts, "photos", a.Sel.Photos.Enabled, "files", a.Sel.Files.Enabled)
 }
 
 func (a *Agent) Run(ctx context.Context) error {

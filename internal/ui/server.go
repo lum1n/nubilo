@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"nubilo/internal/app"
@@ -27,6 +28,9 @@ type Server struct {
 	Listen  string
 	session []byte
 	http    *http.Server
+
+	backupMu  sync.Mutex
+	backupTok map[string]dlToken
 }
 
 func New(rt *app.Runtime, listen string, log *slog.Logger) (*Server, error) {
@@ -65,6 +69,7 @@ func New(rt *app.Runtime, listen string, log *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /api/collections/{id}/rename", s.authed(s.handleCollectionRename))
 	mux.HandleFunc("DELETE /api/collections/{id}", s.authed(s.handleCollectionDelete))
 	mux.HandleFunc("GET /api/collections/{id}/objects", s.authed(s.handleCollectionObjects))
+	mux.HandleFunc("POST /api/collections/{id}/upload", s.authed(s.handleCollectionUpload))
 	mux.HandleFunc("DELETE /api/objects/{id}", s.authed(s.handleObjectDelete))
 	mux.HandleFunc("GET /api/blobs/{hash}", s.authed(s.handleBlob))
 	mux.HandleFunc("GET /api/photos", s.authed(s.handlePhotos))
@@ -73,6 +78,12 @@ func New(rt *app.Runtime, listen string, log *slog.Logger) (*Server, error) {
 	mux.HandleFunc("GET /api/pair/{id}", s.authed(s.handlePairStatus))
 	mux.HandleFunc("POST /api/verify", s.authed(s.handleVerify))
 	mux.HandleFunc("POST /api/gc", s.authed(s.handleGC))
+	mux.HandleFunc("POST /api/backup", s.authed(s.handleBackupCreate))
+	mux.HandleFunc("GET /api/backup/download/{token}", s.authed(s.handleBackupDownload))
+	mux.HandleFunc("POST /api/restore", s.authed(s.handleRestore))
+	mux.HandleFunc("POST /api/tls", s.authed(s.handleTLSRegen))
+	mux.HandleFunc("POST /api/devices/enroll", s.authed(s.handleDeviceEnroll))
+	mux.HandleFunc("POST /api/devices/rotate", s.authed(s.handleDeviceRotate))
 	static, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(static))))
 	mux.HandleFunc("GET /{$}", s.serveIndex)

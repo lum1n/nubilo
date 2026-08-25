@@ -53,12 +53,17 @@ func (c *Client) Collections() ([]syncengine.Collection, error) {
 }
 
 func (c *Client) EnsureCollection(kind, name string, metadata json.RawMessage) (*syncengine.Collection, error) {
+	return c.EnsureChildCollection(kind, "", name, metadata)
+}
+
+func (c *Client) EnsureChildCollection(kind, parentID, name string, metadata json.RawMessage) (*syncengine.Collection, error) {
 	var col syncengine.Collection
 	err := c.doJSON(http.MethodPost, "/sync/v1/collection", struct {
 		Kind     string          `json:"kind"`
 		Name     string          `json:"name"`
+		ParentID string          `json:"parent_id,omitempty"`
 		Metadata json.RawMessage `json:"metadata,omitempty"`
-	}{Kind: kind, Name: name, Metadata: metadata}, &col)
+	}{Kind: kind, Name: name, ParentID: parentID, Metadata: metadata}, &col)
 	if err != nil {
 		return nil, err
 	}

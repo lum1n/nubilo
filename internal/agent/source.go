@@ -44,13 +44,16 @@ type PhotoInfo struct {
 }
 
 type LocalPhoto struct {
-	ID        string
-	Filename  string
-	TakenAtMS int64
-	ModMS     int64
-	Size      int64
-	Albums    []string
-	Original  []byte
+	ID         string
+	Filename   string
+	Kind       string // image | video | live | raw
+	TakenAtMS  int64
+	ModMS      int64
+	DurationMS int64
+	Size       int64
+	Albums     []string
+	Original   []byte
+	LiveMovie  []byte // paired Live Photo movie when Kind=live
 }
 
 type PhotoFilter struct {
@@ -64,6 +67,8 @@ type PhotoSource interface {
 	ListAlbums() ([]PhotoInfo, error)
 	ListPhotos(filter PhotoFilter) ([]LocalPhoto, error)
 	ReadOriginal(id string) ([]byte, error)
+	ReadLiveMovie(id string) ([]byte, error) // nil,nil if not a Live Photo
+	ImportOriginal(data []byte, filename, albumID string) (localID string, err error)
 }
 
 type CalendarSource interface {

@@ -138,9 +138,20 @@ func (s Service) Blob(obj *syncengine.Object, which string) (mime string, body [
 	case "preview":
 		hash = m.PreviewHash
 		mime = "image/jpeg"
+		if hash == "" {
+			hash = obj.BlobID
+			mime = m.MIME
+		}
 	case "thumb", "thumbnail":
 		hash = m.ThumbHash
 		mime = "image/jpeg"
+		if hash == "" {
+			hash = obj.BlobID
+			mime = m.MIME
+		}
+	case "live", "livepair", "live_movie":
+		hash = m.LivePairHash
+		mime = "video/quicktime"
 	default:
 		return "", nil, fmt.Errorf("photos: unknown rendition")
 	}
@@ -156,6 +167,9 @@ func PublicMeta(m Meta) map[string]any {
 		"name": m.Name, "mime": m.MIME, "width": m.Width, "height": m.Height,
 		"orientation": m.Orientation, "checksum": m.Checksum,
 	}
+	if m.Kind != "" {
+		out["kind"] = m.Kind
+	}
 	if m.CameraMake != "" {
 		out["camera_make"] = m.CameraMake
 	}
@@ -165,11 +179,17 @@ func PublicMeta(m Meta) map[string]any {
 	if m.TakenAtMS != 0 {
 		out["taken_at_ms"] = m.TakenAtMS
 	}
+	if m.DurationMS != 0 {
+		out["duration_ms"] = m.DurationMS
+	}
 	if m.PreviewHash != "" {
 		out["preview_hash"] = m.PreviewHash
 	}
 	if m.ThumbHash != "" {
 		out["thumb_hash"] = m.ThumbHash
+	}
+	if m.LivePairHash != "" {
+		out["live_pair_hash"] = m.LivePairHash
 	}
 	if m.Perceptual != "" {
 		out["phash"] = m.Perceptual

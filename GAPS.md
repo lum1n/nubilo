@@ -8,8 +8,8 @@ Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 
 - Mac agent over `/sync/v1` for selected calendars and reminder lists, including recurrence (`RRULE` / `EXDATE` / exceptions) and event timezones.
 - iPhone CalDAV (app password, Apple-trusted TLS).
-- WebDAV files, CardDAV (thin contacts), PhotoKit **push**, photo HTTP API.
-- Pairing, backup, `verify`, `gc`.
+- WebDAV files, CardDAV (contacts with name/email/phone/address/birthday), PhotoKit **push + pull write-back**, photo HTTP API and `nubilo ui` gallery.
+- Pairing, backup/restore (CLI + UI), enroll/rotate, TLS regen, verify, gc, optional server auto-backup.
 
 ## Calendar (lock-in)
 
@@ -35,28 +35,29 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 | EventKit change notifications | Open | Poll every 120s |
 | Calendar window | Open | Default ±730 days; operator can raise `window_days` |
 
-## Photos (after calendar)
+## Photos
 
-- Mac PhotoKit can **push**. Nothing is written back into Photos.app.
-- No iPhone Photos.app / share-sheet / Files→Photos path.
-- Videos, Live Photos, and RAW are skipped. Default 64 MiB cap.
-- iCloud originals that are not on disk often fail (`networkAccessAllowed` off).
-- In-place PhotoKit edits of an already-mapped asset are not re-read.
-- No gallery UI. HTTP API only (`/api/v1/photos`); local browser via `nubilo ui`.
-- `nubilo ui` covers browse + create/rename/delete collections, object delete, pair/verify/gc, device password/rename/revoke, and most config fields. Still CLI-only: backup/restore, device enroll/rotate (pubkey files), TLS cert regen, agent selection.
-- Identical plaintext bytes dedup to one blob.
+- Mac PhotoKit **push** and **pull write-back** (import into Photos library / optional album). Remote deletes do not remove Photos.app assets.
+- iCloud originals: export allows network access with a timed wait (`icloud_fetch` / `export_failed` in errors).
+- In-place edits: PhotoKit `modificationDate` stored in agent idmap; mod change re-exports and pushes.
+- Video, Live Photo (still + paired movie blob), and RAW originals are synced; gallery shows kind/size/taken-at, video playback when possible, Live movie download. No RAW develop pipeline.
+- `nubilo ui` gallery: download original, delete, captions, video/Live/RAW affordances.
+- Still out: iPhone Photos.app / share sheet / Camera Upload; proprietary edit recipes beyond original resource bytes.
+- Identical plaintext bytes dedup to one blob. Default 64 MiB cap.
 
 ## Contacts
 
-- Only given name, family name, and the first email.
-- No phones, addresses, org, notes, photos, or extra emails.
-- CardDAV exists; it is not a full Contacts.app replacement.
+- Mac agent syncs name (FN/N), emails, phones, postal addresses, and birthday (`BDAY`, including yearless `--MM-DD`).
+- CardDAV stores full vCard blobs; metadata carries FN + preferred email/phone/birthday for listings.
+- Still missing: org, notes, photos/avatars, URLs, extra structured name parts.
 
 ## Files
 
-- iOS Files / Finder can mount `/dav/`.
-- Mac agent does not sync folders. `nubilo client` is a stub.
-- Collection COPY is unimplemented. LOCK/UNLOCK are compatibility no-ops.
+- iOS Files / Finder can mount `/dav/` (nested folders, file + collection COPY, MOVE across folders).
+- Mac agent can sync selected local folders: `nubilo agent files add PATH`, `files on`. Nested dirs become nested collections; pull writes back to disk.
+- `nubilo ui` can upload into a files collection.
+- LOCK/UNLOCK remain compatibility no-ops. `nubilo client` is still a stub (agent folder sync covers the common case).
+- Symlinks, dotfiles, `.git`, and files over 64 MiB are skipped by the agent walker.
 
 ## Integrity / sync
 
@@ -64,14 +65,19 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 - Synthetic `EXDATE` for “EventKit did not list this instance in the window” can hide occurrences if listing is incomplete.
 - One operator, one object graph. No multi-user isolation.
 
-## Security / ops (accepted)
+## Security / ops
 
 - SQLite metadata is not encrypted (LUKS is the control).
 - Device keys are `0600` files, not Keychain.
 - DAV app passwords are bearer tokens. iPhone CalDAV needs a cert Apple trusts (Tailscale Serve or install `tls.crt`).
-- No automatic backup, no HA, no metrics UI.
-- Single-owner personal cloud.
+- **Auto-backup:** `config.backup` (`enabled`, `interval_hours`, `passphrase_file`, `keep`) runs in `nubilo server`; archives under `data_dir/backups/`. Passphrase stays in a file on disk, not in JSON.
+- **UI ops:** create encrypted backup + one-shot download; restore to an empty **non-live** destination (confirm `RESTORE`); enroll/rotate device pubkeys; TLS regen; richer status (blobs, devices, last backup).
+- Restore onto the running live `data_dir` stays CLI-only (`nubilo restore` after stop).
+- **HA:** out of scope — single-node personal cloud; no multi-server failover.
+- Metrics: ops/status panel only (not Prometheus).
 
-## Intentionally out of scope for calendar lock-in
+## Intentionally deferred
 
-Corporate credentials never leave the Mac. Linux `nubilo agent` stays refused. GPS never lands in SQLite. Originals are never mutated.
+- Agent-side UI for calendar/album/folder selection (CLI selection remains).
+- Operator verification drills (iPhone CalDAV + Apple-trusted TLS, Finder/Files mount, backup restore drill, LUKS under data dir) — checklist, not product code.
+- Corporate credentials never leave the Mac. Linux `nubilo agent` stays refused. GPS never lands in SQLite. Originals are never mutated.

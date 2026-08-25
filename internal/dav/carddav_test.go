@@ -320,3 +320,41 @@ func TestCardDAVObjectIDNotInHref(t *testing.T) {
 		t.Fatal("uid used as object id")
 	}
 }
+
+func TestCardDAVRichContactMeta(t *testing.T) {
+	rich := `BEGIN:VCARD
+VERSION:3.0
+UID:rich-1
+FN:Ada Lovelace
+N:Lovelace;Ada;;;
+EMAIL;TYPE=WORK:ada@analytical.engine
+TEL;TYPE=CELL:+44 7700 900123
+ADR;TYPE=HOME:;;12 Square;London;England;SW1Y 4LE;UK
+BDAY:1815-12-10
+END:VCARD
+`
+	ts, dev, pass, _, _, eng := cardServer(t)
+	href := "/carddav/user/addressbooks/Contacts/rich-1.vcf"
+	resp := putCard(t, ts, dev.ID, pass, href, rich)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("put %d %s", resp.StatusCode, body)
+	}
+	cols, _ := eng.ChildCollections(context.Background(), "addressbook", "")
+	objs, err := eng.ListObjects(context.Background(), cols[0].ID)
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("objects %v %v", objs, err)
+	}
+	meta := dav.ParseContactMeta(objs[0].Metadata)
+	if meta.FN != "Ada Lovelace" || meta.Email != "ada@analytical.engine" || meta.Phone != "+44 7700 900123" || meta.Birthday != "1815-12-10" {
+		t.Fatalf("meta %+v", meta)
+	}
+	resp = cardReq(t, ts, http.MethodGet, href, dev.ID, pass, "", nil)
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !bytes.Contains(got, []byte("TEL")) || !bytes.Contains(got, []byte("ADR")) || !bytes.Contains(got, []byte("BDAY")) {
+		t.Fatalf("stored vcard missing fields:\n%s", got)
+	}
+}
+

@@ -450,13 +450,14 @@ func (s *Server) handleEnsureCollection(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Kind     string          `json:"kind"`
 		Name     string          `json:"name"`
+		ParentID string          `json:"parent_id"`
 		Metadata json.RawMessage `json:"metadata"`
 	}
 	if err := s.readJSON(r, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	c, err := s.Engine.EnsureNamedCollection(r.Context(), req.Kind, req.Name)
+	c, err := s.Engine.EnsureChildCollection(r.Context(), req.Kind, req.ParentID, req.Name)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return

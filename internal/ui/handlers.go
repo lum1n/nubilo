@@ -1,10 +1,16 @@
 package ui
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 
+	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/dav"
+	"nubilo/internal/ids"
 	"nubilo/internal/photos"
 	"nubilo/internal/syncengine"
 	"nubilo/internal/version"
@@ -83,6 +89,12 @@ func (s *Server) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 			Auto                  *bool `json:"auto"`
 			AllowInsecureLoopback *bool `json:"allow_insecure_loopback"`
 		} `json:"tls"`
+		Backup struct {
+			Enabled        *bool  `json:"enabled"`
+			IntervalHours  int    `json:"interval_hours"`
+			PassphraseFile string `json:"passphrase_file"`
+			Keep           int    `json:"keep"`
+		} `json:"backup"`
 	}
 	if err := readJSON(r, &cfg); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -139,6 +151,18 @@ func (s *Server) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.TLS.AllowInsecureLoopback != nil {
 		c.TLS.AllowInsecureLoopback = *cfg.TLS.AllowInsecureLoopback
+	}
+	if cfg.Backup.Enabled != nil {
+		c.Backup.Enabled = *cfg.Backup.Enabled
+	}
+	if cfg.Backup.IntervalHours > 0 {
+		c.Backup.IntervalHours = cfg.Backup.IntervalHours
+	}
+	if cfg.Backup.PassphraseFile != "" {
+		c.Backup.PassphraseFile = cfg.Backup.PassphraseFile
+	}
+	if cfg.Backup.Keep > 0 {
+		c.Backup.Keep = cfg.Backup.Keep
 	}
 	if err := c.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -355,6 +379,71 @@ func (s *Server) handleObjectDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
+func (s *Server) handleCollectionUpload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	col, err := s.RT.Engine.GetCollection(r.Context(), id)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if col.Kind != "files" {
+		http.Error(w, "uploads only for files collections", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		name = strings.TrimSpace(r.Header.Get("X-Filename"))
+	}
+	name = filepath.Base(name)
+	if !dav.ValidDisplayName(name) {
+		http.Error(w, "invalid filename", http.StatusBadRequest)
+		return
+	}
+	payload, err := io.ReadAll(io.LimitReader(r.Body, s.RT.Cfg.Sync.MaxBlobBytes+1))
+	if err != nil {
+		http.Error(w, "read failed", http.StatusBadRequest)
+		return
+	}
+	if int64(len(payload)) > s.RT.Cfg.Sync.MaxBlobBytes {
+		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	sum := ncrypto.SHA256Hex(payload)
+	blobID, size, err := s.RT.Store.PutBlob(r.Context(), bytes.NewReader(payload), sum)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	meta := dav.EncodeFileMeta(dav.FileMeta{Name: name, MIME: http.DetectContentType(payload)})
+	existing, findErr := s.RT.Engine.FindObjectByName(r.Context(), col.ID, name)
+	in := syncengine.ChangeInput{
+		CollectionID: col.ID,
+		Kind:         "file",
+		ContentHash:  blobID,
+		BlobID:       blobID,
+		Size:         size,
+		Metadata:     meta,
+		Force:        true,
+	}
+	if errors.Is(findErr, syncengine.ErrNotFound) {
+		in.ObjectID = ids.New()
+		in.Op = syncengine.OpCreate
+	} else if findErr != nil {
+		http.Error(w, "internal", http.StatusInternalServerError)
+		return
+	} else {
+		in.ObjectID = existing.ID
+		in.Op = syncengine.OpUpdate
+		in.BaseRevision = existing.Revision
+	}
+	res, err := s.RT.Engine.Push(r.Context(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{in})
+	if err != nil || len(res) == 0 || res[0].Status != "ok" {
+		http.Error(w, "upload failed", http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": in.ObjectID, "name": name, "size": size})
+}
+
 func (s *Server) handleCollectionObjects(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	col, err := s.RT.Engine.GetCollection(r.Context(), id)
@@ -391,7 +480,19 @@ func (s *Server) handleCollectionObjects(w http.ResponseWriter, r *http.Request)
 		case "addressbook":
 			cm := dav.ParseContactMeta(o.Metadata)
 			row["uid"] = cm.UID
-			row["display_name"] = cm.Name
+			row["display_name"] = cm.FN
+			if cm.FN == "" {
+				row["display_name"] = cm.Name
+			}
+			if cm.Email != "" {
+				row["email"] = cm.Email
+			}
+			if cm.Phone != "" {
+				row["phone"] = cm.Phone
+			}
+			if cm.Birthday != "" {
+				row["birthday"] = cm.Birthday
+			}
 		case "files":
 			fm := dav.ParseFileMeta(o.Metadata)
 			row["mime"] = fm.MIME
@@ -416,6 +517,9 @@ func objectLabel(colKind string, o *syncengine.Object) string {
 		return m.UID
 	case "addressbook":
 		m := dav.ParseContactMeta(o.Metadata)
+		if m.FN != "" {
+			return m.FN
+		}
 		if m.Name != "" {
 			return m.Name
 		}
