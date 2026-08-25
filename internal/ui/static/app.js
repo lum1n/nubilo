@@ -13,6 +13,7 @@
     home: { title: "overview", render: renderHome },
     photos: { title: "photos", render: renderPhotos },
     calendar: { title: "calendar", render: renderCalendar },
+    reminders: { title: "reminders", render: renderReminders },
     contacts: { title: "contacts", render: renderContacts },
     files: { title: "files", render: renderFiles },
     ops: { title: "ops", render: renderOps },
@@ -94,13 +95,37 @@
   async function renderHome() {
     content.innerHTML = '<div class="empty">loading</div>';
     try {
-      const o = await api("/overview");
+      const [o, health] = await Promise.all([api("/overview"), api("/health")]);
+      const checks = (health.checks || [])
+        .map((c) => {
+          const mark = c.status === "ok" ? "ok" : c.status === "warn" ? "!!" : c.status === "fail" ? "XX" : "--";
+          let row = `<tr><td class="health-${esc(c.status)}">${mark}</td><td>${esc(c.title)}</td><td>${esc(c.detail || "")}</td></tr>`;
+          if (c.fix && c.status !== "ok" && c.status !== "info") {
+            row += `<tr class="health-fix"><td></td><td colspan="2">fix: ${esc(c.fix)}</td></tr>`;
+          }
+          return row;
+        })
+        .join("");
+      const banner = health.healthy
+        ? `<p class="hint">health: ok — ${health.ok || 0} checks passed</p>`
+        : `<p class="hint accent">health: needs attention — ${health.fail || 0} fail, ${health.warn || 0} warn</p>`;
+      let backupBtn = "";
+      const bak = (health.checks || []).find((c) => c.id === "backup" && c.status === "fail");
+      if (bak) {
+        backupBtn = ` <button type="button" class="btn sm primary" id="enable-bak">enable auto-backup</button>`;
+      }
       content.innerHTML = `
+        <div class="section">
+          <p class="section-title">health</p>
+          ${banner}${backupBtn}
+          <div class="block"><table class="data health-table"><tbody>${checks}</tbody></table></div>
+        </div>
         <div class="section">
           <p class="section-title">counts</p>
           <table class="kv">
             ${kvRow("photos", o.counts.photos || 0)}
             ${kvRow("events", o.counts.calendar || 0)}
+            ${kvRow("reminders", o.counts.reminders || 0)}
             ${kvRow("contacts", o.counts.addressbook || 0)}
             ${kvRow("files", o.counts.files || 0)}
             ${kvRow("devices", `${o.devices_active || 0} active / ${o.devices || 0}`)}
@@ -116,7 +141,23 @@
             ${kvRow("tls_cert", esc(o.tls_cert || "—"))}
           </table>
         </div>
-        <p class="hint">pair / verify / gc → <a href="#/ops">ops</a></p>`;
+        <p class="hint">pair / verify / gc → <a href="#/ops">ops</a> · CLI: <code>nubilo doctor</code> / <code>nubilo setup</code></p>`;
+      const btn = $("#enable-bak");
+      if (btn) {
+        btn.onclick = async () => {
+          try {
+            const r = await api("/setup/backup", { method: "POST", body: "{}" });
+            if (r.passphrase) {
+              alert("Auto-backup enabled.\n\nSave this passphrase offline (shown once):\n\n" + r.passphrase + "\n\nFile: " + r.passphrase_file);
+            } else {
+              toast("auto-backup enabled");
+            }
+            renderHome();
+          } catch (e) {
+            toast(e.message);
+          }
+        };
+      }
     } catch (e) {
       content.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     }
@@ -223,19 +264,24 @@
     document.addEventListener("keydown", onKey);
   }
 
-  async function renderBrowse(kind, emptyMsg, createLabel) {
+  async function renderBrowse(kind, emptyMsg, createLabel, opts = {}) {
+    const query = opts.query || "";
+    const createBody = opts.createBody || {};
     content.innerHTML = '<div class="empty">loading</div>';
     try {
-      const data = await api("/collections?kind=" + encodeURIComponent(kind));
+      const data = await api("/collections?kind=" + encodeURIComponent(kind) + query);
       const cols = data.collections || [];
       topbarActions.innerHTML = `<button type="button" class="btn sm" id="create-col">${esc(createLabel)}</button>`;
       $("#create-col").onclick = async () => {
         const name = prompt("name:");
         if (!name) return;
         try {
-          await api("/collections", { method: "POST", body: JSON.stringify({ kind, name }) });
+          await api("/collections", {
+            method: "POST",
+            body: JSON.stringify({ kind, name, ...createBody }),
+          });
           toast("created " + name);
-          renderBrowse(kind, emptyMsg, createLabel);
+          renderBrowse(kind, emptyMsg, createLabel, opts);
         } catch (e) {
           toast(e.message);
         }
@@ -385,7 +431,7 @@
               body: JSON.stringify({ name }),
             });
             toast("renamed");
-            renderBrowse(kind, emptyMsg, createLabel);
+            renderBrowse(kind, emptyMsg, createLabel, opts);
           } catch (e) {
             toast(e.message);
           }
@@ -396,7 +442,7 @@
           try {
             await api("/collections/" + encodeURIComponent(rootActive), { method: "DELETE" });
             toast("deleted collection");
-            renderBrowse(kind, emptyMsg, createLabel);
+            renderBrowse(kind, emptyMsg, createLabel, opts);
           } catch (e) {
             toast(e.message);
           }
@@ -426,12 +472,20 @@
   function itemRow(kind, o) {
     let title = o.summary || o.display_name || o.name || o.id;
     let sub = "";
-    if (kind === "calendar") sub = fmtDate(o.start_ms);
-    else if (kind === "addressbook") {
+    if (kind === "calendar") {
+      if ((o.comp || "").toUpperCase() === "VTODO") {
+        const bits = [];
+        if (o.status) bits.push(String(o.status).toLowerCase());
+        if (o.due_ms) bits.push("due " + fmtDate(o.due_ms));
+        else if (o.start_ms) bits.push(fmtDate(o.start_ms));
+        sub = bits.join(" · ");
+      } else {
+        sub = fmtDate(o.start_ms);
+      }
+    } else if (kind === "addressbook") {
       const bits = [o.email, o.phone, o.birthday, o.uid].filter(Boolean);
       sub = bits.join(" · ");
-    }
-    else if (kind === "files") sub = (o.mime || "file") + " · " + fmtSize(o.size);
+    } else if (kind === "files") sub = (o.mime || "file") + " · " + fmtSize(o.size);
     return `<li class="list-item" data-blob="${o.blob_id || ""}" data-id="${esc(o.id)}" data-name="${esc(o.name)}" data-mime="${esc(o.mime || "")}">
       <div class="list-item-main open-item" style="cursor:pointer">
         <p class="list-item-title">${esc(title)}</p>
@@ -467,14 +521,24 @@
         <pre class="detail">${esc(text)}</pre>
       </div>`;
     $("#back-btn").onclick = () => {
-      if (kind === "calendar") renderCalendar();
-      else if (kind === "addressbook") renderContacts();
+      if (kind === "calendar") {
+        if (location.hash.includes("reminders")) renderReminders();
+        else renderCalendar();
+      } else if (kind === "addressbook") renderContacts();
       else renderFiles();
     };
   }
 
   function renderCalendar() {
-    return renderBrowse("calendar", "no calendars — create one", "new calendar");
+    return renderBrowse("calendar", "no calendars — create one", "new calendar", {
+      query: "&comp=VEVENT",
+    });
+  }
+  function renderReminders() {
+    return renderBrowse("calendar", "no reminder lists — create one", "new reminder list", {
+      query: "&comp=VTODO",
+      createBody: { comp: "VTODO" },
+    });
   }
   function renderContacts() {
     return renderBrowse("addressbook", "no address books — create one", "new address book");

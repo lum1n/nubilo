@@ -22,16 +22,31 @@ go build -o nubilo ./cmd/nubilo
 ## Quick start (local)
 
 ```bash
+# Server — guided setup (init + auto-backup + optional always-on service)
+./nubilo setup --data-dir ~/.nubilo --yes
+./nubilo doctor --data-dir ~/.nubilo
+
+# Pairing
+./nubilo pair --data-dir ~/.nubilo --role agent
+# Mac
+./nubilo agent setup --data-dir ~/.nubilo-agent --server https://<host>:8443 --code XXXXX-XXXXX --name "Studio Mac"
+./nubilo doctor --agent --data-dir ~/.nubilo-agent
+
+./nubilo devices password --data-dir ~/.nubilo --name "iPhone Files" --scope webdav
+./nubilo devices password --data-dir ~/.nubilo --name "iPhone Calendar" --scope caldav
+./nubilo devices password --data-dir ~/.nubilo --name "iPhone Contacts" --scope carddav
+./nubilo verify --data-dir ~/.nubilo
+```
+
+Or step by step without setup:
+
+```bash
 ./nubilo init --data-dir ~/.nubilo --listen 0.0.0.0:8443
 ./nubilo server --data-dir ~/.nubilo
 # another terminal
 ./nubilo pair --data-dir ~/.nubilo --role agent
 # Mac
 ./nubilo pair --data-dir ~/.nubilo-agent --server https://<lan-or-tailscale-ip>:8443 --code XXXXX-XXXXX --name "Eika Mac"
-./nubilo devices password --data-dir ~/.nubilo --name "iPhone Files" --scope webdav
-./nubilo devices password --data-dir ~/.nubilo --name "iPhone Calendar" --scope caldav
-./nubilo devices password --data-dir ~/.nubilo --name "iPhone Contacts" --scope carddav
-./nubilo verify --data-dir ~/.nubilo
 ```
 
 On a Mac, pair a **signing** agent (not a DAV password) into a separate data directory:

@@ -47,7 +47,7 @@ Feature count is subordinate to those priorities. If a feature would weaken auth
 | `client` | Linux or macOS | Generic sync client for files and photos without macOS frameworks. |
 | CLI | Either | Local administration, pairing, verify, gc, backup, restore. |
 
-All modes share the same packages. Platform-specific APIs are isolated behind build tags (`darwin` for EventKit/PhotoKit). Linux builds of `nubilo agent` refuse to start with an explicit error. `nubilo server install` / `nubilo agent install` register user-level always-on services (systemd `--user` on Linux; LaunchAgent on macOS). Agent install is macOS-only and runs the binary from `~/Applications/Nubilo.app` for TCC attribution.
+All modes share the same packages. Platform-specific APIs are isolated behind build tags (`darwin` for EventKit/PhotoKit). Linux builds of `nubilo agent` refuse to start with an explicit error. `nubilo server install` / `nubilo agent install` register user-level always-on services (systemd `--user` on Linux; LaunchAgent on macOS). Agent install is macOS-only and runs the binary from `~/Applications/Nubilo.app` for TCC attribution. `nubilo setup` / `nubilo doctor` (and the UI health panel) guide first-run hardening: auto-backup, disk encryption checks, and pairing. Agent signing keys live in the macOS Keychain.
 
 ## Trust and deployment shape
 

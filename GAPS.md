@@ -11,6 +11,7 @@ Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 - WebDAV files, CardDAV (contacts with name/email/phone/address/birthday), PhotoKit **push + pull write-back**, photo HTTP API and `nubilo ui` gallery.
 - Pairing, backup/restore (CLI + UI), enroll/rotate, TLS regen, verify, gc, optional server auto-backup.
 - Always-on user services: `nubilo server install` (Linux systemd `--user` or macOS LaunchAgent), `nubilo agent install` (macOS LaunchAgent via Nubilo.app).
+- Guided setup + doctor: `nubilo setup`, `nubilo agent setup`, `nubilo doctor`, UI health panel; macOS agent keys in Keychain.
 
 ## Calendar (lock-in)
 
@@ -71,10 +72,10 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 
 ## Security / ops
 
-- SQLite metadata is not encrypted (LUKS is the control).
-- Device keys are `0600` files, not Keychain.
+- SQLite metadata is not encrypted (LUKS / FileVault is the control; `nubilo doctor` checks this).
+- Agent device keys use macOS Keychain; server `master.key` remains a `0600` file (protect the volume).
 - DAV app passwords are bearer tokens. iPhone CalDAV needs a cert Apple trusts (Tailscale Serve or install `tls.crt`).
-- **Auto-backup:** `config.backup` (`enabled`, `interval_hours`, `passphrase_file`, `keep`) runs in `nubilo server`; archives under `data_dir/backups/`. Passphrase stays in a file on disk, not in JSON.
+- **Setup / doctor:** `nubilo setup` initializes, enables auto-backup (passphrase shown once), and can install the always-on service. `nubilo doctor` / UI health panel checks perms, TLS, backup, disk encryption, pairing, and service. `nubilo agent setup` pairs, Keychain-stores the key, and installs the LaunchAgent.
 - **UI ops:** create encrypted backup + one-shot download; restore to an empty **non-live** destination (confirm `RESTORE`); enroll/rotate device pubkeys; TLS regen; richer status (blobs, devices, last backup).
 - Restore onto the running live `data_dir` stays CLI-only (`nubilo restore` after stop).
 - **Always-on:** `nubilo server install` / `nubilo agent install` (user-level: LaunchAgent on macOS; systemd `--user` on Linux for the server). Agent install is macOS-only. Linux user units stop on logout unless `loginctl enable-linger` is set.
@@ -83,5 +84,5 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 
 ## Intentionally deferred
 
-- Operator verification drills (iPhone CalDAV + Apple-trusted TLS, Finder/Files mount, backup restore drill, LUKS under data dir) — checklist, not product code.
+- Hands-on phone/Finder restore drills remain operator actions; `nubilo doctor` surfaces the checklist in product.
 - Corporate credentials never leave the Mac. Linux `nubilo agent` stays refused. GPS never lands in SQLite. Originals are never mutated.

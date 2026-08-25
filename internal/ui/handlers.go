@@ -20,13 +20,29 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	head, _ := s.RT.Engine.HeadSeq(ctx)
 	counts := map[string]int{}
-	for _, kind := range []string{"calendar", "addressbook", "files", "photos"} {
+	for _, kind := range []string{"addressbook", "files", "photos"} {
 		n, err := s.RT.Engine.CountLiveObjectsByKind(ctx, kind)
 		if err != nil {
 			continue
 		}
 		counts[kind] = n
 	}
+	events, reminders := 0, 0
+	if cols, err := s.RT.Engine.ChildCollections(ctx, "calendar", ""); err == nil {
+		for i := range cols {
+			n, err := s.RT.Engine.CountLiveObjects(ctx, cols[i].ID)
+			if err != nil {
+				continue
+			}
+			if dav.ParseCalendarColMeta(cols[i].Metadata).Comp == "VTODO" {
+				reminders += n
+			} else {
+				events += n
+			}
+		}
+	}
+	counts["calendar"] = events
+	counts["reminders"] = reminders
 	devs, _ := s.RT.IDs.List(ctx)
 	active := 0
 	for _, d := range devs {
@@ -35,16 +51,16 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":     version.String,
-		"head_seq":    head,
-		"listen":      s.RT.Cfg.Listen,
-		"data_dir":    s.RT.Cfg.DataDir,
-		"counts":      counts,
-		"devices":     len(devs),
+		"version":        version.String,
+		"head_seq":       head,
+		"listen":         s.RT.Cfg.Listen,
+		"data_dir":       s.RT.Cfg.DataDir,
+		"counts":         counts,
+		"devices":        len(devs),
 		"devices_active": active,
-		"ui_listen":   s.Listen,
-		"admin_token": s.RT.Paths.AdminToken,
-		"tls_cert":    s.RT.Cfg.TLS.Cert,
+		"ui_listen":      s.Listen,
+		"admin_token":    s.RT.Paths.AdminToken,
+		"tls_cert":       s.RT.Cfg.TLS.Cert,
 	})
 }
 
@@ -273,6 +289,7 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "kind required", http.StatusBadRequest)
 		return
 	}
+	compFilter := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("comp")))
 	cols, err := s.RT.Engine.ChildCollections(r.Context(), kind, "")
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
@@ -292,6 +309,15 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 			if meta.Comp != "" {
 				row["comp"] = meta.Comp
 			}
+			if compFilter == "VTODO" {
+				if meta.Comp != "VTODO" {
+					continue
+				}
+			} else if compFilter == "VEVENT" {
+				if meta.Comp == "VTODO" {
+					continue
+				}
+			}
 		}
 		out = append(out, row)
 	}
@@ -302,6 +328,7 @@ func (s *Server) handleCollectionCreate(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Kind string `json:"kind"`
 		Name string `json:"name"`
+		Comp string `json:"comp"`
 	}
 	if err := readJSON(r, &req); err != nil || req.Name == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -313,7 +340,14 @@ func (s *Server) handleCollectionCreate(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "kind must be calendar, addressbook, or files", http.StatusBadRequest)
 		return
 	}
-	c, err := s.RT.Engine.CreateCollection(r.Context(), req.Kind, strings.TrimSpace(req.Name), "", nil)
+	var meta []byte
+	if req.Kind == "calendar" {
+		comp := strings.ToUpper(strings.TrimSpace(req.Comp))
+		if comp == "VTODO" {
+			meta = dav.EncodeCalendarColMeta(dav.CalendarColMeta{Comp: "VTODO"})
+		}
+	}
+	c, err := s.RT.Engine.CreateCollection(r.Context(), req.Kind, strings.TrimSpace(req.Name), "", meta)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -467,6 +501,15 @@ func (s *Server) handleCollectionObjects(w http.ResponseWriter, r *http.Request)
 					row["start_ms"] = prev.Start
 					row["end_ms"] = prev.End
 					row["all_day"] = prev.AllDay
+					if prev.Due != 0 {
+						row["due_ms"] = prev.Due
+					}
+					if prev.Status != "" {
+						row["status"] = prev.Status
+					}
+					if prev.Comp != "" {
+						row["comp"] = prev.Comp
+					}
 				}
 			}
 		case "addressbook":

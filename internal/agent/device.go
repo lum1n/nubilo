@@ -33,8 +33,7 @@ func LoadPairedClient(dataDir string, insecure bool) (*protocol.Client, error) {
 	if f.DeviceID == "" || f.Server == "" {
 		return nil, ErrNotPaired
 	}
-	keyPath := filepath.Join(dataDir, "device.key")
-	raw, err := ncrypto.ReadKeyFile(keyPath, 64)
+	raw, err := LoadDeviceKey(dataDir)
 	if err != nil {
 		return nil, err
 	}

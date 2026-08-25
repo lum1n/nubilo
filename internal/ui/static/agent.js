@@ -86,9 +86,27 @@
   }
 
   async function renderHome() {
-    const o = await api("/overview");
+    const [o, health] = await Promise.all([api("/overview"), api("/health")]);
     const p = o.pairing || {};
+    const checks = (health.checks || [])
+      .map((c) => {
+        const mark = c.status === "ok" ? "ok" : c.status === "warn" ? "!!" : c.status === "fail" ? "XX" : "--";
+        let row = `<tr><td class="health-${esc(c.status)}">${mark}</td><td>${esc(c.title)}</td><td>${esc(c.detail || "")}</td></tr>`;
+        if (c.fix && c.status !== "ok" && c.status !== "info") {
+          row += `<tr class="health-fix"><td></td><td colspan="2">fix: ${esc(c.fix)}</td></tr>`;
+        }
+        return row;
+      })
+      .join("");
+    const banner = health.healthy
+      ? `<p class="hint">health: ok</p>`
+      : `<p class="hint">health: needs attention (${health.fail || 0} fail, ${health.warn || 0} warn)</p>`;
     content.innerHTML = `
+      <div class="section">
+        <p class="section-title">health</p>
+        ${banner}
+        <div class="block"><table class="data health-table"><tbody>${checks}</tbody></table></div>
+      </div>
       <table class="kv">
         ${kvRow("version", esc(o.version))}
         ${kvRow("data dir", esc(o.data_dir))}
@@ -104,7 +122,7 @@
         ${kvRow("photos", o.photos_enabled ? "on (" + o.counts.albums + " albums)" : "off")}
         ${kvRow("files", o.files_enabled ? "on (" + o.counts.folders + " folders)" : "off")}
       </table>
-      <p class="muted">Selection changes write agent.json. A running agent picks them up on the next sync tick (or restart).</p>
+      <p class="muted">CLI: <code>nubilo agent setup</code> · <code>nubilo doctor --agent</code></p>
     `;
     statusText.textContent = p.paired ? "paired" : "unpaired";
   }

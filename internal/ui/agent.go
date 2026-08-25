@@ -53,6 +53,7 @@ func NewAgent(dataDir, listen string, log *slog.Logger) (*AgentServer, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/session", s.handleSession)
 	mux.HandleFunc("GET /api/overview", s.gate.authed(s.handleOverview))
+	mux.HandleFunc("GET /api/health", s.gate.authed(s.handleAgentHealth))
 	mux.HandleFunc("GET /api/selection", s.gate.authed(s.handleSelectionGet))
 	mux.HandleFunc("PUT /api/selection", s.gate.authed(s.handleSelectionPut))
 	mux.HandleFunc("GET /api/calendars", s.gate.authed(s.handleCalendars))

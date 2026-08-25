@@ -204,6 +204,35 @@ func TestUICreateCollectionAndPair(t *testing.T) {
 		t.Fatalf("created calendar missing: %v", out)
 	}
 
+	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/collections", map[string]string{
+		"kind": "calendar", "name": "Reminders", "comp": "VTODO",
+	})
+	if code != 200 {
+		t.Fatalf("create todo col %d %v", code, out)
+	}
+	todoID, _ := out["id"].(string)
+	code, out = authedJSON(t, ts.URL, cookie, "GET", "/api/collections?kind=calendar&comp=VTODO", nil)
+	if code != 200 {
+		t.Fatalf("list todos %d", code)
+	}
+	cols, _ = out["collections"].([]any)
+	if len(cols) != 1 {
+		t.Fatalf("want 1 VTODO collection, got %v", out)
+	}
+	if m, _ := cols[0].(map[string]any); m["id"] != todoID || m["comp"] != "VTODO" {
+		t.Fatalf("todo col %v", cols[0])
+	}
+	code, out = authedJSON(t, ts.URL, cookie, "GET", "/api/collections?kind=calendar&comp=VEVENT", nil)
+	if code != 200 {
+		t.Fatalf("list events %d", code)
+	}
+	for _, c := range out["collections"].([]any) {
+		m, _ := c.(map[string]any)
+		if m["id"] == todoID || m["comp"] == "VTODO" {
+			t.Fatalf("VEVENT filter included VTODO: %v", out)
+		}
+	}
+
 	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/collections/"+id+"/rename", map[string]string{"name": "Personal"})
 	if code != 200 {
 		t.Fatalf("rename %d %v", code, out)

@@ -10,7 +10,7 @@ This document is the threat model and security architecture. It is written *befo
 | Contacts / vCards | High | Encrypted blobs |
 | Photos / originals and EXIF (including GPS) | High / GPS is explicitly sensitive | Encrypted blobs; GPS handling is configurable |
 | Personal files | High | Encrypted blobs |
-| Device private keys | Critical | Client-side only (file 0600 or OS keychain) |
+| Device private keys | Critical | Client-side only (macOS Keychain for agent; else file 0600) |
 | Server master key | Critical | `$data_dir/master.key` mode 0600 |
 | App passwords for DAV | Critical | Argon2id hashes in SQLite; plaintext shown once |
 | Pairing codes | High, short-lived | Argon2id hashes in SQLite |
@@ -228,7 +228,7 @@ Tailscale does not replace this. If a TLS terminator exists in front (Tailscale 
   - `nubilo-backup-v1` for backup wrapping (further wrapped by a backup passphrase)
 - Blobs: `nonce (12) || ciphertext || tag (16)` using ChaCha20-Poly1305. Nonce is random per write; key+nonce reuse is a fatal invariant checked in tests.
 - Content addressing uses SHA-256 of **plaintext**. Two identical photos collapse to one blob even if encrypted under different nonces (the store writes once per hash).
-- Private keys on clients: `0600` file under the client data dir. macOS Keychain wrapping is not implemented; file permissions remain the control.
+- Private keys on clients: on macOS the agent signing key is stored in the **Keychain** (`dev.nubilo.agent`); a leftover `device.key` file is migrated on load and removed. Other platforms use a `0600` file under the client data dir.
 - macOS agent map (`agent.db`) is a local EventKit/Contacts identifier ↔ object_id table, not server identity. Object IDs remain ULIDs.
 - Photo preview/thumb blobs are extra hashes in object metadata (`preview_hash`, `thumb_hash`). `verify` and `gc` count them as live references so derivatives are not deleted while the photo object exists.
 

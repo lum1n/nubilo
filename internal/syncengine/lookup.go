@@ -70,6 +70,16 @@ func (e *Engine) CountLiveObjectsByKind(ctx context.Context, kind string) (int, 
 	return n, err
 }
 
+// CountLiveObjects returns live objects in one collection.
+func (e *Engine) CountLiveObjects(ctx context.Context, collectionID string) (int, error) {
+	var n int
+	err := e.Store.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM objects
+		WHERE collection_id = ? AND deleted_at IS NULL
+	`, collectionID).Scan(&n)
+	return n, err
+}
+
 func (e *Engine) ChildCollections(ctx context.Context, kind, parentID string) ([]Collection, error) {
 	var rows *sql.Rows
 	var err error

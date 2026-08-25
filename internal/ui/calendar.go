@@ -12,8 +12,11 @@ type eventPreview struct {
 	Summary string `json:"summary"`
 	Start   int64  `json:"start_ms,omitempty"`
 	End     int64  `json:"end_ms,omitempty"`
+	Due     int64  `json:"due_ms,omitempty"`
 	AllDay  bool   `json:"all_day,omitempty"`
 	UID     string `json:"uid,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Comp    string `json:"comp,omitempty"`
 }
 
 func previewICS(data []byte) eventPreview {
@@ -26,8 +29,10 @@ func previewICS(data []byte) eventPreview {
 		if c.Name != ical.CompEvent && c.Name != ical.CompToDo {
 			continue
 		}
+		out.Comp = c.Name
 		out.Summary, _ = c.Props.Text(ical.PropSummary)
 		out.UID, _ = c.Props.Text(ical.PropUID)
+		out.Status, _ = c.Props.Text(ical.PropStatus)
 		if p := c.Props.Get(ical.PropDateTimeStart); p != nil {
 			out.AllDay = p.ValueType() == ical.ValueDate
 			if t, err := p.DateTime(time.Local); err == nil {
@@ -38,9 +43,10 @@ func previewICS(data []byte) eventPreview {
 			if t, err := p.DateTime(time.Local); err == nil {
 				out.End = t.UnixMilli()
 			}
-		} else if p := c.Props.Get(ical.PropDue); p != nil {
+		}
+		if p := c.Props.Get(ical.PropDue); p != nil {
 			if t, err := p.DateTime(time.Local); err == nil {
-				out.End = t.UnixMilli()
+				out.Due = t.UnixMilli()
 				if out.Start == 0 {
 					out.Start = t.UnixMilli()
 				}

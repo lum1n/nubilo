@@ -125,8 +125,7 @@ func PairWithServer(dataDir, serverURL, code, name string, insecure bool) (devic
 	if err := json.NewDecoder(resp2.Body).Decode(&cr); err != nil {
 		return "", err
 	}
-	keyPath := filepath.Join(dataDir, "device.key")
-	if err := ncrypto.WriteKeyFile(keyPath, ncrypto.PrivateKeyBytes(priv)); err != nil {
+	if err := StoreDeviceKey(dataDir, ncrypto.PrivateKeyBytes(priv)); err != nil {
 		return "", err
 	}
 	out := pairingFile{

@@ -613,6 +613,13 @@ table.data input[type="radio"] {
 
 .lightbox-close:hover { border-color: var(--accent); color: var(--accent); }
 
+.health-table td { padding: 0.08rem 0.45rem; }
+.health-ok { color: var(--accent); }
+.health-warn { color: #c9a227; }
+.health-fail { color: var(--danger); }
+.health-info { color: var(--text-muted); }
+.health-fix td { color: var(--text-muted); font-size: 0.85em; padding-top: 0; }
+
 @media (max-width: 640px) {
   .app { flex-direction: column; }
   .sidebar {

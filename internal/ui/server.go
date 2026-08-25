@@ -49,6 +49,8 @@ func New(rt *app.Runtime, listen string, log *slog.Logger) (*Server, error) {
 	mux.HandleFunc("GET /api/session", s.handleSession)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("GET /api/overview", s.authed(s.handleOverview))
+	mux.HandleFunc("GET /api/health", s.authed(s.handleHealth))
+	mux.HandleFunc("POST /api/setup/backup", s.authed(s.handleSetupBackup))
 	mux.HandleFunc("GET /api/status", s.authed(s.handleStatus))
 	mux.HandleFunc("GET /api/config", s.authed(s.handleConfigGet))
 	mux.HandleFunc("PUT /api/config", s.authed(s.handleConfigPut))

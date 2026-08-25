@@ -52,6 +52,10 @@ func Main(args []string) int {
 		return 0
 	case "init":
 		return runInit(g, rest)
+	case "setup":
+		return runSetup(g, rest)
+	case "doctor":
+		return runDoctor(g, rest)
 	case "server":
 		return runServer(g, rest)
 	case "agent":
@@ -137,12 +141,15 @@ func usage(w io.Writer) {
 
 Usage:
   nubilo init [--data-dir DIR] [--listen ADDR]
+  nubilo setup [--data-dir DIR] [--listen ADDR] [--yes] [--no-service]
+  nubilo doctor [--data-dir DIR] [--verify] [--agent] [--json]
   nubilo server [--data-dir DIR]
   nubilo server install [--data-dir DIR]
   nubilo server uninstall
   nubilo server service
   nubilo ui [--listen ADDR] [--open]
   nubilo agent [--data-dir DIR] [--insecure] [--interval SECONDS]
+  nubilo agent setup [--data-dir DIR] [--server URL] [--code CODE] [--name NAME] [--yes]
   nubilo agent install [--data-dir DIR] [--insecure]
   nubilo agent uninstall
   nubilo agent service
@@ -376,6 +383,9 @@ func runAgent(g global, args []string) int {
 	if len(rest) > 0 {
 		sub = rest[0]
 		rest = rest[1:]
+	}
+	if sub == "setup" {
+		return runAgentSetup(g, *insecure, rest)
 	}
 	dir, err := app.ResolveDataDir(g.dataDir)
 	if err != nil {
