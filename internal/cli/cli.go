@@ -36,6 +36,10 @@ func Main(args []string) int {
 		usage(os.Stderr)
 		return 2
 	}
+	// Launched from Nubilo.app via `open … --args --authorize-photos`
+	if args[0] == "--authorize-photos" {
+		return runAuthorizePhotosPrompt()
+	}
 	g, rest := parseGlobal(args)
 	cmd := rest[0]
 	rest = rest[1:]
@@ -147,6 +151,7 @@ Usage:
   nubilo agent photos source all|albums|dates
   nubilo agent photos select ALBUM_ID
   nubilo agent albums
+  nubilo agent authorize
   nubilo agent files on|off
   nubilo agent files list
   nubilo agent files add PATH [NAME]
@@ -350,6 +355,8 @@ func runAgent(g global, args []string) int {
 		return agentPhotos(paths.AgentJSON, sel, rest)
 	case "albums":
 		return agentListAlbums(sel)
+	case "authorize":
+		return agentAuthorize()
 	case "files":
 		return agentFiles(paths.AgentJSON, sel, rest)
 	case "run":
@@ -360,7 +367,63 @@ func runAgent(g global, args []string) int {
 	}
 }
 
+func runAuthorizePhotosPrompt() int {
+	if runtime.GOOS != "darwin" {
+		fmt.Fprintln(os.Stderr, "authorize-photos requires macOS")
+		return 2
+	}
+	status, err := agent.RequestPhotosAccess()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "photos: %v (status=%s)\n", err, status)
+		_ = agent.OpenPhotosPrivacySettings()
+		return 1
+	}
+	fmt.Printf("photos access: %s\n", status)
+	if status == "limited" {
+		fmt.Println("Limited access only syncs the photos you selected in the system picker.")
+		fmt.Println("For a full album, choose Allow Full Access (System Settings → Privacy & Security → Photos → Nubilo).")
+		_ = agent.OpenPhotosPrivacySettings()
+		return 0
+	}
+	return 0
+}
+
+func agentAuthorize() int {
+	if runtime.GOOS != "darwin" {
+		fmt.Fprintln(os.Stderr, "nubilo agent authorize requires macOS")
+		return 2
+	}
+	fmt.Println("Installing ~/Applications/Nubilo.app and requesting Photos access…")
+	fmt.Println("In the dialog, choose Allow Full Access (not Limited / Selected Photos).")
+	status, err := agent.AuthorizePhotosViaApp()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "authorize via app failed (%v); trying in-process request…\n", err)
+		status, err = agent.RequestPhotosAccess()
+		if err != nil {
+			return fatal(err)
+		}
+	}
+	fmt.Printf("photos access: %s\n", status)
+	if status == "limited" {
+		fmt.Println("WARNING: Limited Photos access — album sync will only include the few photos you allowed.")
+		fmt.Println("Open System Settings → Privacy & Security → Photos → Nubilo → Full Access, then re-run the agent.")
+		_ = agent.OpenPhotosPrivacySettings()
+		return 0
+	}
+	if status != "authorized" {
+		fmt.Println("Still not authorized. Check System Settings → Privacy & Security → Photos.")
+		_ = agent.OpenPhotosPrivacySettings()
+		return 1
+	}
+	fmt.Println("Full Photos access granted. Re-run: nubilo agent --data-dir ~/.nubilo-agent")
+	return 0
+}
+
 func agentListAlbums(sel agent.Selection) int {
+	status := agent.PhotosAuthStatus()
+	if status == "limited" {
+		fmt.Fprintf(os.Stderr, "warning: Photos access is Limited — counts below are only the photos TCC allows (run: nubilo agent authorize)\n")
+	}
 	albums, err := agent.PlatformAlbums()
 	if err != nil {
 		return fatal(err)
@@ -370,15 +433,16 @@ func agentListAlbums(sel agent.Selection) int {
 		chosen[id] = true
 	}
 	if len(albums) == 0 {
-		fmt.Println("no PhotoKit albums (grant Photos access to Terminal / nubilo)")
+		fmt.Println("no PhotoKit albums (run: nubilo agent authorize)")
 		return 0
 	}
+	fmt.Printf("photos access: %s\n", status)
 	for _, a := range albums {
 		mark := " "
 		if chosen[a.ID] {
 			mark = "*"
 		}
-		fmt.Printf("%s  %s  %s\n", mark, a.ID, a.Title)
+		fmt.Printf("%s  %s  %s  (%d)\n", mark, a.ID, a.Title, a.Count)
 	}
 	return 0
 }

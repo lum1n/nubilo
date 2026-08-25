@@ -51,15 +51,31 @@ func (p *pkSource) ListAlbums() ([]PhotoInfo, error) {
 	var rows []struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
+		Count int    `json:"count"`
 	}
 	if err := json.Unmarshal([]byte(s), &rows); err != nil {
 		return nil, err
 	}
 	out := make([]PhotoInfo, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, PhotoInfo{ID: r.ID, Title: r.Title})
+		out = append(out, PhotoInfo{ID: r.ID, Title: r.Title, Count: r.Count})
 	}
 	return out, nil
+}
+
+func PhotosAuthStatus() string {
+	raw := C.nubilo_pk_auth_status()
+	return pkStr(raw)
+}
+
+func RequestPhotosAccess() (status string, err error) {
+	var cerr *C.char
+	ok := C.nubilo_pk_request_access(&cerr)
+	status = PhotosAuthStatus()
+	if ok == 0 {
+		return status, pkErr(&cerr)
+	}
+	return status, nil
 }
 
 func (p *pkSource) ListPhotos(filter PhotoFilter) ([]LocalPhoto, error) {

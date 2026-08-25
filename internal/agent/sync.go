@@ -592,6 +592,10 @@ func (a *Agent) pushPhotos(ctx context.Context) error {
 	if a.Photos == nil || !a.Sel.Photos.Enabled {
 		return nil
 	}
+	if st := PhotosAuthStatus(); st == "limited" {
+		a.Log.Warn("photos_limited_access",
+			"hint", "only TCC-selected photos sync; run: nubilo agent authorize → Allow Full Access")
+	}
 	col, err := a.ensureCollection(kindPhotos, photos.DefaultName)
 	if err != nil {
 		return err
@@ -601,16 +605,22 @@ func (a *Agent) pushPhotos(ctx context.Context) error {
 		a.Log.Warn("list_photos_failed", "err", err.Error())
 		return nil
 	}
+	a.Log.Info("photos_list", "n", len(list), "source", a.Sel.Photos.Source)
 	seen := map[string]bool{}
+	ok, fail := 0, 0
 	for _, p := range list {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		seen[p.ID] = true
 		if err := a.pushPhoto(col.ID, p); err != nil {
+			fail++
 			a.Log.Warn("push_photo", "err", err.Error(), "local", p.ID)
+		} else {
+			ok++
 		}
 	}
+	a.Log.Info("photos_push", "ok", ok, "fail", fail)
 	mapped, err := a.Map.ForCollection(col.ID)
 	if err != nil {
 		return err

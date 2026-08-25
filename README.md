@@ -51,15 +51,26 @@ On a Mac, pair a **signing** agent (not a DAV password) into a separate data dir
 
 ### Mac Photos permission
 
-`go install` produces a CLI binary. After install on macOS, ad-hoc sign so PhotoKit can prompt:
+PhotoKit dialogs are attributed to the **process that calls the API**. When you run `nubilo` from Terminal, macOS often asks for Terminal — or never prompts.
+
+To get a **Nubilo** system dialog (and Full Access for whole albums):
 
 ```bash
 go install ./cmd/nubilo
 ./scripts/mac-sign.sh "$(go env GOPATH)/bin/nubilo"
-nubilo agent --data-dir ~/.nubilo-agent albums
+nubilo agent authorize
 ```
 
-If you still see `photos access denied`, open **System Settings → Privacy & Security → Photos** and enable the app that hosts the process (Terminal, iTerm, Ghostty, or `nubilo`). Reset a stuck denial with `tccutil reset Photos` then re-run `albums`.
+Choose **Allow Full Access** (not Limited / Selected Photos). Limited access is why an album of 154 can sync only ~10 photos.
+
+Then:
+
+```bash
+nubilo agent --data-dir ~/.nubilo-agent albums   # shows per-album counts visible to PhotoKit
+nubilo agent --data-dir ~/.nubilo-agent
+```
+
+If access stays Limited: System Settings → Privacy & Security → Photos → **Nubilo** → Full Access. Reset with `tccutil reset Photos` if stuck.
 `init` writes a self-signed certificate covering localhost and local IPs. Pairing **pins** that cert (TOFU). You do not run `nubilo tls` and you do not pass `--insecure` on a normal setup. `--insecure` remains a debug escape hatch. `nubilo tls` only regenerates the cert (new IPs, expiry).
 
 Mount WebDAV at `https://<host>:8443/dav/` using the printed username (device id) and one-time password. CalDAV is at `/caldav/`. CardDAV is at `/carddav/`. iPhone Calendar/Contacts need a certificate Apple trusts: put [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) (or another TLS terminator) in front and keep Nubilo on loopback, or install `tls.crt` on the phone. The Mac agent does not need that; it uses the pairing pin.

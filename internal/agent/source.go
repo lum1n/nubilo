@@ -41,6 +41,7 @@ type LocalContact struct {
 type PhotoInfo struct {
 	ID    string
 	Title string
+	Count int // assets visible under current Photos authorization
 }
 
 type LocalPhoto struct {

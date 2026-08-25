@@ -42,23 +42,26 @@ static NSString *nubilo_pk_status_name(PHAuthorizationStatus st) {
 	}
 }
 
-static int nubilo_pk_access(NSError **outErr) {
-	PHAuthorizationStatus st;
+static PHAuthorizationStatus nubilo_pk_current_status(void) {
 	if (@available(macOS 14.0, *)) {
-		st = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
-		if (st == PHAuthorizationStatusAuthorized || st == PHAuthorizationStatusLimited) {
-			return 1;
-		}
-	} else {
-		st = [PHPhotoLibrary authorizationStatus];
-		if (st == PHAuthorizationStatusAuthorized) {
-			return 1;
-		}
+		return [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+	}
+	return [PHPhotoLibrary authorizationStatus];
+}
+
+char *nubilo_pk_auth_status(void) {
+	return nubilo_pk_dup(nubilo_pk_status_name(nubilo_pk_current_status()));
+}
+
+static int nubilo_pk_access(NSError **outErr) {
+	PHAuthorizationStatus st = nubilo_pk_current_status();
+	if (st == PHAuthorizationStatusAuthorized || st == PHAuthorizationStatusLimited) {
+		return 1;
 	}
 	if (st == PHAuthorizationStatusDenied || st == PHAuthorizationStatusRestricted) {
 		if (outErr) {
 			NSString *msg = [NSString stringWithFormat:
-				@"photos access %@ — enable Photos for your Terminal (or the nubilo binary) in System Settings → Privacy & Security → Photos; then: scripts/mac-sign.sh $(which nubilo)",
+				@"photos access %@ — run: nubilo agent authorize (choose Allow Full Access), or System Settings → Privacy & Security → Photos",
 				nubilo_pk_status_name(st)];
 			*outErr = [NSError errorWithDomain:@"nubilo" code:1 userInfo:@{NSLocalizedDescriptionKey: msg}];
 		}
@@ -83,18 +86,29 @@ static int nubilo_pk_access(NSError **outErr) {
 	if (!nubilo_pk_wait(sem, 60.0)) {
 		if (outErr) {
 			*outErr = [NSError errorWithDomain:@"nubilo" code:2 userInfo:@{
-				NSLocalizedDescriptionKey: @"photos authorization timed out — no system prompt? rebuild with Info.plist embedded and run scripts/mac-sign.sh $(which nubilo)"
+				NSLocalizedDescriptionKey: @"photos authorization timed out — run: nubilo agent authorize"
 			}];
 		}
 		return 0;
 	}
 	if (!ok && outErr) {
 		NSString *msg = [NSString stringWithFormat:
-			@"photos access %@ — grant access in the system prompt, or System Settings → Privacy & Security → Photos",
+			@"photos access %@ — run: nubilo agent authorize (Allow Full Access)",
 			nubilo_pk_status_name(got)];
 		*outErr = [NSError errorWithDomain:@"nubilo" code:1 userInfo:@{NSLocalizedDescriptionKey: msg}];
 	}
 	return ok ? 1 : 0;
+}
+
+int nubilo_pk_request_access(char **err) {
+	NSError *e = nil;
+	if (nubilo_pk_access(&e)) {
+		return 1;
+	}
+	if (err) {
+		*err = nubilo_pk_dup(e.localizedDescription ?: @"photos access denied");
+	}
+	return 0;
 }
 
 static NSArray<NSString *> *nubilo_pk_json_ids(const char *json) {
@@ -178,7 +192,15 @@ char *nubilo_pk_list_albums(char **err) {
 	PHFetchResult<PHAssetCollection *> *res = [PHAssetCollection fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum subtype:PHAssetCollectionSubtypeAny options:nil];
 	NSMutableArray *out = [NSMutableArray array];
 	[res enumerateObjectsUsingBlock:^(PHAssetCollection *c, NSUInteger idx, BOOL *stop) {
-		[out addObject:@{ @"id": c.localIdentifier ?: @"", @"title": c.localizedTitle ?: @"" }];
+		PHFetchOptions *opts = [[PHFetchOptions alloc] init];
+		opts.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d OR mediaType == %d",
+			(int)PHAssetMediaTypeImage, (int)PHAssetMediaTypeVideo];
+		PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsInAssetCollection:c options:opts];
+		[out addObject:@{
+			@"id": c.localIdentifier ?: @"",
+			@"title": c.localizedTitle ?: @"",
+			@"count": @(assets.count)
+		}];
 	}];
 	NSData *data = [NSJSONSerialization dataWithJSONObject:out options:0 error:&e];
 	if (!data) {

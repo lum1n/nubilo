@@ -1,6 +1,10 @@
 #ifndef NUBILO_PHOTOKIT_H
 #define NUBILO_PHOTOKIT_H
 
+/* Returns malloc'd status string: authorized|limited|denied|restricted|not_determined|unknown */
+char *nubilo_pk_auth_status(void);
+/* Request Photos access; returns 1 if authorized or limited. Sets *err on failure. */
+int nubilo_pk_request_access(char **err);
 char *nubilo_pk_list_albums(char **err);
 char *nubilo_pk_list_assets(const char *source, const char *album_ids_json, double after, double before, char **err);
 /* Export primary original (photo/RAW/video). Network access allowed; timed wait. */
