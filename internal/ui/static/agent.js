@@ -110,7 +110,7 @@
   }
 
   function checklistTable(rows, idKey, labelFn, onToggle) {
-    const q = `<input type="search" id="filter" placeholder="filter…" style="max-width:16rem;margin-bottom:0.75rem">`;
+    const q = `<input type="search" id="filter" placeholder="filter…" style="max-width:16rem;margin-bottom:0.4rem">`;
     const body = rows
       .map((row) => {
         const id = row[idKey];
@@ -168,7 +168,7 @@
       <div class="section">
         <h3 class="section-title">contacts</h3>
         <label><input type="checkbox" id="sync-contacts" ${sel.sync_contacts ? "checked" : ""}> sync Address Book contacts</label>
-        <p style="margin-top:1rem"><button type="button" class="btn primary" id="save-contacts" style="width:auto">save</button></p>
+        <p style="margin-top:0.5rem"><button type="button" class="btn primary" id="save-contacts" style="width:auto">save</button></p>
       </div>`;
     $("#save-contacts").onclick = async () => {
       sel.sync_contacts = $("#sync-contacts").checked;
@@ -197,16 +197,16 @@
       <div class="section">
         <h3 class="section-title">sync</h3>
         <label><input type="checkbox" id="photos-on" ${p.enabled ? "checked" : ""}> enable photos sync</label>
-        <div style="margin-top:0.75rem">
+        <div class="choice-row">
           <label><input type="radio" name="src" value="all" ${src === "all" ? "checked" : ""}> all library</label>
-          <label style="margin-left:1rem"><input type="radio" name="src" value="albums" ${src === "albums" ? "checked" : ""}> selected albums / people</label>
-          <label style="margin-left:1rem"><input type="radio" name="src" value="dates" ${src === "dates" ? "checked" : ""}> date range</label>
+          <label><input type="radio" name="src" value="albums" ${src === "albums" ? "checked" : ""}> selected albums / people</label>
+          <label><input type="radio" name="src" value="dates" ${src === "dates" ? "checked" : ""}> date range</label>
         </div>
-        <div id="dates-row" style="margin-top:0.75rem;${src === "dates" ? "" : "display:none"}">
-          <label>after <input type="date" id="after" value="${esc(msToDateInput(p.after_ms))}" style="width:auto;display:inline-block;margin:0 0.5rem"></label>
-          <label>before <input type="date" id="before" value="${esc(msToDateInput(p.before_ms))}" style="width:auto;display:inline-block;margin:0 0.5rem"></label>
+        <div id="dates-row" class="choice-row" style="${src === "dates" ? "" : "display:none"}">
+          <label class="inline">after <input type="date" id="after" value="${esc(msToDateInput(p.after_ms))}"></label>
+          <label class="inline">before <input type="date" id="before" value="${esc(msToDateInput(p.before_ms))}"></label>
         </div>
-        <p style="margin-top:0.75rem">
+        <p style="margin-top:0.5rem">
           <button type="button" class="btn primary" id="save-photos" style="width:auto">save</button>
           <button type="button" class="btn" id="auth-photos" style="width:auto;margin-left:0.5rem">authorize photos</button>
         </p>
@@ -215,7 +215,7 @@
       </div>
       <div class="section">
         <h3 class="section-title">albums / people</h3>
-        <input type="search" id="filter" placeholder="filter…" style="max-width:16rem;margin-bottom:0.75rem">
+        <input type="search" id="filter" placeholder="filter…" style="max-width:16rem;margin-bottom:0.4rem">
         <div class="block"><table class="data">
           <thead><tr><th></th><th>kind</th><th>title</th><th>count</th></tr></thead>
           <tbody>${albumRows || '<tr><td colspan="4">no albums (authorize Photos)</td></tr>'}</tbody>
@@ -283,7 +283,7 @@
       <div class="section">
         <h3 class="section-title">sync</h3>
         <label><input type="checkbox" id="files-on" ${f.enabled ? "checked" : ""}> enable files sync</label>
-        <p style="margin-top:0.75rem"><button type="button" class="btn primary" id="save-files" style="width:auto">save</button></p>
+        <p style="margin-top:0.5rem"><button type="button" class="btn primary" id="save-files" style="width:auto">save</button></p>
       </div>
       <div class="section">
         <h3 class="section-title">folders</h3>
@@ -291,8 +291,8 @@
           <thead><tr><th>name</th><th>path</th><th></th></tr></thead>
           <tbody>${rows || "<tr><td colspan=3>none</td></tr>"}</tbody>
         </table></div>
-        <div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
-          <input type="text" id="folder-path" placeholder="/Users/you/Documents/Nubilo" style="flex:1;min-width:12rem;margin:0">
+        <div class="choice-row" style="margin-top:0.5rem">
+          <input type="text" id="folder-path" placeholder="/Users/you/Documents/Nubilo" style="flex:1;min-width:12rem;max-width:28rem;margin:0">
           <input type="text" id="folder-name" placeholder="name (optional)" style="width:10rem;margin:0">
           <button type="button" class="btn" id="add-folder">add</button>
         </div>

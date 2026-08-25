@@ -19,7 +19,7 @@ html, body {
   height: 100%;
   font-family: var(--font);
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.35;
   color: var(--text);
   background: var(--bg);
 }
@@ -66,8 +66,8 @@ html, body {
 
 input, select, textarea {
   width: 100%;
-  padding: 0.35rem 0.5rem;
-  margin-bottom: 0.5rem;
+  padding: 0.25rem 0.4rem;
+  margin-bottom: 0.35rem;
   border: 1px solid var(--border);
   border-radius: 0;
   background: var(--bg);
@@ -75,9 +75,78 @@ input, select, textarea {
   font: inherit;
 }
 
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
 input:focus, select:focus, textarea:focus {
   outline: 1px solid var(--accent);
   outline-offset: 0;
+}
+
+/* Checkbox / radio: keep control tight next to its text */
+label:has(> input[type="checkbox"]),
+label:has(> input[type="radio"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: auto;
+  max-width: 100%;
+  margin: 0;
+  cursor: pointer;
+  color: var(--text);
+}
+
+/* Stacked field labels (text/number/date inputs) */
+label:has(> input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"])),
+label:has(> select),
+label:has(> textarea) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.12rem;
+  margin-bottom: 0.4rem;
+  max-width: 22rem;
+  color: var(--text-muted);
+}
+
+label:has(> input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"])) > input,
+label:has(> select) > select,
+label:has(> textarea) > textarea {
+  margin-bottom: 0;
+  color: var(--text);
+}
+
+label.inline {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.35rem;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+label.inline > input {
+  width: auto;
+  margin: 0;
+  color: var(--text);
+}
+
+.choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem 1rem;
+  margin: 0.35rem 0;
 }
 
 .btn {
@@ -183,21 +252,22 @@ input:focus, select:focus, textarea:focus {
 
 .content {
   flex: 1;
-  padding: 0.75rem 1rem 1.5rem;
+  padding: 0.5rem 0.85rem 1rem;
   overflow: auto;
 }
 
 /* Data display */
 .kv {
-  margin: 0 0 1rem;
+  margin: 0 0 0.65rem;
   border-collapse: collapse;
-  width: 100%;
-  max-width: 32rem;
+  width: auto;
+  max-width: 100%;
 }
 
 .kv td {
-  padding: 0.15rem 1rem 0.15rem 0;
-  vertical-align: top;
+  padding: 0.05rem 0.85rem 0.05rem 0;
+  vertical-align: baseline;
+  line-height: 1.3;
 }
 
 .kv td:first-child {
@@ -209,11 +279,11 @@ input:focus, select:focus, textarea:focus {
 .kv td:last-child { color: var(--text); }
 
 .section {
-  margin-bottom: 1.25rem;
+  margin-bottom: 0.85rem;
 }
 
 .section-title {
-  margin: 0 0 0.35rem;
+  margin: 0 0 0.25rem;
   color: var(--text-muted);
   font-size: 0.85em;
   font-weight: normal;
@@ -228,12 +298,12 @@ input:focus, select:focus, textarea:focus {
 }
 
 .block-head {
-  padding: 0.35rem 0.6rem;
+  padding: 0.25rem 0.5rem;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.5rem;
   color: var(--text-muted);
   font-size: 0.85em;
 }
@@ -283,10 +353,11 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 0.25rem 0.6rem;
+  gap: 0.75rem;
+  padding: 0.12rem 0.5rem;
   border-bottom: 1px solid var(--border-dim);
   cursor: pointer;
+  line-height: 1.3;
 }
 
 .list-item:last-child { border-bottom: none; }
@@ -350,28 +421,39 @@ a { color: var(--accent); }
 
 .form-grid { max-width: 28rem; }
 
-.form-row { margin-bottom: 0.5rem; }
+.form-row { margin-bottom: 0.35rem; }
 
 .form-row label {
   display: block;
   color: var(--text-muted);
-  margin-bottom: 0.15rem;
+  margin-bottom: 0.1rem;
 }
 
-.form-row input[type="checkbox"] { width: auto; margin-right: 0.35rem; }
+.form-row label:has(> input[type="checkbox"]),
+.form-row label:has(> input[type="radio"]) {
+  display: inline-flex;
+  margin-bottom: 0;
+  color: var(--text);
+}
 
-.form-body { padding: 0.6rem; }
+.form-row input[type="checkbox"],
+.form-row input[type="radio"] {
+  width: auto;
+  margin: 0;
+}
+
+.form-body { padding: 0.45rem 0.5rem; }
 
 .hint {
   font-size: 0.85em;
   color: var(--text-muted);
-  margin: 0.5rem 0 0;
+  margin: 0.35rem 0 0;
 }
 
 .muted {
   font-size: 0.85em;
   color: var(--text-muted);
-  margin: 0.5rem 0;
+  margin: 0.35rem 0;
 }
 
 .folder-trail {
@@ -386,15 +468,22 @@ a { color: var(--accent); }
 .folder-item:hover .list-item-title { color: var(--accent); }
 
 table.data {
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   border-collapse: collapse;
   font: inherit;
+  line-height: 1.3;
+}
+
+/* Wide multi-column tables (files, albums) still use available space */
+table.data.wide {
+  width: 100%;
 }
 
 table.data th,
 table.data td {
   text-align: left;
-  padding: 0.25rem 0.6rem;
+  padding: 0.08rem 0.55rem;
   border-bottom: 1px solid var(--border-dim);
   vertical-align: middle;
 }
@@ -403,18 +492,29 @@ table.data th {
   color: var(--text-muted);
   font-weight: normal;
   font-size: 0.85em;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
 }
 
-table.data input[type="checkbox"] {
+table.data td:first-child:has(input[type="checkbox"]),
+table.data th:first-child:empty {
+  width: 1%;
+  padding-left: 0.4rem;
+  padding-right: 0.25rem;
+  white-space: nowrap;
+}
+
+table.data input[type="checkbox"],
+table.data input[type="radio"] {
   width: auto;
   margin: 0;
 }
 
 .detail {
   margin: 0;
-  padding: 0.6rem;
+  padding: 0.45rem 0.5rem;
   font: inherit;
-  line-height: 1.5;
+  line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 70vh;
@@ -423,7 +523,7 @@ table.data input[type="checkbox"] {
 }
 
 .empty {
-  padding: 1.5rem 0;
+  padding: 0.85rem 0;
   color: var(--text-muted);
 }
 
