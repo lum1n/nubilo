@@ -368,6 +368,37 @@ a { color: var(--accent); }
   margin: 0.5rem 0 0;
 }
 
+.muted {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  margin: 0.5rem 0;
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font: inherit;
+}
+
+table.data th,
+table.data td {
+  text-align: left;
+  padding: 0.25rem 0.6rem;
+  border-bottom: 1px solid var(--border-dim);
+  vertical-align: middle;
+}
+
+table.data th {
+  color: var(--text-muted);
+  font-weight: normal;
+  font-size: 0.85em;
+}
+
+table.data input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
 .detail {
   margin: 0;
   padding: 0.6rem;

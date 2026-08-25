@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nubilo agent</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-name">nubilo agent</span>
+      </div>
+      <nav class="nav">
+        <a href="#/" class="nav-link" data-route="home">overview</a>
+        <a href="#/calendars" class="nav-link" data-route="calendars">calendars</a>
+        <a href="#/reminders" class="nav-link" data-route="reminders">reminders</a>
+        <a href="#/contacts" class="nav-link" data-route="contacts">contacts</a>
+        <a href="#/photos" class="nav-link" data-route="photos">photos</a>
+        <a href="#/files" class="nav-link" data-route="files">files</a>
+        <a href="#/setup" class="nav-link" data-route="setup">setup</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="status-text">ok</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h2 id="page-title" class="page-title">overview</h2>
+        <div id="topbar-actions" class="topbar-actions"></div>
+      </header>
+      <div id="content" class="content"></div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/assets/agent.js"></script>
+</body>
+</html>

@@ -3,6 +3,8 @@
 #import "photokit_darwin.h"
 #import <Photos/Photos.h>
 #import <Foundation/Foundation.h>
+#import <objc/message.h>
+#import <objc/runtime.h>
 
 static const NSTimeInterval kNubiloPKExportTimeout = 120.0;
 
@@ -181,6 +183,142 @@ static NSDictionary *nubilo_pk_asset_row(PHAsset *a, NSArray<NSString *> *albums
 	return row;
 }
 
+static PHFetchOptions *nubilo_pk_asset_options(void) {
+	PHFetchOptions *opts = [[PHFetchOptions alloc] init];
+	opts.includeHiddenAssets = YES;
+	opts.includeAllBurstAssets = YES;
+	opts.wantsIncrementalChangeDetails = NO;
+	return opts;
+}
+
+static NSString *nubilo_pk_collection_kind(PHAssetCollection *c) {
+	switch (c.assetCollectionType) {
+	case PHAssetCollectionTypeSmartAlbum:
+		return @"smart";
+	case PHAssetCollectionTypeMoment:
+		return @"moment";
+	case PHAssetCollectionTypeAlbum:
+	default:
+		if (c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumCloudShared) {
+			return @"shared";
+		}
+		if (c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumSyncedAlbum ||
+		    c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumImported) {
+			return @"synced";
+		}
+		return @"user";
+	}
+}
+
+static NSDictionary *nubilo_pk_album_row(PHAssetCollection *c) {
+	PHFetchOptions *opts = nubilo_pk_asset_options();
+	opts.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d OR mediaType == %d",
+		(int)PHAssetMediaTypeImage, (int)PHAssetMediaTypeVideo];
+	PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsInAssetCollection:c options:opts];
+	NSUInteger est = c.estimatedAssetCount;
+	NSMutableDictionary *row = [@{
+		@"id": c.localIdentifier ?: @"",
+		@"title": c.localizedTitle ?: @"",
+		@"kind": nubilo_pk_collection_kind(c),
+		@"subtype": @(c.assetCollectionSubtype),
+		@"count": @(assets.count)
+	} mutableCopy];
+	if (est != NSNotFound) {
+		row[@"estimated"] = @(est);
+	}
+	return row;
+}
+
+/* People & Pets are PHPerson entities (not PHAssetCollection). Those fetch APIs
+ * are not always in the public Photos headers — resolve at runtime. */
+static Class nubilo_pk_person_class(void) {
+	return NSClassFromString(@"PHPerson");
+}
+
+static BOOL nubilo_pk_people_available(void) {
+	Class cls = nubilo_pk_person_class();
+	return cls != Nil &&
+		[cls respondsToSelector:@selector(fetchPersonsWithOptions:)] &&
+		[cls respondsToSelector:@selector(fetchPersonsWithLocalIdentifiers:options:)] &&
+		[PHAsset respondsToSelector:@selector(fetchAssetsForPerson:options:)];
+}
+
+static PHFetchResult *nubilo_pk_fetch_persons(void) {
+	Class cls = nubilo_pk_person_class();
+	if (!cls) {
+		return nil;
+	}
+	return ((id (*)(id, SEL, id))objc_msgSend)(cls, @selector(fetchPersonsWithOptions:), nil);
+}
+
+static id nubilo_pk_person_by_id(NSString *localID) {
+	Class cls = nubilo_pk_person_class();
+	if (!cls || localID.length == 0) {
+		return nil;
+	}
+	PHFetchResult *res = ((id (*)(id, SEL, id, id))objc_msgSend)(
+		cls, @selector(fetchPersonsWithLocalIdentifiers:options:), @[ localID ], nil);
+	return res.firstObject;
+}
+
+static PHFetchResult<PHAsset *> *nubilo_pk_assets_for_person(id person, PHFetchOptions *opts) {
+	if (!person) {
+		return nil;
+	}
+	return ((id (*)(id, SEL, id, id))objc_msgSend)(
+		[PHAsset class], @selector(fetchAssetsForPerson:options:), person, opts);
+}
+
+static NSString *nubilo_pk_person_kind(id person) {
+	// PHPersonTypePet = 2 when personType exists.
+	if ([person respondsToSelector:@selector(personType)]) {
+		NSInteger t = ((NSInteger (*)(id, SEL))objc_msgSend)(person, @selector(personType));
+		if (t == 2) {
+			return @"pet";
+		}
+	}
+	return @"person";
+}
+
+static NSString *nubilo_pk_person_title(id person) {
+	id name = [person valueForKey:@"name"];
+	if ([name isKindOfClass:[NSString class]] && [name length] > 0) {
+		return name;
+	}
+	id dn = nil;
+	@try {
+		dn = [person valueForKey:@"displayName"];
+	} @catch (__unused NSException *ex) {
+		dn = nil;
+	}
+	if ([dn isKindOfClass:[NSString class]] && [dn length] > 0) {
+		return dn;
+	}
+	return @"Unnamed";
+}
+
+static NSString *nubilo_pk_person_local_id(id person) {
+	id lid = [person valueForKey:@"localIdentifier"];
+	if ([lid isKindOfClass:[NSString class]]) {
+		return lid;
+	}
+	return @"";
+}
+
+static NSDictionary *nubilo_pk_person_row(id person) {
+	PHFetchOptions *opts = nubilo_pk_asset_options();
+	opts.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d OR mediaType == %d",
+		(int)PHAssetMediaTypeImage, (int)PHAssetMediaTypeVideo];
+	PHFetchResult<PHAsset *> *assets = nubilo_pk_assets_for_person(person, opts);
+	NSString *lid = nubilo_pk_person_local_id(person);
+	return @{
+		@"id": [NSString stringWithFormat:@"person:%@", lid],
+		@"title": nubilo_pk_person_title(person),
+		@"kind": nubilo_pk_person_kind(person),
+		@"count": @(assets ? assets.count : 0)
+	};
+}
+
 char *nubilo_pk_list_albums(char **err) {
 	NSError *e = nil;
 	if (!nubilo_pk_access(&e)) {
@@ -189,20 +327,44 @@ char *nubilo_pk_list_albums(char **err) {
 		}
 		return NULL;
 	}
-	PHFetchResult<PHAssetCollection *> *res = [PHAssetCollection fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum subtype:PHAssetCollectionSubtypeAny options:nil];
 	NSMutableArray *out = [NSMutableArray array];
-	[res enumerateObjectsUsingBlock:^(PHAssetCollection *c, NSUInteger idx, BOOL *stop) {
-		PHFetchOptions *opts = [[PHFetchOptions alloc] init];
-		opts.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d OR mediaType == %d",
-			(int)PHAssetMediaTypeImage, (int)PHAssetMediaTypeVideo];
-		PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsInAssetCollection:c options:opts];
-		[out addObject:@{
-			@"id": c.localIdentifier ?: @"",
-			@"title": c.localizedTitle ?: @"",
-			@"count": @(assets.count)
+	NSMutableSet<NSString *> *seen = [NSMutableSet set];
+	void (^addCollections)(PHFetchResult<PHAssetCollection *> *) = ^(PHFetchResult<PHAssetCollection *> *res) {
+		[res enumerateObjectsUsingBlock:^(PHAssetCollection *c, NSUInteger idx, BOOL *stop) {
+			NSString *lid = c.localIdentifier ?: @"";
+			if (lid.length == 0 || [seen containsObject:lid]) {
+				return;
+			}
+			[seen addObject:lid];
+			[out addObject:nubilo_pk_album_row(c)];
 		}];
-	}];
-	NSData *data = [NSJSONSerialization dataWithJSONObject:out options:0 error:&e];
+	};
+	addCollections([PHAssetCollection fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum subtype:PHAssetCollectionSubtypeAny options:nil]);
+	addCollections([PHAssetCollection fetchAssetCollectionsWithType:PHAssetCollectionTypeSmartAlbum subtype:PHAssetCollectionSubtypeAny options:nil]);
+
+	// People & Pets (Photos ML) — not regular albums. May be empty if API unavailable.
+	if (nubilo_pk_people_available()) {
+		PHFetchResult *persons = nubilo_pk_fetch_persons();
+		[persons enumerateObjectsUsingBlock:^(id person, NSUInteger idx, BOOL *stop) {
+			NSString *pid = [NSString stringWithFormat:@"person:%@", nubilo_pk_person_local_id(person)];
+			if (pid.length <= 7 || [seen containsObject:pid]) {
+				return;
+			}
+			[seen addObject:pid];
+			[out addObject:nubilo_pk_person_row(person)];
+		}];
+	}
+
+	PHFetchOptions *allOpts = nubilo_pk_asset_options();
+	allOpts.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d OR mediaType == %d",
+		(int)PHAssetMediaTypeImage, (int)PHAssetMediaTypeVideo];
+	NSUInteger libraryCount = [PHAsset fetchAssetsWithOptions:allOpts].count;
+
+	NSDictionary *payload = @{
+		@"library_count": @(libraryCount),
+		@"albums": out
+	};
+	NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:&e];
 	if (!data) {
 		if (err) {
 			*err = nubilo_pk_dup(@"json");
@@ -227,12 +389,34 @@ char *nubilo_pk_list_assets(const char *source, const char *album_ids_json, doub
 		NSMutableArray<PHAsset *> *acc = [NSMutableArray array];
 		NSMutableSet<NSString *> *seen = [NSMutableSet set];
 		for (NSString *aid in ids) {
+			if ([aid hasPrefix:@"person:"]) {
+				if (!nubilo_pk_people_available()) {
+					continue;
+				}
+				NSString *pid = [aid substringFromIndex:7];
+				id person = nubilo_pk_person_by_id(pid);
+				if (!person) {
+					continue;
+				}
+				PHFetchResult<PHAsset *> *inPerson = nubilo_pk_assets_for_person(person, nubilo_pk_asset_options());
+				[inPerson enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger idx, BOOL *stop) {
+					if (!nubilo_pk_is_media(a)) {
+						return;
+					}
+					if ([seen containsObject:a.localIdentifier]) {
+						return;
+					}
+					[seen addObject:a.localIdentifier];
+					[acc addObject:a];
+				}];
+				continue;
+			}
 			PHFetchResult<PHAssetCollection *> *cols = [PHAssetCollection fetchAssetCollectionsWithLocalIdentifiers:@[ aid ] options:nil];
 			PHAssetCollection *col = cols.firstObject;
 			if (!col) {
 				continue;
 			}
-			PHFetchResult<PHAsset *> *inAlbum = [PHAsset fetchAssetsInAssetCollection:col options:nil];
+			PHFetchResult<PHAsset *> *inAlbum = [PHAsset fetchAssetsInAssetCollection:col options:nubilo_pk_asset_options()];
 			[inAlbum enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger idx, BOOL *stop) {
 				if (!nubilo_pk_is_media(a)) {
 					return;
@@ -256,7 +440,7 @@ char *nubilo_pk_list_assets(const char *source, const char *album_ids_json, doub
 			[rows addObject:nubilo_pk_asset_row(a, ids)];
 		}
 	} else {
-		PHFetchOptions *opts = [[PHFetchOptions alloc] init];
+		PHFetchOptions *opts = nubilo_pk_asset_options();
 		opts.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d OR mediaType == %d",
 			(int)PHAssetMediaTypeImage, (int)PHAssetMediaTypeVideo];
 		PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsWithOptions:opts];

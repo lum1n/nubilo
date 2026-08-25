@@ -2,13 +2,8 @@ package ui
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -23,11 +18,11 @@ import (
 const DefaultListen = "127.0.0.1:8787"
 
 type Server struct {
-	RT      *app.Runtime
-	Log     *slog.Logger
-	Listen  string
-	session []byte
-	http    *http.Server
+	RT     *app.Runtime
+	Log    *slog.Logger
+	Listen string
+	gate   sessionGate
+	http   *http.Server
 
 	backupMu  sync.Mutex
 	backupTok map[string]dlToken
@@ -37,21 +32,18 @@ func New(rt *app.Runtime, listen string, log *slog.Logger) (*Server, error) {
 	if listen == "" {
 		listen = DefaultListen
 	}
-	host, _, err := net.SplitHostPort(listen)
+	listen, err := validateLoopbackListen(listen)
 	if err != nil {
 		return nil, err
 	}
-	if !isLoopbackHost(host) {
-		return nil, errors.New("ui: listen address must be loopback")
-	}
-	sess := make([]byte, 32)
-	if _, err := rand.Read(sess); err != nil {
+	gate, err := newSessionGate()
+	if err != nil {
 		return nil, err
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{RT: rt, Log: log, Listen: listen, session: sess}
+	s := &Server{RT: rt, Log: log, Listen: listen, gate: gate}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/info", s.handleInfo)
 	mux.HandleFunc("GET /api/session", s.handleSession)
@@ -97,7 +89,7 @@ func New(rt *app.Runtime, listen string, log *slog.Logger) (*Server, error) {
 }
 
 func (s *Server) SessionURL() string {
-	return "http://" + s.Listen + "/?session=" + hex.EncodeToString(s.session)
+	return s.gate.SessionURL(s.Listen)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -115,7 +107,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 	if tok := r.URL.Query().Get("session"); tok != "" {
-		if s.setSessionCookie(w, tok) {
+		if s.gate.setSessionCookie(w, tok) {
 			http.Redirect(w, r, "/", http.StatusFound)
 			return
 		}
@@ -138,11 +130,11 @@ func serveStatic(w http.ResponseWriter, name string) {
 		return
 	}
 	switch name {
-	case "index.html":
+	case "index.html", "agent.html":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	case "app.css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	case "app.js":
+	case "app.js", "agent.js":
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	}
 	b, err := fs.ReadFile(static, name)
@@ -165,21 +157,10 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) checkAuth(r *http.Request) bool {
-	if c, err := r.Cookie("nubilo_ui"); err == nil && s.matchSession(c.Value) {
-		return true
-	}
-	if tok := strings.TrimSpace(r.Header.Get("X-Nubilo-UI")); tok != "" && s.matchSession(tok) {
+	if s.gate.sessionOK(r) {
 		return true
 	}
 	return s.matchAdmin(r)
-}
-
-func (s *Server) matchSession(tok string) bool {
-	b, err := hex.DecodeString(strings.TrimSpace(tok))
-	if err != nil || len(b) != len(s.session) {
-		return false
-	}
-	return subtle.ConstantTimeCompare(b, s.session) == 1
 }
 
 func (s *Server) matchAdmin(r *http.Request) bool {
@@ -188,21 +169,6 @@ func (s *Server) matchAdmin(r *http.Request) bool {
 		return false
 	}
 	return s.matchAdminToken(tok)
-}
-
-func (s *Server) setSessionCookie(w http.ResponseWriter, tok string) bool {
-	if !s.matchSession(tok) {
-		return false
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "nubilo_ui",
-		Value:    hex.EncodeToString(s.session),
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400 * 7,
-	})
-	return true
 }
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +202,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	s.setSessionCookie(w, hex.EncodeToString(s.session))
+	s.gate.setSessionCookie(w, s.gate.sessionHex())
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -247,28 +213,4 @@ func (s *Server) matchAdminToken(tok string) bool {
 	sumTok := sha256.Sum256([]byte(strings.TrimSpace(tok)))
 	sumWant := sha256.Sum256(s.RT.AdminTok)
 	return subtle.ConstantTimeCompare(sumTok[:], sumWant[:]) == 1
-}
-
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func readJSON(r *http.Request, v any) error {
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	err := dec.Decode(v)
-	if err == io.EOF {
-		return nil
-	}
-	return err
 }

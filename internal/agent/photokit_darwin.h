@@ -7,6 +7,7 @@ char *nubilo_pk_auth_status(void);
 int nubilo_pk_request_access(char **err);
 char *nubilo_pk_list_albums(char **err);
 char *nubilo_pk_list_assets(const char *source, const char *album_ids_json, double after, double before, char **err);
+/* IDs may be album localIdentifiers or "person:<localIdentifier>" for People & Pets. */
 /* Export primary original (photo/RAW/video). Network access allowed; timed wait. */
 int nubilo_pk_export_original(const char *local_id, const char *dest_path, char **err);
 /* Export Live Photo paired movie when present; returns 0 if none. */

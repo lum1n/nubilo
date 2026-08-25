@@ -26,7 +26,6 @@ import (
 	"nubilo/internal/identity"
 	"nubilo/internal/integrity"
 	"nubilo/internal/photos"
-	"nubilo/internal/protocol"
 	"nubilo/internal/server"
 	"nubilo/internal/version"
 )
@@ -140,6 +139,7 @@ Usage:
   nubilo server [--data-dir DIR]
   nubilo ui [--listen ADDR] [--open]
   nubilo agent [--data-dir DIR] [--insecure] [--interval SECONDS]
+  nubilo agent ui [--listen ADDR] [--open]
   nubilo agent calendars
   nubilo agent select ID
   nubilo agent unselect ID
@@ -357,6 +357,8 @@ func runAgent(g global, args []string) int {
 		return agentListAlbums(sel)
 	case "authorize":
 		return agentAuthorize()
+	case "ui":
+		return runAgentUI(g, rest)
 	case "files":
 		return agentFiles(paths.AgentJSON, sel, rest)
 	case "run":
@@ -424,7 +426,7 @@ func agentListAlbums(sel agent.Selection) int {
 	if status == "limited" {
 		fmt.Fprintf(os.Stderr, "warning: Photos access is Limited — counts below are only the photos TCC allows (run: nubilo agent authorize)\n")
 	}
-	albums, err := agent.PlatformAlbums()
+	libraryCount, albums, err := agent.PlatformAlbumList()
 	if err != nil {
 		return fatal(err)
 	}
@@ -432,17 +434,23 @@ func agentListAlbums(sel agent.Selection) int {
 	for _, id := range sel.Photos.Albums {
 		chosen[id] = true
 	}
+	fmt.Printf("photos access: %s\n", status)
+	fmt.Printf("library assets: %d\n", libraryCount)
 	if len(albums) == 0 {
-		fmt.Println("no PhotoKit albums (run: nubilo agent authorize)")
+		fmt.Println("no PhotoKit albums/people (run: nubilo agent authorize)")
 		return 0
 	}
-	fmt.Printf("photos access: %s\n", status)
+	fmt.Println("tip: People & Pets entries are kind=person|pet and use ids like person:… — select those for full pet/person sets")
 	for _, a := range albums {
 		mark := " "
 		if chosen[a.ID] {
 			mark = "*"
 		}
-		fmt.Printf("%s  %s  %s  (%d)\n", mark, a.ID, a.Title, a.Count)
+		kind := a.Kind
+		if kind == "" {
+			kind = "user"
+		}
+		fmt.Printf("%s  %s  [%s]  %s  (%d)\n", mark, a.ID, kind, a.Title, a.Count)
 	}
 	return 0
 }
@@ -474,6 +482,8 @@ func agentPhotos(path string, sel agent.Selection, args []string) int {
 	case "select":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: nubilo agent photos select ALBUM_ID")
+			fmt.Fprintln(os.Stderr, "  quote ids that contain / or start with person:")
+			fmt.Fprintln(os.Stderr, `  e.g. nubilo agent photos select 'person:XXXX'`)
 			return 2
 		}
 		sel.SelectAlbum(args[1])
@@ -844,110 +854,18 @@ func runPairClient(g global, serverURL, code, name string, insecure bool) int {
 		fmt.Fprintln(os.Stderr, "pair client requires --server, --code, and --name")
 		return 2
 	}
-	norm := ncrypto.NormalizePairingCode(code)
-	if len(norm) != 10 || norm == "XXXXXXXXXX" {
-		fmt.Fprintln(os.Stderr, "copy the code printed by the Linux server (nubilo pair --role agent), not the XXXXX-XXXXX placeholder; codes expire in 5 minutes")
-		return 2
-	}
 	dir, err := app.ResolveDataDir(g.dataDir)
 	if err != nil {
 		return fatal(err)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fatal(err)
-	}
-	pub, priv, err := ncrypto.GenerateEd25519()
-	if err != nil {
-		return fatal(err)
-	}
-	var pinned string
-	pol := protocol.TLS{
-		Insecure: insecure,
-		OnPeer: func(pem string, systemTrusted bool) {
-			if !systemTrusted && pem != "" {
-				pinned = pem
-			}
-		},
-	}
 	if insecure {
 		fmt.Fprintln(os.Stderr, "warning: TLS certificate verification disabled (--insecure)")
 	}
-	client := protocol.HTTPClient(30*time.Second, pol)
-	beginBody, _ := json.Marshal(map[string]string{
-		"code":       code,
-		"name":       name,
-		"public_key": b64(pub),
-	})
-	resp, err := client.Post(strings.TrimRight(serverURL, "/")+"/api/v1/pair/begin", "application/json", strings.NewReader(string(beginBody)))
+	id, err := agent.PairWithServer(dir, serverURL, code, name, insecure)
 	if err != nil {
 		return fatal(err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		err := fmt.Errorf("pair begin: %s %s", resp.Status, strings.TrimSpace(string(b)))
-		if resp.StatusCode == http.StatusUnauthorized {
-			err = fmt.Errorf("%w (wrong or expired code: on Linux run nubilo pair --data-dir ~/.nubilo --role agent, then retry immediately with that printed code)", err)
-		}
-		return fatal(err)
-	}
-	var br struct {
-		PairingID string `json:"pairing_id"`
-		Challenge string `json:"challenge"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
-		return fatal(err)
-	}
-	chal, err := b64in(br.Challenge)
-	if err != nil {
-		return fatal(err)
-	}
-	sig := ncrypto.SignEd25519(priv, chal)
-	compBody, _ := json.Marshal(map[string]string{
-		"pairing_id": br.PairingID,
-		"signature":  b64(sig),
-	})
-	resp2, err := client.Post(strings.TrimRight(serverURL, "/")+"/api/v1/pair/complete", "application/json", strings.NewReader(string(compBody)))
-	if err != nil {
-		return fatal(err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode != 200 {
-		b, _ := io.ReadAll(resp2.Body)
-		return fatal(fmt.Errorf("pair complete: %s %s", resp2.Status, strings.TrimSpace(string(b))))
-	}
-	var cr struct {
-		DeviceID        string `json:"device_id"`
-		ServerPublicKey string `json:"server_public_key"`
-	}
-	if err := json.NewDecoder(resp2.Body).Decode(&cr); err != nil {
-		return fatal(err)
-	}
-	p := config.Paths(dir)
-	if err := ncrypto.WriteKeyFile(p.DeviceKey, ncrypto.PrivateKeyBytes(priv)); err != nil {
-		return fatal(err)
-	}
-	out := struct {
-		DeviceID        string `json:"device_id"`
-		Server          string `json:"server"`
-		ServerPublicKey string `json:"server_public_key"`
-		Name            string `json:"name"`
-		ServerTLSCert   string `json:"server_tls_cert,omitempty"`
-	}{
-		DeviceID: cr.DeviceID, Server: serverURL, ServerPublicKey: cr.ServerPublicKey,
-		Name: name, ServerTLSCert: pinned,
-	}
-	dj, _ := json.MarshalIndent(out, "", "  ")
-	if err := os.WriteFile(p.DeviceJSON, append(dj, '\n'), 0o600); err != nil {
-		return fatal(err)
-	}
-	fmt.Printf("paired as %s\n", cr.DeviceID)
-	if pinned != "" {
-		cert, err := ncrypto.ParseCertPEM(pinned)
-		if err == nil {
-			fmt.Printf("pinned TLS cert sha256:%s\n", ncrypto.CertFingerprint(cert))
-		}
-	}
+	fmt.Printf("paired as %s\n", id)
 	return 0
 }
 

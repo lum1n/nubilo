@@ -42,25 +42,60 @@ func pkStr(p *C.char) string {
 }
 
 func (p *pkSource) ListAlbums() ([]PhotoInfo, error) {
+	list, err := listPhotoCollections()
+	if err != nil {
+		return nil, err
+	}
+	return list.Albums, nil
+}
+
+type photoCollectionList struct {
+	LibraryCount int
+	Albums       []PhotoInfo
+}
+
+func listPhotoCollections() (photoCollectionList, error) {
 	var err *C.char
 	raw := C.nubilo_pk_list_albums(&err)
 	if raw == nil {
-		return nil, pkErr(&err)
+		return photoCollectionList{}, pkErr(&err)
 	}
 	s := pkStr(raw)
-	var rows []struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
-		Count int    `json:"count"`
+	var payload struct {
+		LibraryCount int `json:"library_count"`
+		Albums       []struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+			Kind  string `json:"kind"`
+			Count int    `json:"count"`
+		} `json:"albums"`
 	}
-	if err := json.Unmarshal([]byte(s), &rows); err != nil {
-		return nil, err
+	if err := json.Unmarshal([]byte(s), &payload); err != nil {
+		return photoCollectionList{}, err
 	}
-	out := make([]PhotoInfo, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, PhotoInfo{ID: r.ID, Title: r.Title, Count: r.Count})
+	out := make([]PhotoInfo, 0, len(payload.Albums))
+	for _, r := range payload.Albums {
+		kind := r.Kind
+		if kind == "" {
+			kind = "user"
+		}
+		out = append(out, PhotoInfo{ID: r.ID, Title: r.Title, Kind: kind, Count: r.Count})
 	}
-	return out, nil
+	return photoCollectionList{LibraryCount: payload.LibraryCount, Albums: out}, nil
+}
+
+// PlatformAlbumList returns albums/people/pets plus library-wide asset count.
+func PlatformAlbumList() (libraryCount int, albums []PhotoInfo, err error) {
+	pk, err := openPhotoKit()
+	if err != nil {
+		return 0, nil, err
+	}
+	_ = pk
+	list, err := listPhotoCollections()
+	if err != nil {
+		return 0, nil, err
+	}
+	return list.LibraryCount, list.Albums, nil
 }
 
 func PhotosAuthStatus() string {

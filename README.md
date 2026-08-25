@@ -75,7 +75,7 @@ If access stays Limited: System Settings → Privacy & Security → Photos → *
 
 Mount WebDAV at `https://<host>:8443/dav/` using the printed username (device id) and one-time password. CalDAV is at `/caldav/`. CardDAV is at `/carddav/`. iPhone Calendar/Contacts need a certificate Apple trusts: put [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) (or another TLS terminator) in front and keep Nubilo on loopback, or install `tls.crt` on the phone. The Mac agent does not need that; it uses the pairing pin.
 
-Browse and configure your cloud locally with `nubilo ui` (loopback web UI on port 8787). It covers browsing photos/calendar/contacts/files, creating collections, pairing, verify/gc, backup create/download, restore to a non-live dest, device enroll/rotate/password, TLS regen, auto-backup settings, and config. Agent calendar/album/folder selection stays on the CLI. Restoring onto the live data dir still requires stopping the server and `nubilo restore`.
+Browse and configure your cloud locally with `nubilo ui` (loopback web UI on port 8787). It covers browsing photos/calendar/contacts/files, creating collections, pairing, verify/gc, backup create/download, restore to a non-live dest, device enroll/rotate/password, TLS regen, auto-backup settings, and config. On the Mac, `nubilo agent ui` (port 8788) configures sync selection (calendars, reminders, contacts, photos/albums/people, files) and pairing/setup. Restoring onto the live data dir still requires stopping the server and `nubilo restore`.
 
 ### iPhone Calendar
 
@@ -109,9 +109,11 @@ Sync uses a time window (default ±730 days). Recurring events are stored as one
 
 ```bash
 ./nubilo agent --data-dir ~/.nubilo-agent photos on
+./nubilo agent --data-dir ~/.nubilo-agent ui          # loopback UI for sync choices + setup
 ./nubilo agent --data-dir ~/.nubilo-agent albums
-./nubilo agent --data-dir ~/.nubilo-agent photos source all   # or albums|dates
-./nubilo agent --data-dir ~/.nubilo-agent photos select <album-id>
+./nubilo agent --data-dir ~/.nubilo-agent photos source albums
+./nubilo agent --data-dir ~/.nubilo-agent photos select '<album-or-person-id>'
+# People & Pets: pick the [pet]/[person] row (id person:…), not a same-named user album.
 ./nubilo agent --data-dir ~/.nubilo-agent files add ~/Documents/Nubilo
 ./nubilo agent --data-dir ~/.nubilo-agent files on
 ```
@@ -136,6 +138,7 @@ nubilo init
 nubilo server
 nubilo ui
 nubilo agent
+nubilo agent ui
 nubilo agent calendars
 nubilo agent select ID
 nubilo agent unselect ID

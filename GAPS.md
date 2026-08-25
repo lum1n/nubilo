@@ -42,6 +42,8 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 - In-place edits: PhotoKit `modificationDate` stored in agent idmap; mod change re-exports and pushes.
 - Video, Live Photo (still + paired movie blob), and RAW originals are synced; gallery shows kind/size/taken-at, video playback when possible, Live movie download. No RAW develop pipeline.
 - `nubilo ui` gallery: download original, delete, captions, video/Live/RAW affordances.
+- **People & Pets** in Photos.app are `PHPerson` entities, not albums. `nubilo agent albums` / agent UI lists them as `kind=person|pet` with ids `person:…`; select those for the full set (a same-named user album often only has ~key photos).
+- Mac agent configuration UI: `nubilo agent ui` (loopback, same look as `nubilo ui`) for sync selection and setup; CLI selection remains.
 - Still out: iPhone Photos.app / share sheet / Camera Upload; proprietary edit recipes beyond original resource bytes.
 - Identical plaintext bytes dedup to one blob. Default 64 MiB cap.
 
@@ -78,6 +80,5 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 
 ## Intentionally deferred
 
-- Agent-side UI for calendar/album/folder selection (CLI selection remains).
 - Operator verification drills (iPhone CalDAV + Apple-trusted TLS, Finder/Files mount, backup restore drill, LUKS under data dir) — checklist, not product code.
 - Corporate credentials never leave the Mac. Linux `nubilo agent` stays refused. GPS never lands in SQLite. Originals are never mutated.

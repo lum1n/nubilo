@@ -51,5 +51,8 @@ func TestInitStatusVerify(t *testing.T) {
 		if code := cli.Main([]string{"agent"}); code != 2 {
 			t.Fatalf("agent on linux want 2 got %d", code)
 		}
+		if code := cli.Main([]string{"agent", "ui", "--open=false"}); code != 2 {
+			t.Fatalf("agent ui on linux want 2 got %d", code)
+		}
 	}
 }

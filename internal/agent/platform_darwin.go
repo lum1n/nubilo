@@ -43,9 +43,6 @@ func PlatformReminderLists() ([]CalendarInfo, error) {
 }
 
 func PlatformAlbums() ([]PhotoInfo, error) {
-	pk, err := openPhotoKit()
-	if err != nil {
-		return nil, err
-	}
-	return pk.ListAlbums()
+	_, albums, err := PlatformAlbumList()
+	return albums, err
 }
