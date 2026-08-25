@@ -23,7 +23,7 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 | `VTIMEZONE` component | Done | Emitted next to `TZID` |
 | Alarms (`VALARM`) | Done | Relative and absolute display alarms |
 | URL | Done | |
-| Status (`CONFIRMED` / `TENTATIVE` / `CANCELLED`) | Done | |
+| Status (`CONFIRMED` / `TENTATIVE` / `CANCELLED`) | Done | Read into ICS from EventKit. `EKEvent.status` is readonly — pull cannot set STATUS; cancelled events are deletes |
 | Busy/free (`TRANSP`) | Done | |
 | Organizer / attendees | Done | Read from EventKit into ICS so iPhone sees invitees. macOS EventKit does not allow creating attendees without EventKitUI; pull will not attach people on the Mac |
 | Failed `apply_change` still ACKed | Done | Journal cursor does not advance if any apply in the batch failed |
