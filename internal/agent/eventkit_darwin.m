@@ -25,17 +25,37 @@ static char *nubilo_dup(NSString *s) {
 static int nubilo_ek_access(NSError **outErr) {
 	EKEventStore *store = nubilo_ek_store();
 	EKAuthorizationStatus st = [EKEventStore authorizationStatusForEntityType:EKEntityTypeEvent];
-	if (st == EKAuthorizationStatusAuthorized) {
-		return 1;
+	if (@available(macOS 14.0, *)) {
+		if (st == EKAuthorizationStatusFullAccess || st == EKAuthorizationStatusWriteOnly) {
+			return 1;
+		}
+	} else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		if (st == EKAuthorizationStatusAuthorized) {
+			return 1;
+		}
+#pragma clang diagnostic pop
 	}
 	__block BOOL ok = NO;
 	__block NSError *err = nil;
 	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-	[store requestAccessToEntityType:EKEntityTypeEvent completion:^(BOOL granted, NSError *e) {
-		ok = granted;
-		err = e;
-		dispatch_semaphore_signal(sem);
-	}];
+	if (@available(macOS 14.0, *)) {
+		[store requestFullAccessToEventsWithCompletion:^(BOOL granted, NSError *e) {
+			ok = granted;
+			err = e;
+			dispatch_semaphore_signal(sem);
+		}];
+	} else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		[store requestAccessToEntityType:EKEntityTypeEvent completion:^(BOOL granted, NSError *e) {
+			ok = granted;
+			err = e;
+			dispatch_semaphore_signal(sem);
+		}];
+#pragma clang diagnostic pop
+	}
 	while (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC))) {
 		[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
 	}
@@ -147,27 +167,27 @@ static NSString *nubilo_ek_rrule(EKRecurrenceRule *rule, BOOL allDay) {
 
 static EKWeekday nubilo_ek_weekday(NSString *s) {
 	if ([s isEqualToString:@"SU"]) {
-		return EKSunday;
+		return EKWeekdaySunday;
 	}
 	if ([s isEqualToString:@"MO"]) {
-		return EKMonday;
+		return EKWeekdayMonday;
 	}
 	if ([s isEqualToString:@"TU"]) {
-		return EKTuesday;
+		return EKWeekdayTuesday;
 	}
 	if ([s isEqualToString:@"WE"]) {
-		return EKWednesday;
+		return EKWeekdayWednesday;
 	}
 	if ([s isEqualToString:@"TH"]) {
-		return EKThursday;
+		return EKWeekdayThursday;
 	}
 	if ([s isEqualToString:@"FR"]) {
-		return EKFriday;
+		return EKWeekdayFriday;
 	}
 	if ([s isEqualToString:@"SA"]) {
-		return EKSaturday;
+		return EKWeekdaySaturday;
 	}
-	return EKMonday;
+	return EKWeekdayMonday;
 }
 
 static EKRecurrenceRule *nubilo_ek_rule_from_json(NSDictionary *j) {
@@ -468,14 +488,8 @@ static void nubilo_ek_fill_ics(NSMutableDictionary *d, EKEvent *ev) {
 static void nubilo_ek_apply_extras(EKEvent *ev, NSDictionary *j) {
 	NSString *url = [j[@"url"] isKindOfClass:[NSString class]] ? j[@"url"] : @"";
 	ev.URL = url.length ? [NSURL URLWithString:url] : nil;
-	NSString *status = [j[@"status"] isKindOfClass:[NSString class]] ? j[@"status"] : @"";
-	if ([status isEqualToString:@"TENTATIVE"]) {
-		ev.status = EKEventStatusTentative;
-	} else if ([status isEqualToString:@"CANCELLED"]) {
-		ev.status = EKEventStatusCanceled;
-	} else if ([status isEqualToString:@"CONFIRMED"]) {
-		ev.status = EKEventStatusConfirmed;
-	}
+	// EKEvent.status is readonly; EventKit derives it. CANCELLED is handled by delete, not STATUS=.
+	(void)j[@"status"];
 	NSString *transp = [j[@"transp"] isKindOfClass:[NSString class]] ? j[@"transp"] : @"";
 	if (ev.availability != EKEventAvailabilityNotSupported) {
 		if ([transp isEqualToString:@"TRANSPARENT"]) {
@@ -778,17 +792,37 @@ int nubilo_ek_delete_event(const char *item_id, char **err) {
 static int nubilo_ek_reminder_access(NSError **outErr) {
 	EKEventStore *store = nubilo_ek_store();
 	EKAuthorizationStatus st = [EKEventStore authorizationStatusForEntityType:EKEntityTypeReminder];
-	if (st == EKAuthorizationStatusAuthorized) {
-		return 1;
+	if (@available(macOS 14.0, *)) {
+		if (st == EKAuthorizationStatusFullAccess) {
+			return 1;
+		}
+	} else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		if (st == EKAuthorizationStatusAuthorized) {
+			return 1;
+		}
+#pragma clang diagnostic pop
 	}
 	__block BOOL ok = NO;
 	__block NSError *err = nil;
 	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-	[store requestAccessToEntityType:EKEntityTypeReminder completion:^(BOOL granted, NSError *e) {
-		ok = granted;
-		err = e;
-		dispatch_semaphore_signal(sem);
-	}];
+	if (@available(macOS 14.0, *)) {
+		[store requestFullAccessToRemindersWithCompletion:^(BOOL granted, NSError *e) {
+			ok = granted;
+			err = e;
+			dispatch_semaphore_signal(sem);
+		}];
+	} else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		[store requestAccessToEntityType:EKEntityTypeReminder completion:^(BOOL granted, NSError *e) {
+			ok = granted;
+			err = e;
+			dispatch_semaphore_signal(sem);
+		}];
+#pragma clang diagnostic pop
+	}
 	while (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC))) {
 		[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
 	}
