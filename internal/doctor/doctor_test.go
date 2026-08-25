@@ -36,6 +36,11 @@ func TestServerDoctorAfterSetup(t *testing.T) {
 	if !foundBak {
 		t.Fatalf("backup check missing: %+v", rep.Checks)
 	}
+	for _, c := range rep.Checks {
+		if c.ID == "disk_encryption" && c.Status == doctor.Fail {
+			t.Fatalf("initialized server should not fail disk_encryption when blobs are encrypted: %+v", c)
+		}
+	}
 	out := doctor.FormatHuman(rep)
 	if !strings.Contains(out, "nubilo doctor") {
 		t.Fatalf("%s", out)

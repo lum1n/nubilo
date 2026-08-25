@@ -370,37 +370,65 @@ func checkServerService(r *Report) {
 }
 
 func checkDiskEncryption(r *Report, dataDir string) {
+	blobEnc := false
+	if _, err := os.Stat(config.Paths(dataDir).MasterKey); err == nil {
+		blobEnc = true
+	}
+	const appEncNote = "payloads (photos, files, calendars, contacts) are encrypted with the master key; SQLite metadata (names, sizes, IDs) and master.key are not — disk encryption covers those"
+	const appEncFix = "optional: put data_dir on LUKS/FileVault so metadata and master.key are encrypted at rest too"
+
 	switch runtime.GOOS {
 	case "darwin":
 		out, err := exec.Command("fdesetup", "status").CombinedOutput()
 		s := strings.TrimSpace(string(out))
 		if err != nil {
-			r.add(Check{ID: "disk_encryption", Title: "FileVault", Status: Warn, Detail: s})
+			if blobEnc {
+				r.add(Check{ID: "disk_encryption", Title: "FileVault", Status: Warn,
+					Detail: fmt.Sprintf("could not detect FileVault (%s); %s", s, appEncNote), Fix: appEncFix})
+			} else {
+				r.add(Check{ID: "disk_encryption", Title: "FileVault", Status: Fail, Detail: s,
+					Fix: "enable FileVault, or initialize nubilo so blob encryption is active"})
+			}
 			return
 		}
 		if strings.Contains(strings.ToLower(s), "on") {
 			r.add(Check{ID: "disk_encryption", Title: "FileVault", Status: OK, Detail: s})
+			return
+		}
+		if blobEnc {
+			r.add(Check{ID: "disk_encryption", Title: "FileVault", Status: Warn,
+				Detail: fmt.Sprintf("%s; %s", s, appEncNote), Fix: appEncFix})
 		} else {
 			r.add(Check{ID: "disk_encryption", Title: "FileVault", Status: Fail, Detail: s,
 				Fix: "enable FileVault (System Settings → Privacy & Security)"})
 		}
 	case "linux":
-		// Best-effort: resolve dataDir to a device and look for crypt/mapper.
 		abs, _ := filepath.Abs(dataDir)
 		out, err := exec.Command("findmnt", "-n", "-o", "SOURCE,FSTYPE", "--target", abs).CombinedOutput()
 		s := strings.TrimSpace(string(out))
 		if err != nil || s == "" {
-			r.add(Check{ID: "disk_encryption", Title: "disk encryption (LUKS)", Status: Warn,
-				Detail: "could not detect mount source — ensure $data_dir is on LUKS",
-				Fix:    "put data_dir on an encrypted volume"})
+			if blobEnc {
+				r.add(Check{ID: "disk_encryption", Title: "disk encryption (LUKS)", Status: Warn,
+					Detail: "could not detect mount source; " + appEncNote, Fix: appEncFix})
+			} else {
+				r.add(Check{ID: "disk_encryption", Title: "disk encryption (LUKS)", Status: Fail,
+					Detail: "could not detect mount source and no master key (no blob encryption)",
+					Fix:    "nubilo init / put data_dir on LUKS"})
+			}
 			return
 		}
 		low := strings.ToLower(s)
 		if strings.Contains(low, "mapper") || strings.Contains(low, "crypt") || strings.Contains(low, "luks") {
 			r.add(Check{ID: "disk_encryption", Title: "disk encryption (LUKS)", Status: OK, Detail: s})
+			return
+		}
+		if blobEnc {
+			r.add(Check{ID: "disk_encryption", Title: "disk encryption (LUKS)", Status: Warn,
+				Detail: fmt.Sprintf("%s; %s", s, appEncNote), Fix: appEncFix})
 		} else {
-			r.add(Check{ID: "disk_encryption", Title: "disk encryption (LUKS)", Status: Fail, Detail: s,
-				Fix: "move data_dir onto a LUKS volume (SQLite metadata is not encrypted)"})
+			r.add(Check{ID: "disk_encryption", Title: "disk encryption (LUKS)", Status: Fail,
+				Detail: s + "; no master key found (no blob encryption either)",
+				Fix:    "nubilo init, or move data_dir onto a LUKS volume"})
 		}
 	default:
 		r.add(Check{ID: "disk_encryption", Title: "disk encryption", Status: Info, Detail: "unsupported OS check"})
