@@ -63,6 +63,12 @@ type SyncConfig struct {
 	TimestampSkewMS int64 `json:"timestamp_skew_ms"`
 }
 
+// DefaultMaxBlobBytes is large enough for typical phone videos (old defaults
+// of 32/64 MiB rejected many MP4s in the 33–60 MiB range).
+const DefaultMaxBlobBytes int64 = 256 << 20
+const legacyMaxBlobBytes32 int64 = 32 << 20
+const legacyMaxBlobBytes64 int64 = 64 << 20
+
 type PairConfig struct {
 	TTLSeconds       int `json:"ttl_seconds"`
 	MaxAttempts      int `json:"max_attempts"`
@@ -88,7 +94,7 @@ func Defaults(dataDir string) Config {
 		},
 		Sync: SyncConfig{
 			MaxBatch:        500,
-			MaxBlobBytes:    64 << 20,
+			MaxBlobBytes:    DefaultMaxBlobBytes,
 			TimestampSkewMS: 60_000,
 		},
 		Pairing: PairConfig{
@@ -122,6 +128,12 @@ func Load(path string) (Config, error) {
 	cfg := Defaults("")
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return Config{}, fmt.Errorf("config: parse %s: %w", path, err)
+	}
+	// Phone videos commonly exceed the old 32/64 MiB defaults; bump only those
+	// exact legacy values so intentional smaller caps stay put.
+	switch cfg.Sync.MaxBlobBytes {
+	case legacyMaxBlobBytes32, legacyMaxBlobBytes64:
+		cfg.Sync.MaxBlobBytes = DefaultMaxBlobBytes
 	}
 	applyEnv(&cfg)
 	if err := cfg.Validate(); err != nil {

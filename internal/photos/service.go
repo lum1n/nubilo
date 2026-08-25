@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	ncrypto "nubilo/internal/crypto"
+	"nubilo/internal/config"
 	"nubilo/internal/identity"
 	"nubilo/internal/ids"
 	"nubilo/internal/store"
@@ -205,7 +206,7 @@ func PublicMeta(m Meta) map[string]any {
 
 func ReadLimited(r io.Reader, max int64) ([]byte, error) {
 	if max <= 0 {
-		max = 64 << 20
+		max = config.DefaultMaxBlobBytes
 	}
 	return io.ReadAll(io.LimitReader(r, max+1))
 }

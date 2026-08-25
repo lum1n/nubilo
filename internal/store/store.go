@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"nubilo/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -68,7 +70,7 @@ func Open(dir, dbPath, blobDir, tmpDir string, blobKey []byte, maxBlob int64) (*
 		}
 	}
 	if maxBlob <= 0 {
-		maxBlob = 32 << 20
+		maxBlob = config.DefaultMaxBlobBytes
 	}
 	return &Store{
 		DB:      db,

@@ -374,7 +374,7 @@ Default logs may include: device_id, collection_id, object_id, sequence numbers,
 | `pair/complete` | 20 / hour / IP |
 | App-password failures | 5 / minute / device then 30s cooldown |
 | Signed-request failures | 30 / minute / IP |
-| Request body | `sync.max_blob_bytes` (default 64 MiB) plus 1 MiB headroom |
+| Request body | `sync.max_blob_bytes` (default 256 MiB) plus 1 MiB headroom |
 | Sync batch | 500 objects / request |
 
 ## 14. Input validation
@@ -427,7 +427,7 @@ Reviewed against Phases 1–7 as implemented:
 | Finding | Resolution |
 | --- | --- |
 | Preview/thumb blobs had `refcount=0` and were invisible to GC | Engine increments extra metadata hashes; `verify`/`gc` count `preview_hash`/`thumb_hash` |
-| Signed-request body cap (33 MiB) below photo max (64 MiB) | Authenticator `MaxBody` follows `sync.max_blob_bytes` |
+| Signed-request body cap below photo max | Authenticator `MaxBody` follows `sync.max_blob_bytes` (default 256 MiB) |
 | Admin token compared with `!=` | SHA-256 then constant-time compare; loopback-only |
 | `pair/complete` had no IP rate limit | `pairing.completes_per_hour` (default 20) |
 | Signed-request failures unthrottled | 30 / minute / IP |

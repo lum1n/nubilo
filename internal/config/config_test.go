@@ -59,3 +59,34 @@ func TestSaveLoad(t *testing.T) {
 		t.Fatal(got.Listen)
 	}
 }
+
+func TestLegacyMaxBlobBytesBumped(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	for _, legacy := range []int64{32 << 20, 64 << 20} {
+		c := config.Defaults(dir)
+		c.Sync.MaxBlobBytes = legacy
+		if err := c.Save(p); err != nil {
+			t.Fatal(err)
+		}
+		got, err := config.Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Sync.MaxBlobBytes != config.DefaultMaxBlobBytes {
+			t.Fatalf("legacy %d: got %d want %d", legacy, got.Sync.MaxBlobBytes, config.DefaultMaxBlobBytes)
+		}
+	}
+	c := config.Defaults(dir)
+	c.Sync.MaxBlobBytes = 128 << 20
+	if err := c.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Sync.MaxBlobBytes != 128<<20 {
+		t.Fatalf("custom cap should stay %d", got.Sync.MaxBlobBytes)
+	}
+}
