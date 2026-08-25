@@ -25,6 +25,23 @@ static int nubilo_pk_wait(dispatch_semaphore_t sem, NSTimeInterval timeout) {
 	return 1;
 }
 
+static NSString *nubilo_pk_status_name(PHAuthorizationStatus st) {
+	switch (st) {
+	case PHAuthorizationStatusNotDetermined:
+		return @"not_determined";
+	case PHAuthorizationStatusRestricted:
+		return @"restricted";
+	case PHAuthorizationStatusDenied:
+		return @"denied";
+	case PHAuthorizationStatusAuthorized:
+		return @"authorized";
+	case PHAuthorizationStatusLimited:
+		return @"limited";
+	default:
+		return @"unknown";
+	}
+}
+
 static int nubilo_pk_access(NSError **outErr) {
 	PHAuthorizationStatus st;
 	if (@available(macOS 14.0, *)) {
@@ -38,23 +55,44 @@ static int nubilo_pk_access(NSError **outErr) {
 			return 1;
 		}
 	}
+	if (st == PHAuthorizationStatusDenied || st == PHAuthorizationStatusRestricted) {
+		if (outErr) {
+			NSString *msg = [NSString stringWithFormat:
+				@"photos access %@ — enable Photos for your Terminal (or the nubilo binary) in System Settings → Privacy & Security → Photos; then: scripts/mac-sign.sh $(which nubilo)",
+				nubilo_pk_status_name(st)];
+			*outErr = [NSError errorWithDomain:@"nubilo" code:1 userInfo:@{NSLocalizedDescriptionKey: msg}];
+		}
+		return 0;
+	}
 	__block BOOL ok = NO;
-	__block NSError *err = nil;
+	__block PHAuthorizationStatus got = st;
 	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 	if (@available(macOS 14.0, *)) {
 		[PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite handler:^(PHAuthorizationStatus status) {
+			got = status;
 			ok = (status == PHAuthorizationStatusAuthorized || status == PHAuthorizationStatusLimited);
 			dispatch_semaphore_signal(sem);
 		}];
 	} else {
 		[PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+			got = status;
 			ok = (status == PHAuthorizationStatusAuthorized);
 			dispatch_semaphore_signal(sem);
 		}];
 	}
-	(void)nubilo_pk_wait(sem, 30.0);
-	if (outErr) {
-		*outErr = err;
+	if (!nubilo_pk_wait(sem, 60.0)) {
+		if (outErr) {
+			*outErr = [NSError errorWithDomain:@"nubilo" code:2 userInfo:@{
+				NSLocalizedDescriptionKey: @"photos authorization timed out — no system prompt? rebuild with Info.plist embedded and run scripts/mac-sign.sh $(which nubilo)"
+			}];
+		}
+		return 0;
+	}
+	if (!ok && outErr) {
+		NSString *msg = [NSString stringWithFormat:
+			@"photos access %@ — grant access in the system prompt, or System Settings → Privacy & Security → Photos",
+			nubilo_pk_status_name(got)];
+		*outErr = [NSError errorWithDomain:@"nubilo" code:1 userInfo:@{NSLocalizedDescriptionKey: msg}];
 	}
 	return ok ? 1 : 0;
 }

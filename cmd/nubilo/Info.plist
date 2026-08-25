@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.nubilo.cli</string>
+	<key>CFBundleName</key>
+	<string>nubilo</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Nubilo syncs selected albums and photos with your personal cloud.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Nubilo can write photos from your cloud back into Photos.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Nubilo syncs selected calendars with your personal cloud.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Nubilo syncs selected calendars with your personal cloud.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Nubilo syncs selected reminder lists with your personal cloud.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Nubilo syncs selected reminder lists with your personal cloud.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Nubilo syncs contacts with your personal cloud.</string>
+</dict>
+</plist>
