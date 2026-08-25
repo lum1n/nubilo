@@ -192,22 +192,18 @@ static PHFetchOptions *nubilo_pk_asset_options(void) {
 }
 
 static NSString *nubilo_pk_collection_kind(PHAssetCollection *c) {
-	switch (c.assetCollectionType) {
-	case PHAssetCollectionTypeSmartAlbum:
+	if (c.assetCollectionType == PHAssetCollectionTypeSmartAlbum) {
 		return @"smart";
-	case PHAssetCollectionTypeMoment:
-		return @"moment";
-	case PHAssetCollectionTypeAlbum:
-	default:
-		if (c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumCloudShared) {
-			return @"shared";
-		}
-		if (c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumSyncedAlbum ||
-		    c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumImported) {
-			return @"synced";
-		}
-		return @"user";
 	}
+	// PHAssetCollectionTypeMoment exists on iOS only; unused on macOS.
+	if (c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumCloudShared) {
+		return @"shared";
+	}
+	if (c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumSyncedAlbum ||
+	    c.assetCollectionSubtype == PHAssetCollectionSubtypeAlbumImported) {
+		return @"synced";
+	}
+	return @"user";
 }
 
 static NSDictionary *nubilo_pk_album_row(PHAssetCollection *c) {
