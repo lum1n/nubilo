@@ -61,7 +61,7 @@ func specToSaveJSON(spec EventSpec) ([]byte, error) {
 		j.Organizer = &org
 	}
 	for _, al := range spec.Alarms {
-		ea := ekAlarm{Action: al.Action, Desc: al.Desc}
+		ea := ekAlarm{Action: al.Action, Desc: al.Desc, Email: al.Email}
 		if !al.Abs.IsZero() {
 			v := float64(al.Abs.Unix())
 			ea.Abs = &v
@@ -130,7 +130,7 @@ func todoToSaveJSON(spec TodoSpec) ([]byte, error) {
 		j.AllDay = 1
 	}
 	for _, al := range spec.Alarms {
-		ea := ekAlarm{Action: al.Action, Desc: al.Desc}
+		ea := ekAlarm{Action: al.Action, Desc: al.Desc, Email: al.Email}
 		if !al.Abs.IsZero() {
 			v := float64(al.Abs.Unix())
 			ea.Abs = &v

@@ -168,29 +168,59 @@
     try {
       const data = await api("/photos");
       const photos = data.photos || [];
+      const bar = `<div class="toolbar">
+        <label class="btn sm">upload / camera
+          <input type="file" accept="image/*,video/*" capture="environment" multiple hidden id="photo-upload">
+        </label>
+        <span class="hint">iPhone: Files → WebDAV folder “Camera Upload”, or Shortcuts POST /api/v1/photos</span>
+      </div>`;
       if (!photos.length) {
-        content.innerHTML = '<div class="empty">no photos — enable photokit sync on mac agent</div>';
-        return;
-      }
-      content.innerHTML = `<div class="photo-grid">${photos
-        .map((p) => {
-          const kind = p.kind || "image";
-          const cap = [p.name || "", kind !== "image" ? kind : "", fmtSize(p.size), fmtTaken(p.taken_at_ms)]
-            .filter(Boolean)
-            .join(" · ");
-          const thumb =
-            kind === "video" && !p.thumb_hash
-              ? `<div class="photo-placeholder">▶ video</div>`
-              : `<img loading="lazy" src="/api/photos/${encodeURIComponent(p.id)}/thumb" alt="">`;
-          return `<div class="photo-card" data-id="${esc(p.id)}" title="${esc(cap)}">
+        content.innerHTML = bar + '<div class="empty">no photos yet — upload here, Camera Upload folder, or enable photokit on mac</div>';
+      } else {
+        content.innerHTML =
+          bar +
+          `<div class="photo-grid">${photos
+            .map((p) => {
+              const kind = p.kind || "image";
+              const cap = [p.name || "", kind !== "image" ? kind : "", fmtSize(p.size), fmtTaken(p.taken_at_ms)]
+                .filter(Boolean)
+                .join(" · ");
+              const thumb =
+                kind === "video" && !p.thumb_hash
+                  ? `<div class="photo-placeholder">▶ video</div>`
+                  : `<img loading="lazy" src="/api/photos/${encodeURIComponent(p.id)}/thumb" alt="">`;
+              return `<div class="photo-card" data-id="${esc(p.id)}" title="${esc(cap)}">
             ${thumb}
             <span>${esc(cap)}</span>
           </div>`;
-        })
-        .join("")}</div>`;
-      content.querySelectorAll(".photo-card").forEach((card) => {
-        card.addEventListener("click", () => openLightbox(card.dataset.id, photos));
-      });
+            })
+            .join("")}</div>`;
+        content.querySelectorAll(".photo-card").forEach((card) => {
+          card.addEventListener("click", () => openLightbox(card.dataset.id, photos));
+        });
+      }
+      const input = $("#photo-upload");
+      if (input) {
+        input.onchange = async () => {
+          const files = [...(input.files || [])];
+          input.value = "";
+          for (const f of files) {
+            try {
+              const res = await fetch("/api/photos?name=" + encodeURIComponent(f.name), {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": f.type || "application/octet-stream" },
+                body: f,
+              });
+              if (!res.ok) throw new Error(await res.text());
+              toast("uploaded " + f.name);
+            } catch (e) {
+              toast(e.message || "upload failed");
+            }
+          }
+          renderPhotos();
+        };
+      }
     } catch (e) {
       content.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     }
@@ -214,12 +244,19 @@
     const meta = $("#lightbox-meta");
     const actions = $("#lightbox-actions");
     img.classList.add("hidden");
+    img.removeAttribute("src");
     vid.classList.add("hidden");
+    vid.pause();
     vid.removeAttribute("src");
     vid.load();
     if (kind === "video") {
-      vid.src = `/api/photos/${encodeURIComponent(id)}/original`;
+      const url = `/api/photos/${encodeURIComponent(id)}/original`;
+      vid.src = url;
+      if (p.mime) vid.setAttribute("type", p.mime);
+      else vid.removeAttribute("type");
       vid.classList.remove("hidden");
+      vid.load();
+      vid.play().catch(() => {});
     } else {
       img.src = `/api/photos/${encodeURIComponent(id)}/preview`;
       img.classList.remove("hidden");
@@ -239,6 +276,11 @@
       lb.classList.add("hidden");
       vid.pause();
       vid.removeAttribute("src");
+      vid.load();
+    };
+    vid.onerror = () => {
+      const hint = " · browser cannot decode this codec (download to play)";
+      if (!meta.textContent.includes("cannot decode")) meta.textContent += hint;
     };
     $(".lightbox-close", lb).onclick = close;
     lb.onclick = (ev) => {

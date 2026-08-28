@@ -16,6 +16,7 @@ import (
 	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/identity"
 	"nubilo/internal/ids"
+	"nubilo/internal/photos"
 	"nubilo/internal/store"
 	"nubilo/internal/syncengine"
 )
@@ -332,6 +333,11 @@ func (f *FS) Create(ctx context.Context, name string, body io.ReadCloser, opts *
 	obj, err := f.Engine.GetObject(ctx, in.ObjectID)
 	if err != nil {
 		return nil, created, err
+	}
+	// No-app iPhone path: Files.app → WebDAV "Camera Upload" folder also becomes a photo object.
+	if isCameraUploadName(parent.col.Name) && looksLikeMediaUpload(fileName, payload) {
+		svc := photos.Service{Engine: f.Engine, Store: f.Store}
+		_, _ = svc.Ingest(ctx, dev, payload, fileName, nil)
 	}
 	fi := f.info(&node{kind: nodeFile, path: p, col: parent.col, obj: obj})
 	return fi, created, nil
@@ -742,6 +748,25 @@ func splitParent(p string) (parent, base string, err error) {
 		return "/", strings.TrimPrefix(p, "/"), nil
 	}
 	return p[:i], p[i+1:], nil
+}
+
+func isCameraUploadName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "camera upload" || n == "camera-upload" || n == "cameraupload"
+}
+
+func looksLikeMediaUpload(name string, payload []byte) bool {
+	mime := http.DetectContentType(payload)
+	if strings.HasPrefix(mime, "image/") || strings.HasPrefix(mime, "video/") {
+		return true
+	}
+	lower := strings.ToLower(name)
+	for _, ext := range []string{".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff", ".dng", ".mp4", ".mov", ".m4v"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 var _ webdav.FileSystem = (*FS)(nil)

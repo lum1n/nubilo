@@ -308,3 +308,44 @@ func TestObjectIDNotInFilesystem(t *testing.T) {
 	}
 	_ = json.RawMessage{}
 }
+
+func TestCameraUploadAlsoIngestsPhoto(t *testing.T) {
+	ts, dev, pass, eng := davServer(t)
+	resp := req(t, ts, "MKCOL", "/dav/files/Camera Upload", dev.ID, pass, nil)
+	resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusMethodNotAllowed {
+		// some stacks return 405 if exists; create via engine if needed
+		if _, err := eng.CreateCollection(context.Background(), "files", "Camera Upload", "", nil); err != nil {
+			t.Fatalf("mkcol %d create %v", resp.StatusCode, err)
+		}
+	}
+	// minimal JPEG
+	img := []byte{
+		0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+		0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xd9,
+	}
+	resp = req(t, ts, http.MethodPut, "/dav/files/Camera%20Upload/shot.jpg", dev.ID, pass, img)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("put %d %s", resp.StatusCode, body)
+	}
+	photoCol, err := eng.FindChildCollection(context.Background(), "photos", "", "Photos")
+	if err != nil {
+		t.Fatalf("photos collection: %v", err)
+	}
+	objs, err := eng.ListObjects(context.Background(), photoCol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, o := range objs {
+		if o.Kind == "photo" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected photo ingest, got %d objects", len(objs))
+	}
+}

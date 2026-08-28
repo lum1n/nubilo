@@ -37,6 +37,7 @@ type ekAlarm struct {
 	Abs    *float64 `json:"abs"`
 	Action string   `json:"action"`
 	Desc   string   `json:"desc"`
+	Email  string   `json:"email,omitempty"`
 }
 
 type seriesAcc struct {
@@ -166,6 +167,12 @@ func localFromSeries(acc *seriesAcc, winStart, winEnd time.Time) (LocalEvent, er
 		}
 		spec.ExDates = append(spec.ExDates, t)
 	}
+	// If EventKit listed far fewer occurrences than RRULE expands to, the
+	// listing is likely incomplete — do not invent EXDATEs that would hide
+	// real instances on CalDAV clients.
+	if n := len(acc.occs); n == 0 || len(spec.ExDates) > n*2 {
+		spec.ExDates = nil
+	}
 	ics, err := EncodeEventICS(spec)
 	if err != nil {
 		return LocalEvent{}, err
@@ -197,7 +204,7 @@ func specFromOccurrence(r ekOccurrence) EventSpec {
 		Organizer: r.Organizer, Attendees: r.Attendees,
 	}
 	for _, a := range r.Alarms {
-		al := AlarmSpec{Action: a.Action, Desc: a.Desc}
+		al := AlarmSpec{Action: a.Action, Desc: a.Desc, Email: a.Email}
 		if a.Abs != nil && *a.Abs != 0 {
 			al.Abs = time.Unix(int64(*a.Abs), 0).UTC()
 		} else if a.Offset != nil {

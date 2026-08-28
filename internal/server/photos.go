@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"nubilo/internal/auth"
 	"nubilo/internal/authz"
@@ -131,8 +133,7 @@ func (s *Server) servePhoto(w http.ResponseWriter, r *http.Request, rendition st
 	}
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("ETag", `"`+obj.ContentHash+`"`)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	http.ServeContent(w, r, obj.ID+"-"+rendition, time.UnixMilli(obj.UpdatedAt), bytes.NewReader(body))
 }
 
 func photoJSON(o *syncengine.Object) map[string]any {

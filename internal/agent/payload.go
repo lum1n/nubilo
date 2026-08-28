@@ -31,6 +31,8 @@ type EventSpec struct {
 	Organizer    PersonSpec
 	Attendees    []PersonSpec
 	Alarms       []AlarmSpec
+	// AttachURIs are VEVENT ATTACH values that are URIs (not inline binary).
+	AttachURIs []string
 }
 
 type PersonSpec struct {
@@ -43,8 +45,10 @@ type PersonSpec struct {
 type AlarmSpec struct {
 	OffsetSec int64
 	Abs       time.Time
-	Action    string
+	Action    string // DISPLAY (default), EMAIL, AUDIO
 	Desc      string
+	Email     string // mailto target for EMAIL alarms
+	Attach    string // URI ATTACH on the VALARM (rare)
 }
 
 func UIDFromICS(ics []byte) string {
@@ -179,6 +183,15 @@ func encodeVEVENT(spec EventSpec, isOverride bool) *ical.Event {
 			ev.Children = append(ev.Children, c)
 		}
 	}
+	for _, u := range spec.AttachURIs {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		p := ical.NewProp(ical.PropAttach)
+		p.Value = u
+		ev.Props.Add(p)
+	}
 	if isOverride && !spec.RecurrenceID.IsZero() {
 		setEventTime(ev.Props, ical.PropRecurrenceID, spec.RecurrenceID, spec)
 	}
@@ -312,6 +325,22 @@ func specFromComp(c *ical.Component) EventSpec {
 	for _, p := range c.Props.Values(ical.PropAttendee) {
 		spec.Attendees = append(spec.Attendees, parsePerson(&p))
 	}
+	for _, p := range c.Props.Values(ical.PropAttach) {
+		v := strings.TrimSpace(p.Value)
+		if v == "" {
+			continue
+		}
+		// Skip inline binary; URI attachments only.
+		enc := strings.ToLower(p.Params.Get("ENCODING"))
+		if enc == "base64" || enc == "b" {
+			continue
+		}
+		if u, err := p.URI(); err == nil && u != nil {
+			spec.AttachURIs = append(spec.AttachURIs, u.String())
+		} else if strings.Contains(v, "://") {
+			spec.AttachURIs = append(spec.AttachURIs, v)
+		}
+	}
 	for _, child := range c.Children {
 		if child.Name != ical.CompAlarm {
 			continue
@@ -368,7 +397,7 @@ func parsePerson(p *ical.Prop) PersonSpec {
 
 func encodeVALARM(al AlarmSpec) *ical.Component {
 	c := ical.NewComponent(ical.CompAlarm)
-	action := al.Action
+	action := strings.ToUpper(strings.TrimSpace(al.Action))
 	if action == "" {
 		action = "DISPLAY"
 	}
@@ -385,15 +414,40 @@ func encodeVALARM(al AlarmSpec) *ical.Component {
 		trig.SetDuration(time.Duration(al.OffsetSec) * time.Second)
 	}
 	c.Props.Set(trig)
+	if action == "EMAIL" {
+		email := strings.TrimSpace(al.Email)
+		if email == "" {
+			email = strings.TrimSpace(al.Desc)
+		}
+		if addr := calAddress(email); addr != "" {
+			c.Props.Add(personProp(ical.PropAttendee, PersonSpec{Email: email}))
+		}
+	}
+	if u := strings.TrimSpace(al.Attach); u != "" {
+		p := ical.NewProp(ical.PropAttach)
+		p.Value = u
+		c.Props.Add(p)
+	}
 	return c
 }
 
 func parseVALARM(c *ical.Component) AlarmSpec {
 	al := AlarmSpec{Action: "DISPLAY"}
 	if s, err := c.Props.Text(ical.PropAction); err == nil && s != "" {
-		al.Action = s
+		al.Action = strings.ToUpper(s)
 	}
 	al.Desc, _ = c.Props.Text(ical.PropDescription)
+	if p := c.Props.Get(ical.PropAttendee); p != nil {
+		al.Email = strings.TrimPrefix(strings.TrimSpace(p.Value), "mailto:")
+		al.Email = strings.TrimPrefix(al.Email, "MAILTO:")
+	}
+	if p := c.Props.Get(ical.PropAttach); p != nil {
+		if u, err := p.URI(); err == nil && u != nil {
+			al.Attach = u.String()
+		} else {
+			al.Attach = strings.TrimSpace(p.Value)
+		}
+	}
 	p := c.Props.Get(ical.PropTrigger)
 	if p == nil {
 		return al

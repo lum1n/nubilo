@@ -148,6 +148,7 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 			}
 			if rt.kind == kindContact && a.Contacts != nil {
 				_ = a.Contacts.DeleteContact(existing.LocalID)
+				a.Map.DeleteContactCache(existing.LocalID)
 			}
 			if rt.kind == kindFile && a.Files != nil {
 				_ = a.Files.DeleteFile(existing.LocalID)
@@ -215,6 +216,7 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 			return err
 		}
 		localID = id
+		_ = a.Map.SaveContactCache(localID, payload)
 	case kindFile:
 		if a.Files == nil || rt.rootPath == "" {
 			return nil
@@ -542,17 +544,22 @@ func (a *Agent) pushTodo(collectionID string, td LocalTodo) error {
 }
 
 func (a *Agent) pushContact(collectionID string, c LocalContact) error {
-	hash := ncrypto.SHA256Hex(c.VCard)
+	vcf := c.VCard
+	if cached := a.Map.LoadContactCache(c.ID); len(cached) > 0 {
+		vcf = MergeContactVCard(cached, ParseContactVCard(c.VCard))
+	}
+	hash := ncrypto.SHA256Hex(vcf)
 	row, err := a.Map.ByLocal(kindContact, c.ID)
 	if err == nil && row.ContentHash == hash {
+		_ = a.Map.SaveContactCache(c.ID, vcf)
 		return nil
 	}
-	if err := a.putBlob(hash, c.VCard); err != nil {
+	if err := a.putBlob(hash, vcf); err != nil {
 		return err
 	}
 	uid := c.UID
 	if uid == "" {
-		uid = UIDFromVCard(c.VCard)
+		uid = UIDFromVCard(vcf)
 	}
 	if uid == "" {
 		uid = c.ID
@@ -562,8 +569,8 @@ func (a *Agent) pushContact(collectionID string, c LocalContact) error {
 		Kind:         kindContact,
 		ContentHash:  hash,
 		BlobID:       hash,
-		Size:         int64(len(c.VCard)),
-		Metadata:     dav.EncodeContactMeta(dav.ContactMetaFromVCard(dav.DAVResourceName(uid+".vcf", ".vcf"), uid, c.VCard)),
+		Size:         int64(len(vcf)),
+		Metadata:     dav.EncodeContactMeta(dav.ContactMetaFromVCard(dav.DAVResourceName(uid+".vcf", ".vcf"), uid, vcf)),
 		Force:        true,
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -583,6 +590,7 @@ func (a *Agent) pushContact(collectionID string, c LocalContact) error {
 	if len(res) == 0 || res[0].Status != "ok" {
 		return errors.New("push contact rejected")
 	}
+	_ = a.Map.SaveContactCache(c.ID, vcf)
 	return a.Map.Put(Mapping{
 		LocalID: c.ID, Kind: kindContact, ObjectID: in.ObjectID, CollectionID: collectionID,
 		ContentHash: hash, Revision: res[0].Revision,
@@ -939,6 +947,9 @@ func (a *Agent) pushDelete(row Mapping) error {
 	if len(res) == 0 || res[0].Status != "ok" {
 		return errors.New("push delete rejected")
 	}
+	if row.Kind == kindContact {
+		a.Map.DeleteContactCache(row.LocalID)
+	}
 	return a.Map.DeleteObject(row.ObjectID)
 }
 
@@ -1220,12 +1231,24 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	t := time.NewTicker(d)
 	defer t.Stop()
+	local := watchLocalChanges()
+	var debounce *time.Timer
 	for {
 		select {
 		case <-ctx.Done():
+			if debounce != nil {
+				debounce.Stop()
+			}
 			return ctx.Err()
 		case <-t.C:
 			a.runSync(ctx)
+		case <-local:
+			if debounce != nil {
+				debounce.Stop()
+			}
+			debounce = time.AfterFunc(2*time.Second, func() {
+				a.runSync(ctx)
+			})
 		}
 	}
 }

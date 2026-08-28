@@ -67,6 +67,7 @@ func New(rt *app.Runtime, listen string, log *slog.Logger) (*Server, error) {
 	mux.HandleFunc("DELETE /api/objects/{id}", s.authed(s.handleObjectDelete))
 	mux.HandleFunc("GET /api/blobs/{hash}", s.authed(s.handleBlob))
 	mux.HandleFunc("GET /api/photos", s.authed(s.handlePhotos))
+	mux.HandleFunc("POST /api/photos", s.authed(s.handlePhotoUpload))
 	mux.HandleFunc("GET /api/photos/{id}/{rendition}", s.authed(s.handlePhotoRendition))
 	mux.HandleFunc("POST /api/pair", s.authed(s.handlePairStart))
 	mux.HandleFunc("GET /api/pair/{id}", s.authed(s.handlePairStatus))

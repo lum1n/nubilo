@@ -38,6 +38,28 @@ func TestCollapseWeeklySeries(t *testing.T) {
 	}
 }
 
+func TestCollapseIncompleteListingSkipsExdate(t *testing.T) {
+	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	// Only one occurrence listed for a weekly series over 4 weeks → incomplete.
+	rows := []ekOccurrence{{
+		ID: "series-1", EventID: "series-1", CalendarID: "cal", UID: "uid-week",
+		Title: "Standup", Start: float64(start.Unix()), End: float64(start.Add(time.Hour).Unix()),
+		Occurrence: float64(start.Unix()), MasterStart: float64(start.Unix()),
+		MasterEnd: float64(start.Add(time.Hour).Unix()),
+		RRule:     "FREQ=WEEKLY;BYDAY=MO",
+	}}
+	evs, err := collapseEKEvents(rows, start.Add(-time.Hour), start.AddDate(0, 0, 28))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("got %d", len(evs))
+	}
+	if strings.Contains(string(evs[0].ICS), "EXDATE") {
+		t.Fatalf("should not invent exdates for sparse listing: %s", evs[0].ICS)
+	}
+}
+
 func TestCollapseDeletedOccurrenceIsExdate(t *testing.T) {
 	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
 	var rows []ekOccurrence

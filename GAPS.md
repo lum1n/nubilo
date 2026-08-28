@@ -1,6 +1,6 @@
 # Nubilo gaps
 
-Snapshot of what is implemented vs missing. Calendar is the current lock-in; photos and contacts wait until calendar is full-featured.
+Snapshot of what is implemented vs missing. Calendar remains the lock-in surface; contacts and photos now have production-minded round-trips without a mobile app.
 
 Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 
@@ -8,10 +8,11 @@ Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 
 - Mac agent over `/sync/v1` for selected calendars and reminder lists, including recurrence (`RRULE` / `EXDATE` / exceptions) and event timezones.
 - iPhone CalDAV (app password, Apple-trusted TLS).
-- WebDAV files, CardDAV (contacts with name/email/phone/address/birthday), PhotoKit **push + pull write-back**, photo HTTP API and `nubilo ui` gallery.
+- WebDAV files, CardDAV contacts, PhotoKit **push + pull write-back**, photo HTTP API and `nubilo ui` gallery + upload.
 - Pairing, backup/restore (CLI + UI), enroll/rotate, TLS regen, verify, gc, optional server auto-backup.
 - Always-on user services: `nubilo server install` (Linux systemd `--user` or macOS LaunchAgent), `nubilo agent install` (macOS LaunchAgent via Nubilo.app).
 - Guided setup + doctor: `nubilo setup`, `nubilo agent setup`, `nubilo doctor`, UI health panel; macOS agent keys in Keychain.
+- EventKit / Contacts change notifications wake the agent (still polls as a backstop).
 
 ## Calendar (lock-in)
 
@@ -20,21 +21,22 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 | Area | Status | Notes |
 | --- | --- | --- |
 | Summary, notes, location, start/end, all-day | Done | |
-| Recurrence (`RRULE`, `EXDATE`, detached `RECURRENCE-ID`) | Done | Window ±730 days; series with no in-window occurrence is not pushed |
+| Recurrence (`RRULE`, `EXDATE`, detached `RECURRENCE-ID`) | Done | Window ±730 days; series with no in-window occurrence is not pushed. Sparse EventKit listings do not invent EXDATEs |
 | Event timezone (`TZID`) | Done | |
 | `VTIMEZONE` component | Done | Emitted next to `TZID` |
-| Alarms (`VALARM`) | Done | Relative and absolute display alarms |
+| Alarms (`VALARM`) | Done | DISPLAY + EMAIL (ATTENDEE); relative and absolute |
 | URL | Done | |
+| URI `ATTACH` | Done | URI attachments round-trip in ICS; inline binary attachments deferred |
 | Status (`CONFIRMED` / `TENTATIVE` / `CANCELLED`) | Done | Read into ICS from EventKit. `EKEvent.status` is readonly — pull cannot set STATUS; cancelled events are deletes |
 | Busy/free (`TRANSP`) | Done | |
 | Organizer / attendees | Done | Read from EventKit into ICS so iPhone sees invitees. macOS EventKit does not allow creating attendees without EventKitUI; pull will not attach people on the Mac |
 | Failed `apply_change` still ACKed | Done | Journal cursor does not advance if any apply in the batch failed |
 | Calendar color (`calendar-color` PROPPATCH) | Done | Stored in collection metadata; returned on PROPFIND. Mac agent pushes EventKit calendar color |
-| Alarms that are email/procedure | Open | Display/audio relative+absolute only |
-| Attachments | Open | Would bloat blobs; not in v1 |
+| Alarms that are procedure | Open | Not useful on Apple clients |
+| Inline binary attachments | Open | Would bloat blobs; URI ATTACH only |
 | Travel time / conference / structured location extras | Open | Not in standard VEVENT |
 | Reminders (`VTODO` / EventKit reminders) | Done | Mac agent syncs selected reminder lists as VTODO-only CalDAV collections. Incomplete always; completed within `window_days` |
-| EventKit change notifications | Open | Poll every 120s |
+| EventKit change notifications | Done | `EKEventStoreChangedNotification` + 2s debounce; poll remains as backstop |
 | Calendar window | Open | Default ±730 days; operator can raise `window_days` |
 
 ## Photos
@@ -43,18 +45,20 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 - iCloud originals: export allows network access with a timed wait (`icloud_fetch` / `export_failed` in errors).
 - In-place edits: PhotoKit `modificationDate` stored in agent idmap; mod change re-exports and pushes.
 - Video, Live Photo (still + paired movie blob), and RAW originals are synced; gallery shows kind/size/taken-at, video playback when possible, Live movie download. No RAW develop pipeline.
-- `nubilo ui` gallery: download original, delete, captions, video/Live/RAW affordances.
+- `nubilo ui` gallery: **upload** (file / camera on supporting browsers), download original, delete, captions, video/Live/RAW affordances.
+- **No-app iPhone upload:** create WebDAV folder `Camera Upload` and save from Files.app — PUT also ingests as a photo object. Or `nubilo devices password --scope photos` + Shortcuts `POST /api/v1/photos`.
 - **People & Pets** in Photos.app are `PHPerson` entities, not albums. `nubilo agent albums` / agent UI lists them as `kind=person|pet` with ids `person:…`; select those for the full set (a same-named user album often only has ~key photos).
 - Mac agent configuration UI: `nubilo agent ui` (loopback, same look as `nubilo ui`) for sync selection and setup; CLI selection remains.
-- Still out: iPhone Photos.app / share sheet / Camera Upload; proprietary edit recipes beyond original resource bytes.
+- Still out: proprietary edit recipes beyond original resource bytes; native Photos.app share extension (no iOS app by design).
 - Identical plaintext bytes dedup to one blob. Default **256 MiB** cap (`sync.max_blob_bytes`; legacy 32/64 MiB configs are bumped on load so phone videos sync).
 - Blob PUT/GET use a 15m client timeout (JSON sync stays at 60s). Oversized bodies return 413; truncated uploads no longer trip the auth fail → 429 cascade.
 
 ## Contacts
 
-- Mac agent syncs name (FN/N), emails, phones, postal addresses, and birthday (`BDAY`, including yearless `--MM-DD`).
-- CardDAV stores full vCard blobs; metadata carries FN + preferred email/phone/birthday for listings.
-- Still missing: org, notes, photos/avatars, URLs, extra structured name parts.
+- Mac agent syncs FN/N, org, nickname, note, emails, phones, postal addresses, URLs, birthday (`BDAY`, including yearless `--MM-DD`), and photo when present.
+- CardDAV stores full vCard blobs; agent keeps a per-contact cache and **merges** Mac-managed fields into the last full card so iPhone extras (and `X-*` props) are not wiped on the next push.
+- FN-only / org-only cards apply a displayable name into Contacts.app so they do not round-trip blank.
+- Contacts store change notifications wake the agent (with poll backstop).
 
 ## Files
 
@@ -67,7 +71,7 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 ## Integrity / sync
 
 - Failed `apply_change` no longer advances the journal cursor.
-- Synthetic `EXDATE` for “EventKit did not list this instance in the window” can hide occurrences if listing is incomplete.
+- Synthetic `EXDATE` skipped when EventKit listing looks incomplete (missing ≫ listed).
 - One operator, one object graph. No multi-user isolation.
 
 ## Security / ops
@@ -86,3 +90,4 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 
 - Hands-on phone/Finder restore drills remain operator actions; `nubilo doctor` surfaces the checklist in product.
 - Corporate credentials never leave the Mac. Linux `nubilo agent` stays refused. GPS never lands in SQLite. Originals are never mutated.
+- No iOS/Android app (Calendar/Contacts/Files/photos via Apple accounts + WebDAV/Shortcuts + optional UI).

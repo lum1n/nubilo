@@ -87,6 +87,22 @@ func TestPhotosAPI(t *testing.T) {
 	if resp.StatusCode != 200 || !bytes.Equal(got, orig) {
 		t.Fatalf("original %d len=%d", resp.StatusCode, len(got))
 	}
+	if resp.Header.Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("Accept-Ranges=%q", resp.Header.Get("Accept-Ranges"))
+	}
+
+	rangeReq, _ := http.NewRequest(http.MethodGet, ts.URL+origPath, nil)
+	rangeReq.Header.Set("Authorization", auth.SignRequest(priv, dev.ID, http.MethodGet, origPath, nil, time.Now().UnixMilli(), nonce()))
+	rangeReq.Header.Set("Range", "bytes=0-9")
+	resp, err = http.DefaultClient.Do(rangeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(part, orig[:10]) {
+		t.Fatalf("range %d body=%x want=%x", resp.StatusCode, part, orig[:10])
+	}
 
 	thumbPath := "/api/v1/photos/" + id + "/thumb"
 	thumb, _ := http.NewRequest(http.MethodGet, ts.URL+thumbPath, nil)

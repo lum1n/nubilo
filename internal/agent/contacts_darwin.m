@@ -117,10 +117,15 @@ char *nubilo_cn_list(char **err) {
 		CNContactIdentifierKey,
 		CNContactGivenNameKey,
 		CNContactFamilyNameKey,
+		CNContactOrganizationNameKey,
+		CNContactNicknameKey,
+		CNContactNoteKey,
 		CNContactEmailAddressesKey,
 		CNContactPhoneNumbersKey,
 		CNContactPostalAddressesKey,
-		CNContactBirthdayKey
+		CNContactUrlAddressesKey,
+		CNContactBirthdayKey,
+		CNContactImageDataKey
 	];
 	CNContactFetchRequest *req = [[CNContactFetchRequest alloc] initWithKeysToFetch:keys];
 	NSMutableArray *out = [NSMutableArray array];
@@ -147,8 +152,22 @@ char *nubilo_cn_list(char **err) {
 			CNPostalAddress *pa = (CNPostalAddress *)lv.value;
 			[addrs addObject:nubilo_cn_addr_dict(pa, lv.label)];
 		}
+		NSMutableArray *urls = [NSMutableArray array];
+		for (CNLabeledValue *lv in c.urlAddresses) {
+			NSString *v = (NSString *)lv.value;
+			if (v.length == 0) {
+				continue;
+			}
+			[urls addObject:@{ @"label": nubilo_cn_label_type(lv.label), @"value": v }];
+		}
 		NSString *fn = [NSString stringWithFormat:@"%@ %@", c.givenName ?: @"", c.familyName ?: @""];
 		fn = [fn stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+		if (fn.length == 0 && c.organizationName.length > 0) {
+			fn = c.organizationName;
+		}
+		if (fn.length == 0 && c.nickname.length > 0) {
+			fn = c.nickname;
+		}
 		NSString *bday = @"";
 		NSDateComponents *bd = c.birthday;
 		if (bd && bd.month != NSDateComponentUndefined && bd.day != NSDateComponentUndefined) {
@@ -158,16 +177,25 @@ char *nubilo_cn_list(char **err) {
 				bday = [NSString stringWithFormat:@"--%02ld-%02ld", (long)bd.month, (long)bd.day];
 			}
 		}
+		NSString *photoB64 = @"";
+		if (c.imageData.length > 0) {
+			photoB64 = [c.imageData base64EncodedStringWithOptions:0];
+		}
 		[out addObject:@{
 			@"id": c.identifier ?: @"",
 			@"uid": c.identifier ?: @"",
 			@"given": c.givenName ?: @"",
 			@"family": c.familyName ?: @"",
 			@"fn": fn,
+			@"org": c.organizationName ?: @"",
+			@"nickname": c.nickname ?: @"",
+			@"note": c.note ?: @"",
 			@"emails": emails,
 			@"phones": phones,
 			@"addresses": addrs,
-			@"birthday": bday
+			@"urls": urls,
+			@"birthday": bday,
+			@"photo_b64": photoB64
 		}];
 	}];
 	if (!ok) {
@@ -207,10 +235,15 @@ char *nubilo_cn_save(const char *contact_id, const char *payload_json, char **er
 	NSArray *keys = @[
 		CNContactGivenNameKey,
 		CNContactFamilyNameKey,
+		CNContactOrganizationNameKey,
+		CNContactNicknameKey,
+		CNContactNoteKey,
 		CNContactEmailAddressesKey,
 		CNContactPhoneNumbersKey,
 		CNContactPostalAddressesKey,
-		CNContactBirthdayKey
+		CNContactUrlAddressesKey,
+		CNContactBirthdayKey,
+		CNContactImageDataKey
 	];
 	CNMutableContact *c = nil;
 	if (cid.length > 0) {
@@ -224,8 +257,18 @@ char *nubilo_cn_save(const char *contact_id, const char *payload_json, char **er
 	}
 	NSString *given = payload[@"given"];
 	NSString *family = payload[@"family"];
+	NSString *fn = payload[@"fn"];
 	c.givenName = [given isKindOfClass:[NSString class]] ? given : @"";
 	c.familyName = [family isKindOfClass:[NSString class]] ? family : @"";
+	if (c.givenName.length == 0 && c.familyName.length == 0 && [fn isKindOfClass:[NSString class]] && fn.length > 0) {
+		c.givenName = fn;
+	}
+	NSString *org = payload[@"org"];
+	c.organizationName = [org isKindOfClass:[NSString class]] ? org : @"";
+	NSString *nick = payload[@"nickname"];
+	c.nickname = [nick isKindOfClass:[NSString class]] ? nick : @"";
+	NSString *note = payload[@"note"];
+	c.note = [note isKindOfClass:[NSString class]] ? note : @"";
 
 	NSMutableArray *emails = [NSMutableArray array];
 	id emailList = payload[@"emails"];
@@ -288,6 +331,23 @@ char *nubilo_cn_save(const char *contact_id, const char *payload_json, char **er
 	}
 	c.postalAddresses = addrs;
 
+	NSMutableArray *urls = [NSMutableArray array];
+	id urlList = payload[@"urls"];
+	if ([urlList isKindOfClass:[NSArray class]]) {
+		for (id item in urlList) {
+			if (![item isKindOfClass:[NSDictionary class]]) {
+				continue;
+			}
+			NSString *v = item[@"value"];
+			if (![v isKindOfClass:[NSString class]] || v.length == 0) {
+				continue;
+			}
+			NSString *label = nubilo_cn_type_label(item[@"label"], NO);
+			[urls addObject:[CNLabeledValue labeledValueWithLabel:label value:v]];
+		}
+	}
+	c.urlAddresses = urls;
+
 	NSString *bday = payload[@"birthday"];
 	if ([bday isKindOfClass:[NSString class]] && bday.length > 0) {
 		NSDateComponents *dc = [[NSDateComponents alloc] init];
@@ -309,6 +369,14 @@ char *nubilo_cn_save(const char *contact_id, const char *payload_json, char **er
 		}
 	} else {
 		c.birthday = nil;
+	}
+
+	NSString *photoB64 = payload[@"photo_b64"];
+	if ([photoB64 isKindOfClass:[NSString class]] && photoB64.length > 0) {
+		NSData *img = [[NSData alloc] initWithBase64EncodedString:photoB64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
+		c.imageData = img.length > 0 ? img : nil;
+	} else {
+		c.imageData = nil;
 	}
 
 	CNSaveRequest *req = [[CNSaveRequest alloc] init];
@@ -348,4 +416,19 @@ int nubilo_cn_delete(const char *contact_id, char **err) {
 		return 0;
 	}
 	return 1;
+}
+
+void nubilo_cn_watch_changes(void (*cb)(void)) {
+	static dispatch_once_t once;
+	static void (*callback)(void);
+	callback = cb;
+	dispatch_once(&once, ^{
+		[[NSNotificationCenter defaultCenter] addObserverForName:CNContactStoreDidChangeNotification
+			object:nil queue:nil usingBlock:^(NSNotification *note) {
+				(void)note;
+				if (callback) {
+					callback();
+				}
+			}];
+	});
 }

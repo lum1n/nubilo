@@ -12,7 +12,8 @@ import (
 )
 
 type Map struct {
-	DB *sql.DB
+	DB   *sql.DB
+	Path string // sqlite file path; used for contact-cache sidecars
 }
 
 type Mapping struct {
@@ -64,7 +65,7 @@ func OpenMap(path string) (*Map, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Map{DB: db}, nil
+	return &Map{DB: db, Path: path}, nil
 }
 
 func migrateIDMap(db *sql.DB) error {

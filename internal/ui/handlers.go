@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/dav"
@@ -661,6 +662,41 @@ func (s *Server) handlePhotos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"photos": out})
 }
 
+func (s *Server) handlePhotoUpload(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		name = strings.TrimSpace(r.Header.Get("X-Filename"))
+	}
+	name = filepath.Base(name)
+	payload, err := io.ReadAll(io.LimitReader(r.Body, s.RT.Cfg.Sync.MaxBlobBytes+1))
+	if err != nil {
+		http.Error(w, "read failed", http.StatusBadRequest)
+		return
+	}
+	if int64(len(payload)) > s.RT.Cfg.Sync.MaxBlobBytes {
+		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if name == "" || name == "." || name == "/" {
+		name = "upload.bin"
+		if ct := r.Header.Get("Content-Type"); strings.HasPrefix(ct, "image/") {
+			name = "upload.jpg"
+		} else if strings.HasPrefix(ct, "video/") {
+			name = "upload.mp4"
+		}
+	}
+	obj, err := s.photosSvc().Ingest(r.Context(), syncengine.LocalOperator(), payload, name, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	m := photos.ParseMeta(obj.Metadata)
+	row := photos.PublicMeta(m)
+	row["id"] = obj.ID
+	row["size"] = obj.Size
+	writeJSON(w, http.StatusCreated, row)
+}
+
 func (s *Server) handlePhotoRendition(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rend := strings.ToLower(r.PathValue("rendition"))
@@ -674,11 +710,15 @@ func (s *Server) handlePhotoRendition(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	name := id + "-" + rend
+	if m := photos.ParseMeta(obj.Metadata); m.Name != "" && (rend == "original" || rend == "") {
+		name = m.Name
+	}
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	if r.URL.Query().Get("download") == "1" {
-		w.Header().Set("Content-Disposition", "attachment; filename=\""+id+"-"+rend+"\"")
+		w.Header().Set("Content-Disposition", "attachment; filename=\""+sanitizeFilename(name)+"\"")
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	// ServeContent sets Content-Length and honors Range (required for <video>).
+	http.ServeContent(w, r, name, time.UnixMilli(obj.UpdatedAt), bytes.NewReader(body))
 }

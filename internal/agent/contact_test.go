@@ -12,6 +12,8 @@ func TestContactVCardRoundTrip(t *testing.T) {
 		FN:     "Ada Lovelace",
 		Given:  "Ada",
 		Family: "Lovelace",
+		Org:    "Analytical Engine",
+		Note:   "Poetical scientist",
 		Emails: []ContactValue{
 			{Label: "work", Value: "ada@analytical.engine"},
 			{Label: "home", Value: "ada@home.example"},
@@ -28,15 +30,22 @@ func TestContactVCardRoundTrip(t *testing.T) {
 			Postal:  "SW1Y 4LE",
 			Country: "United Kingdom",
 		}},
+		URLs:     []ContactValue{{Label: "work", Value: "https://example.com/ada"}},
 		Birthday: "1815-12-10",
+		Photo:    []byte{0xff, 0xd8, 0xff, 0xd9},
 	}
 	raw := EncodeContactVCard(in)
-	if !bytes.Contains(raw, []byte("EMAIL")) || !bytes.Contains(raw, []byte("TEL")) || !bytes.Contains(raw, []byte("ADR")) || !bytes.Contains(raw, []byte("BDAY")) {
-		t.Fatalf("missing fields:\n%s", raw)
+	for _, want := range []string{"EMAIL", "TEL", "ADR", "BDAY", "ORG", "NOTE", "URL", "PHOTO"} {
+		if !bytes.Contains(raw, []byte(want)) {
+			t.Fatalf("missing %s:\n%s", want, raw)
+		}
 	}
 	out := ParseContactVCard(raw)
 	if out.UID != in.UID || out.Given != in.Given || out.Family != in.Family {
 		t.Fatalf("name %#v", out)
+	}
+	if out.Org != in.Org || out.Note != in.Note {
+		t.Fatalf("org/note %#v", out)
 	}
 	if out.Birthday != "1815-12-10" {
 		t.Fatalf("birthday %q", out.Birthday)
@@ -60,6 +69,12 @@ func TestContactVCardRoundTrip(t *testing.T) {
 	if a.Street != in.Addresses[0].Street || a.City != "London" || a.Postal != "SW1Y 4LE" || a.Country != "United Kingdom" {
 		t.Fatalf("address %#v", a)
 	}
+	if len(out.URLs) != 1 || out.URLs[0].Value != "https://example.com/ada" {
+		t.Fatalf("urls %#v", out.URLs)
+	}
+	if !bytes.Equal(out.Photo, in.Photo) {
+		t.Fatalf("photo %#v", out.Photo)
+	}
 }
 
 func TestParseLegacySingleEmailVCard(t *testing.T) {
@@ -70,6 +85,42 @@ func TestParseLegacySingleEmailVCard(t *testing.T) {
 	}
 	if out.Family != "Hopper" || out.Given != "Grace" {
 		t.Fatalf("N %#v", out)
+	}
+}
+
+func TestParseFNOnlySetsGiven(t *testing.T) {
+	raw := []byte("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:Solo Name\r\nTEL:+1\r\nEND:VCARD\r\n")
+	out := ParseContactVCard(raw)
+	if out.Given != "Solo Name" || out.DisplayName() != "Solo Name" {
+		t.Fatalf("%#v", out)
+	}
+}
+
+func TestMergeContactVCardPreservesExtras(t *testing.T) {
+	base := []byte("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:u1\r\nFN:Ada\r\nN:;Ada;;;\r\nEMAIL:old@example.com\r\nNOTE:keep-me\r\nX-CUSTOM:secret\r\nPHOTO;ENCODING=b;TYPE=JPEG:/w==\r\nEND:VCARD\r\n")
+	merged := MergeContactVCard(base, ContactSpec{
+		UID: "u1", FN: "Ada Lovelace", Given: "Ada", Family: "Lovelace",
+		Emails: []ContactValue{{Value: "new@example.com"}},
+		Note:   "updated note",
+	})
+	s := string(merged)
+	if !strings.Contains(s, "new@example.com") {
+		t.Fatalf("missing new email: %s", s)
+	}
+	if strings.Contains(s, "old@example.com") {
+		t.Fatalf("kept old email: %s", s)
+	}
+	if !strings.Contains(s, "updated note") {
+		t.Fatalf("missing note: %s", s)
+	}
+	if !strings.Contains(s, "X-CUSTOM:secret") {
+		t.Fatalf("lost custom prop: %s", s)
+	}
+	if !strings.Contains(s, "PHOTO") {
+		t.Fatalf("lost photo: %s", s)
+	}
+	if !strings.Contains(s, "Ada Lovelace") {
+		t.Fatalf("missing FN: %s", s)
 	}
 }
 

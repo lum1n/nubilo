@@ -393,8 +393,8 @@ Default logs may include: device_id, collection_id, object_id, sequence numbers,
 4. DAV app passwords are bearer secrets (unavoidable with Apple Calendar/Files). TLS and revocation are the controls.
 5. No built-in multi-user isolation. This is a single-owner personal cloud. All devices belong to one operator.
 6. Availability is not a security guarantee. An attacker who can DoS the listen port can prevent sync. They should not be able to read or write data.
-7. Client private keys are files mode `0600`, not OS keychain items.
-8. PhotoKit in-place edits on already-mapped assets are not detected until a future `mod_ms` map field.
+7. Client private keys: macOS agent uses Keychain (file fallback); server `master.key` remains a `0600` file.
+8. PhotoKit in-place edits on already-mapped assets are detected via `mod_ms` on the agent idmap.
 
 ## 16. Security review gates
 

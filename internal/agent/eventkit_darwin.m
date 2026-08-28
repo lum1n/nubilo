@@ -476,8 +476,14 @@ static void nubilo_ek_fill_ics(NSMutableDictionary *d, EKEvent *ev) {
 		} else {
 			row[@"offset"] = @(a.relativeOffset);
 		}
-		row[@"action"] = @"DISPLAY";
-		row[@"desc"] = a.emailAddress.length ? a.emailAddress : @"Reminder";
+		if (a.emailAddress.length) {
+			row[@"action"] = @"EMAIL";
+			row[@"email"] = a.emailAddress;
+			row[@"desc"] = a.emailAddress;
+		} else {
+			row[@"action"] = @"DISPLAY";
+			row[@"desc"] = @"Reminder";
+		}
 		[alarms addObject:row];
 	}
 	if (alarms.count) {
@@ -512,9 +518,18 @@ static void nubilo_ek_apply_extras(EKEvent *ev, NSDictionary *j) {
 		} else if (al[@"offset"]) {
 			a = [EKAlarm alarmWithRelativeOffset:[al[@"offset"] doubleValue]];
 		}
-		if (a) {
-			[ev addAlarm:a];
+		if (!a) {
+			continue;
 		}
+		NSString *action = [al[@"action"] isKindOfClass:[NSString class]] ? al[@"action"] : @"";
+		NSString *email = [al[@"email"] isKindOfClass:[NSString class]] ? al[@"email"] : @"";
+		if (email.length == 0 && [al[@"desc"] isKindOfClass:[NSString class]] && [action caseInsensitiveCompare:@"EMAIL"] == NSOrderedSame) {
+			email = al[@"desc"];
+		}
+		if (email.length > 0 && [action caseInsensitiveCompare:@"EMAIL"] == NSOrderedSame) {
+			a.emailAddress = email;
+		}
+		[ev addAlarm:a];
 	}
 }
 
@@ -1126,4 +1141,19 @@ int nubilo_ek_delete_reminder(const char *item_id, char **err) {
 		return 0;
 	}
 	return 1;
+}
+
+void nubilo_ek_watch_changes(void (*cb)(void)) {
+	static dispatch_once_t once;
+	static void (*callback)(void);
+	callback = cb;
+	dispatch_once(&once, ^{
+		[[NSNotificationCenter defaultCenter] addObserverForName:EKEventStoreChangedNotification
+			object:nubilo_ek_store() queue:nil usingBlock:^(NSNotification *note) {
+				(void)note;
+				if (callback) {
+					callback();
+				}
+			}];
+	});
 }

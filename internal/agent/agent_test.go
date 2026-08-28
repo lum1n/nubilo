@@ -735,6 +735,62 @@ func TestPushContact(t *testing.T) {
 	}
 }
 
+func TestContactRoundTripPreservesExtras(t *testing.T) {
+	h := startHarness(t)
+	book := &fakeBook{list: []agent.LocalContact{{
+		ID: "cn-1", UID: "contact-1", VCard: testVCard("contact-1", "Ada Lovelace"),
+	}}}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
+	a := newAgent(h, sel, nil, book)
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	col := collection(t, h.eng, "addressbook", "Contacts")
+	objs, err := h.eng.ListObjects(context.Background(), col.ID)
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("objs %v %d", err, len(objs))
+	}
+	rich := []byte("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:contact-1\r\nFN:Ada Lovelace\r\nN:Lovelace;Ada;;;\r\nEMAIL:ada@example.com\r\nNOTE:from-iphone\r\nX-CUSTOM:keep\r\nPHOTO;ENCODING=b;TYPE=JPEG:/w==\r\nEND:VCARD\r\n")
+	hash := ncrypto.SHA256Hex(rich)
+	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(rich), hash); err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
+		ObjectID: objs[0].ID, CollectionID: objs[0].CollectionID, Op: syncengine.OpUpdate,
+		BaseRevision: objs[0].Revision, ContentHash: hash, BlobID: hash, Size: int64(len(rich)),
+		Metadata: objs[0].Metadata, Force: true,
+	}})
+	if err != nil || res[0].Status != "ok" {
+		t.Fatalf("iphone update %v %v", err, res)
+	}
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate lossy Contacts.app re-encode (managed fields only; no PHOTO / X-CUSTOM).
+	book.mu.Lock()
+	thin := agent.EncodeContactVCard(agent.ContactSpec{
+		UID: "contact-1", FN: "Ada Lovelace", Given: "Ada", Family: "Lovelace",
+		Emails: []agent.ContactValue{{Value: "ada@example.com"}},
+		Note:   "from-iphone",
+	})
+	book.list = []agent.LocalContact{{ID: "cn-1", UID: "contact-1", VCard: thin}}
+	book.mu.Unlock()
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	obj, err := h.eng.GetObject(context.Background(), objs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := h.st.GetBlobPlaintext(obj.BlobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(blob, []byte("from-iphone")) || !bytes.Contains(blob, []byte("X-CUSTOM:keep")) || !bytes.Contains(blob, []byte("PHOTO")) {
+		t.Fatalf("lossy push wiped extras:\n%s", blob)
+	}
+}
+
 func TestFailedContactListDoesNotDelete(t *testing.T) {
 	h := startHarness(t)
 	book := &fakeBook{list: []agent.LocalContact{{
