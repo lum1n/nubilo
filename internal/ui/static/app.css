@@ -252,6 +252,7 @@ label.inline > input {
 
 .content {
   flex: 1;
+  min-width: 0;
   padding: 0.5rem 0.85rem 1rem;
   overflow: auto;
 }
@@ -260,23 +261,30 @@ label.inline > input {
 .kv {
   margin: 0 0 0.65rem;
   border-collapse: collapse;
-  width: auto;
+  width: 100%;
   max-width: 100%;
+  table-layout: fixed;
 }
 
 .kv td {
   padding: 0.05rem 0.85rem 0.05rem 0;
-  vertical-align: baseline;
+  vertical-align: top;
   line-height: 1.3;
 }
 
 .kv td:first-child {
   color: var(--text-muted);
   white-space: nowrap;
-  width: 1%;
+  width: 7.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.kv td:last-child { color: var(--text); }
+.kv td:last-child {
+  color: var(--text);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 
 .section {
   margin-bottom: 0.85rem;
@@ -468,11 +476,12 @@ a { color: var(--accent); }
 .folder-item:hover .list-item-title { color: var(--accent); }
 
 table.data {
-  width: auto;
+  width: 100%;
   max-width: 100%;
   border-collapse: collapse;
   font: inherit;
   line-height: 1.3;
+  table-layout: fixed;
 }
 
 /* Wide multi-column tables (files, albums) still use available space */
@@ -485,7 +494,9 @@ table.data td {
   text-align: left;
   padding: 0.08rem 0.55rem;
   border-bottom: 1px solid var(--border-dim);
-  vertical-align: middle;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 table.data th {
@@ -613,7 +624,30 @@ table.data input[type="radio"] {
 
 .lightbox-close:hover { border-color: var(--accent); color: var(--accent); }
 
-.health-table td { padding: 0.08rem 0.45rem; }
+.health-table {
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+}
+
+.health-table td {
+  padding: 0.08rem 0.45rem;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.health-table td:first-child {
+  width: 2rem;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.health-table td:nth-child(2) {
+  width: 28%;
+}
+
 .health-ok { color: var(--accent); }
 .health-warn { color: #c9a227; }
 .health-fail { color: var(--danger); }
@@ -629,4 +663,21 @@ table.data input[type="radio"] {
   }
   .nav { flex-direction: row; flex-wrap: wrap; }
   .sidebar-foot { display: none; }
+  .content { min-width: 0; overflow-x: hidden; }
+  .block { max-width: 100%; overflow-x: hidden; }
+  .kv td:first-child { width: 6rem; }
+  .health-table td:nth-child(2) { width: 30%; }
+  /* Stack key/value rows on narrow screens so long paths never force sideways scroll */
+  .kv tr {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+    padding: 0.2rem 0;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  .kv td {
+    display: block;
+    width: 100% !important;
+    padding: 0;
+  }
 }

@@ -193,12 +193,73 @@ func TestTamperedBackupRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw[len(raw)-1] ^= 0xff
+	if len(raw) < 64 {
+		t.Fatalf("archive too small: %d", len(raw))
+	}
+	raw[len(raw)/2] ^= 0xff
 	if err := os.WriteFile(arch, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := backup.Restore(context.Background(), arch, t.TempDir(), "pw"); err == nil {
 		t.Fatal("tampered archive must not restore")
+	}
+}
+
+func TestStreamingBackupManyChunks(t *testing.T) {
+	ncrypto.Argon2Memory = 8
+	ncrypto.Argon2Time = 1
+	prev := backup.SetStreamChunkSizeForTest(32)
+	defer backup.SetStreamChunkSizeForTest(prev)
+
+	dir := t.TempDir()
+	master, _ := ncrypto.GenerateMasterKey()
+	if err := os.WriteFile(filepath.Join(dir, "master.key"), master, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := ncrypto.DeriveKey(master, ncrypto.BlobKeyInfo)
+	st, err := store.Open(dir, filepath.Join(dir, "metadata.db"), filepath.Join(dir, "blobs"), filepath.Join(dir, "tmp"), key, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := syncengine.New(st)
+	idsvc := identity.NewService(st)
+	pub, _, _ := ncrypto.GenerateEd25519()
+	dev, _ := idsvc.Enroll(context.Background(), "d", pub, identity.RoleAgent)
+	col, _ := eng.CreateCollection(context.Background(), "files", "f", "", json.RawMessage(`{}`))
+	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz"), 20) // > several chunk sizes
+	sum := ncrypto.SHA256Hex(payload)
+	_, _, _ = st.PutBlob(context.Background(), bytes.NewReader(payload), sum)
+	_, err = eng.Push(context.Background(), dev, ids.New(), []syncengine.ChangeInput{{
+		ObjectID: ids.New(), CollectionID: col.ID, Op: syncengine.OpCreate, ContentHash: sum, BlobID: sum, Size: int64(len(payload)), Metadata: json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arch := filepath.Join(t.TempDir(), "stream.nuback")
+	if err := backup.Create(context.Background(), st, dir, arch, "stream-pass"); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	dest := t.TempDir()
+	if err := backup.Restore(context.Background(), arch, dest, "stream-pass"); err != nil {
+		t.Fatal(err)
+	}
+	master2, err := ncrypto.ReadKeyFile(filepath.Join(dest, "master.key"), ncrypto.MasterKeySize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key2, _ := ncrypto.DeriveKey(master2, ncrypto.BlobKeyInfo)
+	st2, err := store.Open(dest, filepath.Join(dest, "metadata.db"), filepath.Join(dest, "blobs"), filepath.Join(dest, "tmp"), key2, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	got, err := st2.GetBlobPlaintext(sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("restored payload mismatch")
 	}
 }
 

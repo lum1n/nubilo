@@ -327,7 +327,11 @@ func checkBackup(r *Report, cfg config.Config) {
 	}
 	detail := fmt.Sprintf("every %dh, keep %d", b.IntervalHours, b.Keep)
 	if b.LastBackupError != "" {
-		r.add(Check{ID: "backup", Title: "auto-backup", Status: Fail, Detail: b.LastBackupError, Fix: detail})
+		fix := detail
+		if strings.Contains(strings.ToLower(b.LastBackupError), "no space") {
+			fix = "staging uses $data_dir/tmp (same volume as blobs), not /tmp — free space there, or prune old files in $data_dir/backups"
+		}
+		r.add(Check{ID: "backup", Title: "auto-backup", Status: Fail, Detail: b.LastBackupError, Fix: fix})
 		return
 	}
 	if b.LastBackupUnixMS == 0 {

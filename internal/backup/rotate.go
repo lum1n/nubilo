@@ -21,6 +21,8 @@ func RotateCreate(ctx context.Context, st *store.Store, dataDir, passphrase stri
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return "", err
 	}
+	// Free space before staging a new archive (same volume as data_dir).
+	_ = pruneBackups(outDir, keep-1)
 	name := fmt.Sprintf("nubilo-%s-%d.nuback", time.Now().UTC().Format("20060102-150405"), time.Now().UnixNano()%1_000_000)
 	dest := filepath.Join(outDir, name)
 	if err := Create(ctx, st, dataDir, dest, passphrase); err != nil {
