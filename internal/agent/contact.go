@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,17 +16,26 @@ import (
 // Unknown vCard properties (and PHOTO when Mac has no image) are preserved
 // via MergeContactVCard against the last full server blob.
 type ContactSpec struct {
-	UID       string
-	FN        string
-	Given     string
-	Family    string
-	Org       string
-	Nickname  string
-	Note      string
-	Emails    []ContactValue
-	Phones    []ContactValue
-	Addresses []ContactAddress
-	URLs      []ContactValue
+	UID        string
+	FN         string
+	Given      string
+	Family     string
+	Middle     string
+	Prefix     string
+	Suffix     string
+	Org        string
+	Department string
+	Title      string
+	Nickname   string
+	Note       string
+	Emails     []ContactValue
+	Phones     []ContactValue
+	Addresses  []ContactAddress
+	URLs       []ContactValue
+	Related    []ContactValue
+	Social     []ContactSocial
+	IM         []ContactIM
+	Dates      []ContactDate
 	// Birthday is YYYY-MM-DD, or --MM-DD when the year is unknown.
 	Birthday string
 	// Photo is raw image bytes when present (encoded as PHOTO;ENCODING=b).
@@ -46,10 +56,32 @@ type ContactAddress struct {
 	Country string
 }
 
+type ContactSocial struct {
+	Service string
+	User    string
+	URL     string
+}
+
+type ContactIM struct {
+	Service string
+	User    string
+}
+
+type ContactDate struct {
+	Label string
+	Date  string // YYYY-MM-DD or --MM-DD
+}
+
 var (
 	bdayFull     = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})$`)
 	bdayYearless = regexp.MustCompile(`^--(\d{2})-(\d{2})$`)
 	bdayCompact  = regexp.MustCompile(`^(\d{4})(\d{2})(\d{2})$`)
+)
+
+const (
+	fieldABRelated = "X-ABRELATEDNAMES"
+	fieldSocial    = "X-SOCIALPROFILE"
+	fieldABDate    = "X-ABDATE"
 )
 
 // managedContactFields are replaced on merge; everything else is kept from base.
@@ -60,6 +92,7 @@ var managedContactFields = map[string]bool{
 	vcard.FieldName:          true,
 	vcard.FieldNickname:      true,
 	vcard.FieldOrganization:  true,
+	vcard.FieldTitle:         true,
 	vcard.FieldNote:          true,
 	vcard.FieldEmail:         true,
 	vcard.FieldTelephone:     true,
@@ -67,6 +100,10 @@ var managedContactFields = map[string]bool{
 	vcard.FieldBirthday:      true,
 	vcard.FieldURL:           true,
 	vcard.FieldPhoto:         true,
+	vcard.FieldIMPP:          true,
+	fieldABRelated:           true,
+	fieldSocial:              true,
+	fieldABDate:              true,
 }
 
 // EncodeContactVCard builds a vCard 3.0 payload from ContactSpec.
@@ -89,17 +126,29 @@ func EncodeContactVCard(s ContactSpec) []byte {
 	if fn != "" {
 		card.SetValue(vcard.FieldFormattedName, fn)
 	}
-	if s.Given != "" || s.Family != "" {
+	if s.Given != "" || s.Family != "" || s.Middle != "" || s.Prefix != "" || s.Suffix != "" {
 		card.SetName(&vcard.Name{
-			FamilyName: strings.TrimSpace(s.Family),
-			GivenName:  strings.TrimSpace(s.Given),
+			FamilyName:      strings.TrimSpace(s.Family),
+			GivenName:       strings.TrimSpace(s.Given),
+			AdditionalName:  strings.TrimSpace(s.Middle),
+			HonorificPrefix: strings.TrimSpace(s.Prefix),
+			HonorificSuffix: strings.TrimSpace(s.Suffix),
 		})
 	}
 	if n := strings.TrimSpace(s.Nickname); n != "" {
 		card.SetValue(vcard.FieldNickname, n)
 	}
-	if o := strings.TrimSpace(s.Org); o != "" {
-		card.SetValue(vcard.FieldOrganization, o)
+	org := strings.TrimSpace(s.Org)
+	dept := strings.TrimSpace(s.Department)
+	if org != "" || dept != "" {
+		if dept != "" {
+			card.SetValue(vcard.FieldOrganization, org+";"+dept)
+		} else {
+			card.SetValue(vcard.FieldOrganization, org)
+		}
+	}
+	if t := strings.TrimSpace(s.Title); t != "" {
+		card.SetValue(vcard.FieldTitle, t)
 	}
 	if n := strings.TrimSpace(s.Note); n != "" {
 		card.SetValue(vcard.FieldNote, n)
@@ -154,6 +203,63 @@ func EncodeContactVCard(s ContactSpec) []byte {
 		}
 		card.Add(vcard.FieldURL, f)
 	}
+	for _, r := range s.Related {
+		v := strings.TrimSpace(r.Value)
+		if v == "" {
+			continue
+		}
+		f := &vcard.Field{Value: v, Params: vcard.Params{}}
+		if t := strings.TrimSpace(r.Label); t != "" {
+			f.Params.Set("X-ABLABEL", t)
+		}
+		card.Add(fieldABRelated, f)
+	}
+	for _, sprofile := range s.Social {
+		url := strings.TrimSpace(sprofile.URL)
+		user := strings.TrimSpace(sprofile.User)
+		svc := strings.TrimSpace(sprofile.Service)
+		if url == "" && user == "" {
+			continue
+		}
+		if url == "" {
+			url = "x-apple:" + user
+		}
+		f := &vcard.Field{Value: url, Params: vcard.Params{}}
+		if svc != "" {
+			f.Params.Set("TYPE", svc)
+		}
+		if user != "" {
+			f.Params.Set("X-USER", user)
+		}
+		card.Add(fieldSocial, f)
+	}
+	for _, im := range s.IM {
+		user := strings.TrimSpace(im.User)
+		if user == "" {
+			continue
+		}
+		svc := strings.ToLower(strings.TrimSpace(im.Service))
+		value := user
+		if svc != "" && !strings.Contains(user, ":") {
+			value = svc + ":" + user
+		}
+		f := &vcard.Field{Value: value, Params: vcard.Params{}}
+		if svc != "" {
+			f.Params.Set("X-SERVICE-TYPE", svc)
+		}
+		card.Add(vcard.FieldIMPP, f)
+	}
+	for _, d := range s.Dates {
+		v := NormalizeBirthday(d.Date)
+		if v == "" {
+			continue
+		}
+		f := &vcard.Field{Value: v, Params: vcard.Params{}}
+		if t := strings.TrimSpace(d.Label); t != "" {
+			f.Params.Set("X-ABLABEL", t)
+		}
+		card.Add(fieldABDate, f)
+	}
 	if b := NormalizeBirthday(s.Birthday); b != "" {
 		card.SetValue(vcard.FieldBirthday, b)
 	}
@@ -173,7 +279,7 @@ func EncodeContactVCard(s ContactSpec) []byte {
 
 // MergeContactVCard overlays managed fields from spec onto base, preserving
 // any other properties (and PHOTO when spec has none). If base is empty,
-// returns EncodeContactVCard(spec).
+// returns EncodeContactVCard(spec). The base card's UID wins when present.
 func MergeContactVCard(base []byte, spec ContactSpec) []byte {
 	if len(base) == 0 {
 		return EncodeContactVCard(spec)
@@ -182,8 +288,8 @@ func MergeContactVCard(base []byte, spec ContactSpec) []byte {
 	if err != nil || baseCard == nil {
 		return EncodeContactVCard(spec)
 	}
-	if spec.UID == "" {
-		spec.UID = strings.TrimSpace(baseCard.Value(vcard.FieldUID))
+	if baseUID := strings.TrimSpace(baseCard.Value(vcard.FieldUID)); baseUID != "" {
+		spec.UID = baseUID
 	}
 	if len(spec.Photo) == 0 {
 		if raw := photoFromCard(baseCard); len(raw) > 0 {
@@ -223,12 +329,16 @@ func ParseContactVCard(vcf []byte) ContactSpec {
 	}
 	out.UID = strings.TrimSpace(card.Value(vcard.FieldUID))
 	out.FN = strings.TrimSpace(card.Value(vcard.FieldFormattedName))
-	out.Org = strings.TrimSpace(card.Value(vcard.FieldOrganization))
+	out.Org, out.Department = splitOrg(card.Value(vcard.FieldOrganization))
+	out.Title = strings.TrimSpace(card.Value(vcard.FieldTitle))
 	out.Nickname = strings.TrimSpace(card.Value(vcard.FieldNickname))
 	out.Note = strings.TrimSpace(card.Value(vcard.FieldNote))
 	if n := card.Name(); n != nil {
 		out.Family = strings.TrimSpace(n.FamilyName)
 		out.Given = strings.TrimSpace(n.GivenName)
+		out.Middle = strings.TrimSpace(n.AdditionalName)
+		out.Prefix = strings.TrimSpace(n.HonorificPrefix)
+		out.Suffix = strings.TrimSpace(n.HonorificSuffix)
 	}
 	// FN-only cards: ensure Contacts.app has a displayable name component.
 	if out.Given == "" && out.Family == "" && out.FN != "" {
@@ -272,9 +382,100 @@ func ParseContactVCard(vcf []byte) ContactSpec {
 		}
 		out.URLs = append(out.URLs, ContactValue{Label: fieldTypeLabel(f), Value: v})
 	}
+	for _, f := range card[fieldABRelated] {
+		v := strings.TrimSpace(f.Value)
+		if v == "" {
+			continue
+		}
+		label := strings.TrimSpace(f.Params.Get("X-ABLABEL"))
+		if label == "" {
+			label = fieldTypeLabel(f)
+		}
+		out.Related = append(out.Related, ContactValue{Label: label, Value: v})
+	}
+	for _, f := range card[fieldSocial] {
+		url := strings.TrimSpace(f.Value)
+		user := strings.TrimSpace(f.Params.Get("X-USER"))
+		svc := strings.TrimSpace(f.Params.Get("TYPE"))
+		if svc == "" {
+			types := f.Params.Types()
+			if len(types) > 0 {
+				svc = types[0]
+			}
+		}
+		if url == "" && user == "" {
+			continue
+		}
+		out.Social = append(out.Social, ContactSocial{Service: svc, User: user, URL: url})
+	}
+	for _, f := range card[vcard.FieldIMPP] {
+		v := strings.TrimSpace(f.Value)
+		if v == "" {
+			continue
+		}
+		svc := strings.TrimSpace(f.Params.Get("X-SERVICE-TYPE"))
+		user := v
+		if i := strings.Index(v, ":"); i >= 0 {
+			if svc == "" {
+				svc = v[:i]
+			}
+			user = v[i+1:]
+		}
+		out.IM = append(out.IM, ContactIM{Service: svc, User: user})
+	}
+	for _, f := range card[fieldABDate] {
+		v := NormalizeBirthday(f.Value)
+		if v == "" {
+			continue
+		}
+		label := strings.TrimSpace(f.Params.Get("X-ABLABEL"))
+		out.Dates = append(out.Dates, ContactDate{Label: label, Date: v})
+	}
 	out.Birthday = NormalizeBirthday(card.Value(vcard.FieldBirthday))
 	out.Photo = photoFromCard(card)
 	return out
+}
+
+func splitOrg(s string) (org, department string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", ""
+	}
+	parts := strings.SplitN(s, ";", 2)
+	org = strings.TrimSpace(parts[0])
+	if len(parts) > 1 {
+		department = strings.TrimSpace(parts[1])
+	}
+	return org, department
+}
+
+// ContactFingerprint is a stable match key for remapping local IDs.
+func ContactFingerprint(spec ContactSpec) string {
+	fn := strings.ToLower(strings.TrimSpace(spec.DisplayName()))
+	emails := make([]string, 0, len(spec.Emails))
+	for _, e := range spec.Emails {
+		v := strings.ToLower(strings.TrimSpace(e.Value))
+		if v != "" {
+			emails = append(emails, v)
+		}
+	}
+	sort.Strings(emails)
+	phones := make([]string, 0, len(spec.Phones))
+	for _, p := range spec.Phones {
+		v := strings.ToLower(strings.TrimSpace(p.Value))
+		if v != "" {
+			phones = append(phones, v)
+		}
+	}
+	sort.Strings(phones)
+	email, phone := "", ""
+	if len(emails) > 0 {
+		email = emails[0]
+	}
+	if len(phones) > 0 {
+		phone = phones[0]
+	}
+	return fn + "|" + email + "|" + phone
 }
 
 func photoFromCard(card vcard.Card) []byte {

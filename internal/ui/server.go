@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -23,6 +24,7 @@ type Server struct {
 	Listen string
 	gate   sessionGate
 	http   *http.Server
+	ln     net.Listener
 
 	backupMu  sync.Mutex
 	backupTok map[string]dlToken
@@ -99,9 +101,36 @@ func (s *Server) Handler() http.Handler {
 	return s.http.Handler
 }
 
-func (s *Server) ListenAndServe() error {
+// Bind listens on s.Listen. If that port is taken, it uses the next free port
+// on the same loopback host and updates s.Listen.
+func (s *Server) Bind() error {
+	ln, err := listenLoopback(s.Listen)
+	if err != nil {
+		return err
+	}
+	actual := ln.Addr().String()
+	if actual != s.Listen {
+		s.Log.Warn("ui_listen_in_use", "requested", s.Listen, "addr", actual)
+	}
+	s.Listen = actual
+	s.http.Addr = actual
+	s.ln = ln
+	return nil
+}
+
+func (s *Server) Serve() error {
+	if s.ln == nil {
+		return errors.New("ui: Bind before Serve")
+	}
 	s.Log.Info("ui_listen", "addr", s.Listen, "url", s.SessionURL())
-	return s.http.ListenAndServe()
+	return s.http.Serve(s.ln)
+}
+
+func (s *Server) ListenAndServe() error {
+	if err := s.Bind(); err != nil {
+		return err
+	}
+	return s.Serve()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {

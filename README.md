@@ -72,7 +72,7 @@ Or configure sync in the loopback UI: `nubilo agent ui` (port 8788).
 | Files | Mac folders ↔ WebDAV `/dav/` | Nested folders; iOS Files / Finder |
 | Photos | Mac PhotoKit ↔ gallery API | Originals byte-for-byte; preview/thumb derived; Live/RAW/video |
 
-Server UI (loopback): `nubilo ui` on port 8787 — browse, upload photos, pairing, verify/gc, backup, devices, config.
+Server UI (loopback): `nubilo ui` on port 8787, or the next free port if that one is taken — browse, upload photos, pairing, verify/gc, backup, devices, config.
 
 ## Always-on
 

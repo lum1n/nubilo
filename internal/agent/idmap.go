@@ -25,6 +25,9 @@ type Mapping struct {
 	Revision     uint64
 	StartMS      int64
 	ModMS        int64
+	UID          string
+	Name         string
+	LocalHash    string
 }
 
 func OpenMap(path string) (*Map, error) {
@@ -50,6 +53,9 @@ func OpenMap(path string) (*Map, error) {
 			revision INTEGER NOT NULL,
 			start_ms INTEGER NOT NULL DEFAULT 0,
 			mod_ms INTEGER NOT NULL DEFAULT 0,
+			uid TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			local_hash TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (local_id, kind)
 		);
 		CREATE UNIQUE INDEX IF NOT EXISTS idmap_object ON idmap(object_id);
@@ -69,32 +75,69 @@ func OpenMap(path string) (*Map, error) {
 }
 
 func migrateIDMap(db *sql.DB) error {
-	var n int
-	err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('idmap') WHERE name = 'mod_ms'`).Scan(&n)
+	if err := ensureIDMapColumn(db, "mod_ms", `ALTER TABLE idmap ADD COLUMN mod_ms INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := ensureIDMapColumn(db, "uid", `ALTER TABLE idmap ADD COLUMN uid TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureIDMapColumn(db, "name", `ALTER TABLE idmap ADD COLUMN name TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	added, err := ensureIDMapColumnAdded(db, "local_hash", `ALTER TABLE idmap ADD COLUMN local_hash TEXT NOT NULL DEFAULT ''`)
 	if err != nil {
 		return err
 	}
-	if n == 0 {
-		if _, err := db.Exec(`ALTER TABLE idmap ADD COLUMN mod_ms INTEGER NOT NULL DEFAULT 0`); err != nil {
+	if added {
+		// Existing rows were pushed by the agent, so local render matched content_hash.
+		if _, err := db.Exec(`UPDATE idmap SET local_hash = content_hash WHERE local_hash = ''`); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func ensureIDMapColumn(db *sql.DB, name, alterSQL string) error {
+	_, err := ensureIDMapColumnAdded(db, name, alterSQL)
+	return err
+}
+
+func ensureIDMapColumnAdded(db *sql.DB, name, alterSQL string) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('idmap') WHERE name = ?`, name).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil
+	}
+	if _, err := db.Exec(alterSQL); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (m *Map) Close() error { return m.DB.Close() }
 
 func (m *Map) Cursor() int64 {
+	return m.MetaInt("cursor")
+}
+
+func (m *Map) SetCursor(seq int64) error {
+	return m.SetMetaInt("cursor", seq)
+}
+
+func (m *Map) MetaInt(k string) int64 {
 	var v sql.NullInt64
-	_ = m.DB.QueryRow(`SELECT v FROM meta WHERE k = 'cursor'`).Scan(&v)
+	_ = m.DB.QueryRow(`SELECT v FROM meta WHERE k = ?`, k).Scan(&v)
 	if v.Valid {
 		return v.Int64
 	}
 	return 0
 }
 
-func (m *Map) SetCursor(seq int64) error {
-	_, err := m.DB.Exec(`INSERT INTO meta(k, v) VALUES ('cursor', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, seq)
+func (m *Map) SetMetaInt(k string, v int64) error {
+	_, err := m.DB.Exec(`INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, k, v)
 	return err
 }
 
@@ -114,59 +157,54 @@ func (m *Map) Put(row Mapping) error {
 		}
 	}
 	_, err = tx.Exec(`
-		INSERT INTO idmap(local_id, kind, object_id, collection_id, content_hash, revision, start_ms, mod_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO idmap(local_id, kind, object_id, collection_id, content_hash, revision, start_ms, mod_ms, uid, name, local_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(local_id, kind) DO UPDATE SET
 			object_id = excluded.object_id,
 			collection_id = excluded.collection_id,
 			content_hash = excluded.content_hash,
 			revision = excluded.revision,
 			start_ms = excluded.start_ms,
-			mod_ms = excluded.mod_ms
-	`, row.LocalID, row.Kind, row.ObjectID, row.CollectionID, row.ContentHash, row.Revision, row.StartMS, row.ModMS)
+			mod_ms = excluded.mod_ms,
+			uid = excluded.uid,
+			name = excluded.name,
+			local_hash = excluded.local_hash
+	`, row.LocalID, row.Kind, row.ObjectID, row.CollectionID, row.ContentHash, row.Revision, row.StartMS, row.ModMS, row.UID, row.Name, row.LocalHash)
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func (m *Map) ByLocal(kind, localID string) (Mapping, error) {
+func scanMapping(sc interface{ Scan(dest ...any) error }) (Mapping, error) {
 	var r Mapping
-	err := m.DB.QueryRow(`
-		SELECT local_id, kind, object_id, collection_id, content_hash, revision, start_ms, mod_ms
-		FROM idmap WHERE kind = ? AND local_id = ?
-	`, kind, localID).Scan(&r.LocalID, &r.Kind, &r.ObjectID, &r.CollectionID, &r.ContentHash, &r.Revision, &r.StartMS, &r.ModMS)
+	err := sc.Scan(&r.LocalID, &r.Kind, &r.ObjectID, &r.CollectionID, &r.ContentHash, &r.Revision, &r.StartMS, &r.ModMS, &r.UID, &r.Name, &r.LocalHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Mapping{}, sql.ErrNoRows
 	}
 	return r, err
+}
+
+const mappingSelect = `SELECT local_id, kind, object_id, collection_id, content_hash, revision, start_ms, mod_ms, uid, name, local_hash FROM idmap`
+
+func (m *Map) ByLocal(kind, localID string) (Mapping, error) {
+	return scanMapping(m.DB.QueryRow(mappingSelect+` WHERE kind = ? AND local_id = ?`, kind, localID))
 }
 
 func (m *Map) ByObject(objectID string) (Mapping, error) {
-	var r Mapping
-	err := m.DB.QueryRow(`
-		SELECT local_id, kind, object_id, collection_id, content_hash, revision, start_ms, mod_ms
-		FROM idmap WHERE object_id = ?
-	`, objectID).Scan(&r.LocalID, &r.Kind, &r.ObjectID, &r.CollectionID, &r.ContentHash, &r.Revision, &r.StartMS, &r.ModMS)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Mapping{}, sql.ErrNoRows
-	}
-	return r, err
+	return scanMapping(m.DB.QueryRow(mappingSelect+` WHERE object_id = ?`, objectID))
 }
 
 func (m *Map) ForCollection(collectionID string) ([]Mapping, error) {
-	rows, err := m.DB.Query(`
-		SELECT local_id, kind, object_id, collection_id, content_hash, revision, start_ms, mod_ms
-		FROM idmap WHERE collection_id = ?
-	`, collectionID)
+	rows, err := m.DB.Query(mappingSelect+` WHERE collection_id = ?`, collectionID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Mapping
 	for rows.Next() {
-		var r Mapping
-		if err := rows.Scan(&r.LocalID, &r.Kind, &r.ObjectID, &r.CollectionID, &r.ContentHash, &r.Revision, &r.StartMS, &r.ModMS); err != nil {
+		r, err := scanMapping(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, r)

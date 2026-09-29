@@ -52,6 +52,7 @@ func WrapCardDAV(b *CardDAV) http.Handler {
 			b.Prefix + "/" + cardUserSeg,
 			b.Prefix + "/" + cardUserSeg + "/" + cardHomeSeg,
 		},
+		card: b,
 	}
 }
 
@@ -64,6 +65,7 @@ type appleDAV struct {
 	slash      []string
 	mkcalendar mkCalendarHandler
 	cal        *CalDAV
+	card       *CardDAV
 }
 
 func (h appleDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +86,7 @@ func (h appleDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "PROPFIND":
-		if h.cal != nil {
+		if h.cal != nil || h.card != nil {
 			h.serveCalPropFind(w, r)
 			return
 		}

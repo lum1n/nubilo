@@ -33,9 +33,10 @@ type Selection struct {
 	WindowDays      int           `json:"window_days"`
 	Calendars       []CalendarSel `json:"calendars"`
 	Reminders       []CalendarSel `json:"reminders"`
-	SyncContacts    bool          `json:"sync_contacts"`
-	Photos          PhotosSel     `json:"photos"`
-	Files           FilesSel      `json:"files"`
+	SyncContacts      bool          `json:"sync_contacts"`
+	ContactsContainer string        `json:"contacts_container,omitempty"`
+	Photos            PhotosSel     `json:"photos"`
+	Files             FilesSel      `json:"files"`
 }
 
 func DefaultSelection() Selection {

@@ -2,15 +2,18 @@ package ui_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"nubilo/internal/app"
 	ncrypto "nubilo/internal/crypto"
@@ -108,6 +111,50 @@ func TestUIRejectsNonLoopback(t *testing.T) {
 	_, err := ui.New(rt, "0.0.0.0:8787", nil)
 	if err == nil {
 		t.Fatal("expected error for non-loopback")
+	}
+}
+
+func TestUIBindFallsBackWhenPortBusy(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { busy.Close() })
+	taken := busy.Addr().String()
+
+	rt := testRuntime(t)
+	srv, err := ui.New(rt, taken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Bind(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	if srv.Listen == taken {
+		t.Fatalf("still bound to busy address %s", taken)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve() }()
+	resp, err := http.Get("http://" + srv.Listen + "/api/info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("info %d", resp.StatusCode)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil && err != http.ErrServerClosed {
+		t.Fatal(err)
 	}
 }
 

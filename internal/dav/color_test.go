@@ -46,12 +46,15 @@ func TestInjectApplePropsForHref(t *testing.T) {
 </D:propstat>
 </D:response>
 </D:multistatus>`
-	got := injectApplePropsForHref(body, "/caldav/user/calendars/Personal", CalendarColMeta{Color: "#FF0000", Order: 2})
+	got := injectApplePropsForHref(body, "/caldav/user/calendars/Personal", CalendarColMeta{Color: "#FF0000", Order: 2}, "1-2")
 	if !strings.Contains(got, "#FF0000") {
 		t.Fatalf("missing color %s", got)
 	}
 	if !strings.Contains(got, ">2</") && !strings.Contains(got, "calendar-order") {
 		t.Fatalf("missing order %s", got)
+	}
+	if !strings.Contains(got, "getctag") || !strings.Contains(got, "1-2") {
+		t.Fatalf("missing getctag %s", got)
 	}
 	if strings.Count(got, "#FF0000") != 1 {
 		t.Fatalf("color leaked into event href %s", got)

@@ -76,6 +76,30 @@ func UIDFromICS(ics []byte) string {
 	return fallback
 }
 
+// SetICSUID rewrites UID on every VEVENT and VTODO in ics (including
+// RECURRENCE-ID overrides). Returns ics unchanged if decoding fails.
+func SetICSUID(ics []byte, uid string) []byte {
+	uid = icsUID(uid)
+	if uid == "" || len(ics) == 0 {
+		return ics
+	}
+	cal, err := ical.NewDecoder(bytes.NewReader(ics)).Decode()
+	if err != nil || cal == nil {
+		return ics
+	}
+	for _, c := range cal.Children {
+		if c.Name != ical.CompEvent && c.Name != ical.CompToDo {
+			continue
+		}
+		c.Props.SetText(ical.PropUID, uid)
+	}
+	var buf bytes.Buffer
+	if err := ical.NewEncoder(&buf).Encode(cal); err != nil {
+		return ics
+	}
+	return buf.Bytes()
+}
+
 func EventStartMS(ics []byte) int64 {
 	spec, err := ParseEventICS(ics)
 	if err != nil || spec.Start.IsZero() {

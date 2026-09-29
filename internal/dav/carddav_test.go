@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/emersion/go-webdav"
@@ -355,6 +356,68 @@ END:VCARD
 	resp.Body.Close()
 	if !bytes.Contains(got, []byte("TEL")) || !bytes.Contains(got, []byte("ADR")) || !bytes.Contains(got, []byte("BDAY")) {
 		t.Fatalf("stored vcard missing fields:\n%s", got)
+	}
+}
+
+func cardPropfindGetctag(t *testing.T, ts *httptest.Server, path, user, pass string) string {
+	t.Helper()
+	body := []byte(`<?xml version="1.0"?><D:propfind xmlns:D="DAV:" xmlns:CS="http://calendarserver.org/ns/"><D:prop><CS:getctag/><D:displayname/></D:prop></D:propfind>`)
+	r, err := http.NewRequest("PROPFIND", ts.URL+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetBasicAuth(user, pass)
+	r.Header.Set("Depth", "1")
+	r.Header.Set("Content-Type", "application/xml")
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		t.Fatalf("propfind %d %s", resp.StatusCode, got)
+	}
+	return string(got)
+}
+
+func TestCardDAVGetctagChangesOnPush(t *testing.T) {
+	ts, dev, pass, _, _, _ := cardServer(t)
+	before := cardPropfindGetctag(t, ts, "/carddav/user/addressbooks/", dev.ID, pass)
+	if !strings.Contains(strings.ToLower(before), "getctag") {
+		t.Fatalf("missing getctag %s", before)
+	}
+	i := strings.Index(before, "/carddav/user/addressbooks/Contacts")
+	if i < 0 {
+		t.Fatalf("missing contacts href %s", before)
+	}
+	chunk := before[i:]
+	lower := strings.ToLower(chunk)
+	start := strings.Index(lower, "getctag")
+	if start < 0 {
+		t.Fatalf("no getctag for Contacts %s", before)
+	}
+	// find value after '>'
+	gt := strings.Index(chunk[start:], ">")
+	rest := chunk[start+gt+1:]
+	closeAt := strings.Index(strings.ToLower(rest), "getctag")
+	ctagBefore := strings.TrimSpace(rest[:strings.LastIndex(rest[:closeAt], "</")])
+	resp := putCard(t, ts, dev.ID, pass, "/carddav/user/addressbooks/Contacts/test-uid-1.vcf", testCard)
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("put %d", resp.StatusCode)
+	}
+	after := cardPropfindGetctag(t, ts, "/carddav/user/addressbooks/", dev.ID, pass)
+	i = strings.Index(after, "/carddav/user/addressbooks/Contacts")
+	chunk = after[i:]
+	lower = strings.ToLower(chunk)
+	start = strings.Index(lower, "getctag")
+	gt = strings.Index(chunk[start:], ">")
+	rest = chunk[start+gt+1:]
+	closeAt = strings.Index(strings.ToLower(rest), "getctag")
+	ctagAfter := strings.TrimSpace(rest[:strings.LastIndex(rest[:closeAt], "</")])
+	if ctagAfter == "" || ctagAfter == ctagBefore {
+		t.Fatalf("ctag did not change: before=%q after=%q", ctagBefore, ctagAfter)
 	}
 }
 

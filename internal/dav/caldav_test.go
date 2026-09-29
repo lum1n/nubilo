@@ -511,3 +511,89 @@ func TestCalDAVVTODOComponentSet(t *testing.T) {
 		t.Fatalf("VEVENT still advertised %s", got)
 	}
 }
+
+func propfindGetctag(t *testing.T, ts *httptest.Server, path, user, pass string) string {
+	t.Helper()
+	body := []byte(`<?xml version="1.0"?><D:propfind xmlns:D="DAV:" xmlns:CS="http://calendarserver.org/ns/"><D:prop><CS:getctag/><D:displayname/></D:prop></D:propfind>`)
+	r, err := http.NewRequest("PROPFIND", ts.URL+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetBasicAuth(user, pass)
+	r.Header.Set("Depth", "1")
+	r.Header.Set("Content-Type", "application/xml")
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		t.Fatalf("propfind %d %s", resp.StatusCode, got)
+	}
+	return string(got)
+}
+
+func extractGetctag(body, hrefNeedle string) string {
+	i := strings.Index(body, hrefNeedle)
+	if i < 0 {
+		return ""
+	}
+	chunk := body[i:]
+	if end := strings.Index(strings.ToLower(chunk), "</d:response>"); end > 0 {
+		chunk = chunk[:end]
+	}
+	lower := strings.ToLower(chunk)
+	start := strings.Index(lower, "<getctag")
+	if start < 0 {
+		start = strings.Index(lower, ":getctag")
+		if start < 0 {
+			return ""
+		}
+		// rewind to '<'
+		for start > 0 && chunk[start] != '<' {
+			start--
+		}
+	}
+	gt := strings.Index(chunk[start:], ">")
+	if gt < 0 {
+		return ""
+	}
+	rest := chunk[start+gt+1:]
+	end := strings.Index(strings.ToLower(rest), "getctag")
+	if end < 0 {
+		return ""
+	}
+	// find closing tag start
+	closeAt := strings.LastIndex(rest[:end], "</")
+	if closeAt < 0 {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(rest[:closeAt])
+}
+
+func TestCalDAVGetctagChangesOnPush(t *testing.T) {
+	ts, dev, pass, _, _, eng := calServer(t)
+	before := propfindGetctag(t, ts, "/caldav/user/calendars/", dev.ID, pass)
+	if !strings.Contains(strings.ToLower(before), "getctag") {
+		t.Fatalf("missing getctag %s", before)
+	}
+	personalBefore := extractGetctag(before, "/caldav/user/calendars/Personal")
+	if personalBefore == "" {
+		t.Fatalf("no personal ctag in %s", before)
+	}
+	resp := putEvent(t, ts, dev.ID, pass, "/caldav/user/calendars/Personal/test-uid-1.ics", testEventICS)
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("put %d", resp.StatusCode)
+	}
+	after := propfindGetctag(t, ts, "/caldav/user/calendars/", dev.ID, pass)
+	personalAfter := extractGetctag(after, "/caldav/user/calendars/Personal")
+	if personalAfter == "" || personalAfter == personalBefore {
+		t.Fatalf("ctag did not change: before=%q after=%q body=%s", personalBefore, personalAfter, after)
+	}
+	cols, _ := eng.ChildCollections(context.Background(), "calendar", "")
+	if len(cols) == 0 {
+		t.Fatal("no calendars")
+	}
+}

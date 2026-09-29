@@ -174,10 +174,17 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 	var localID string
 	var startMS int64
 	var modMS int64
+	uid := ""
+	name := ""
 	switch rt.kind {
 	case kindEvent:
 		if a.Cal == nil {
 			return nil
+		}
+		meta := dav.ParseEventMeta(ch.Metadata)
+		uid, name = meta.UID, meta.Name
+		if uid == "" {
+			uid = UIDFromICS(payload)
 		}
 		prev := ""
 		if mapErr == nil {
@@ -193,6 +200,11 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 		if a.Reminders == nil {
 			return nil
 		}
+		meta := dav.ParseEventMeta(ch.Metadata)
+		uid, name = meta.UID, meta.Name
+		if uid == "" {
+			uid = UIDFromICS(payload)
+		}
 		prev := ""
 		if mapErr == nil {
 			prev = existing.LocalID
@@ -206,6 +218,11 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 	case kindContact:
 		if a.Contacts == nil {
 			return nil
+		}
+		meta := dav.ParseContactMeta(ch.Metadata)
+		uid, name = meta.UID, meta.Name
+		if uid == "" {
+			uid = UIDFromVCard(payload)
 		}
 		prev := ""
 		if mapErr == nil {
@@ -222,11 +239,11 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 			return nil
 		}
 		meta := dav.ParseFileMeta(ch.Metadata)
-		name := meta.Name
-		if skipFileName(name) {
+		fname := meta.Name
+		if skipFileName(fname) {
 			return nil
 		}
-		abs := filepath.Join(rt.rootPath, filepath.FromSlash(rt.relDir), name)
+		abs := filepath.Join(rt.rootPath, filepath.FromSlash(rt.relDir), fname)
 		if err := a.Files.WriteFile(abs, payload); err != nil {
 			return err
 		}
@@ -241,20 +258,21 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 				return a.Map.Put(Mapping{
 					LocalID: existing.LocalID, Kind: kindPhoto, ObjectID: ch.ObjectID, CollectionID: ch.CollectionID,
 					ContentHash: ch.ContentHash, Revision: ch.Revision, StartMS: existing.StartMS, ModMS: existing.ModMS,
+					UID: existing.UID, Name: existing.Name, LocalHash: existing.LocalHash,
 				})
 			}
 			// Content changed remotely: import a new asset (do not mutate existing Photos).
 		}
 		pm := photos.ParseMeta(ch.Metadata)
-		name := pm.Name
-		if name == "" {
-			name = "photo.bin"
+		pname := pm.Name
+		if pname == "" {
+			pname = "photo.bin"
 		}
 		albumID := ""
 		if len(a.Sel.Photos.Albums) > 0 {
 			albumID = a.Sel.Photos.Albums[0]
 		}
-		id, err := a.Photos.ImportOriginal(payload, name, albumID)
+		id, err := a.Photos.ImportOriginal(payload, pname, albumID)
 		if err != nil {
 			return err
 		}
@@ -267,6 +285,7 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 	return a.Map.Put(Mapping{
 		LocalID: localID, Kind: rt.kind, ObjectID: ch.ObjectID, CollectionID: ch.CollectionID,
 		ContentHash: ch.ContentHash, Revision: ch.Revision, StartMS: startMS, ModMS: modMS,
+		UID: uid, Name: name, LocalHash: "",
 	})
 }
 
@@ -417,6 +436,17 @@ func (a *Agent) pushContacts(ctx context.Context) error {
 		a.Log.Warn("list_contacts_failed", "err", err.Error())
 		return nil
 	}
+	mapped, err := a.Map.ForCollection(col.ID)
+	if err != nil {
+		return err
+	}
+	skipDeletes := false
+	if a.Map.MetaInt("contacts_id_mode") != 1 {
+		list, mapped, skipDeletes = a.remapContacts(list, mapped)
+		if err := a.Map.SetMetaInt("contacts_id_mode", 1); err != nil {
+			return err
+		}
+	}
 	seen := map[string]bool{}
 	for _, c := range list {
 		seen[c.ID] = true
@@ -424,9 +454,12 @@ func (a *Agent) pushContacts(ctx context.Context) error {
 			a.Log.Warn("push_contact", "err", err.Error(), "local", c.ID)
 		}
 	}
-	mapped, err := a.Map.ForCollection(col.ID)
-	if err != nil {
-		return err
+	if len(list) == 0 && len(mapped) > 0 {
+		a.Log.Warn("contacts_empty_listing", "mapped", len(mapped))
+		return nil
+	}
+	if skipDeletes {
+		return nil
 	}
 	for _, row := range mapped {
 		if seen[row.LocalID] {
@@ -439,36 +472,114 @@ func (a *Agent) pushContacts(ctx context.Context) error {
 	return nil
 }
 
+// remapContacts rebinds idmap rows whose unified identifiers no longer match
+// the non-unified container listing. Returns updated list/mapped and whether
+// deletes should be skipped for this run.
+func (a *Agent) remapContacts(list []LocalContact, mapped []Mapping) ([]LocalContact, []Mapping, bool) {
+	byID := map[string]bool{}
+	for _, c := range list {
+		byID[c.ID] = true
+	}
+	used := map[string]bool{}
+	fpList := map[string]string{}
+	for _, c := range list {
+		fpList[c.ID] = ContactFingerprint(ParseContactVCard(c.VCard))
+	}
+	outMapped := make([]Mapping, 0, len(mapped))
+	for _, row := range mapped {
+		if byID[row.LocalID] {
+			outMapped = append(outMapped, row)
+			used[row.LocalID] = true
+			continue
+		}
+		want := ""
+		if cached := a.Map.LoadContactCache(row.LocalID); len(cached) > 0 {
+			want = ContactFingerprint(ParseContactVCard(cached))
+		}
+		if want == "" {
+			outMapped = append(outMapped, row)
+			continue
+		}
+		matched := ""
+		for _, c := range list {
+			if used[c.ID] {
+				continue
+			}
+			if fpList[c.ID] == want {
+				matched = c.ID
+				break
+			}
+		}
+		if matched == "" {
+			outMapped = append(outMapped, row)
+			continue
+		}
+		oldID := row.LocalID
+		row.LocalID = matched
+		row.LocalHash = ""
+		if err := a.Map.Put(row); err != nil {
+			a.Log.Warn("contacts_remap", "err", err.Error(), "from", oldID, "to", matched)
+			row.LocalID = oldID
+			outMapped = append(outMapped, row)
+			continue
+		}
+		if cached := a.Map.LoadContactCache(oldID); len(cached) > 0 {
+			_ = a.Map.SaveContactCache(matched, cached)
+			a.Map.DeleteContactCache(oldID)
+		}
+		used[matched] = true
+		outMapped = append(outMapped, row)
+	}
+	return list, outMapped, true // skip deletes on first container-mode run
+}
+
 func (a *Agent) pushEvent(collectionID string, ev LocalEvent) error {
-	hash := ncrypto.SHA256Hex(ev.ICS)
-	row, err := a.Map.ByLocal(kindEvent, ev.ID)
-	if err == nil && row.ContentHash == hash {
-		return nil
+	rawHash := ncrypto.SHA256Hex(ev.ICS)
+	row, mapErr := a.Map.ByLocal(kindEvent, ev.ID)
+	if mapErr == nil {
+		if row.LocalHash == "" {
+			row.LocalHash = rawHash
+			return a.Map.Put(row)
+		}
+		if row.LocalHash == rawHash {
+			return nil
+		}
+	} else if !errors.Is(mapErr, sql.ErrNoRows) {
+		return mapErr
 	}
-	if err := a.putBlob(hash, ev.ICS); err != nil {
-		return err
-	}
+
+	ics := ev.ICS
 	uid := ev.UID
+	name := ""
+	if mapErr == nil && row.UID != "" {
+		uid = row.UID
+		ics = SetICSUID(ev.ICS, row.UID)
+		name = row.Name
+	}
 	if uid == "" {
-		uid = UIDFromICS(ev.ICS)
+		uid = UIDFromICS(ics)
 	}
 	if uid == "" {
 		uid = ev.ID
+	}
+	if name == "" {
+		name = dav.DAVResourceName(uid+".ics", ".ics")
+	}
+	hash := ncrypto.SHA256Hex(ics)
+	if err := a.putBlob(hash, ics); err != nil {
+		return err
 	}
 	in := syncengine.ChangeInput{
 		CollectionID: collectionID,
 		Kind:         kindEvent,
 		ContentHash:  hash,
 		BlobID:       hash,
-		Size:         int64(len(ev.ICS)),
-		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: dav.DAVResourceName(uid+".ics", ".ics"), UID: uid, Comp: "VEVENT"}),
-		Force:        true,
+		Size:         int64(len(ics)),
+		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: name, UID: uid, Comp: "VEVENT"}),
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(mapErr, sql.ErrNoRows) {
 		in.ObjectID = ids.New()
 		in.Op = syncengine.OpCreate
-	} else if err != nil {
-		return err
 	} else {
 		in.ObjectID = row.ObjectID
 		in.Op = syncengine.OpUpdate
@@ -478,49 +589,74 @@ func (a *Agent) pushEvent(collectionID string, ev LocalEvent) error {
 	if err != nil {
 		return err
 	}
-	if len(res) == 0 || res[0].Status != "ok" {
+	if len(res) == 0 {
+		return errors.New("push event rejected")
+	}
+	if res[0].Status == "conflict" {
+		a.Log.Warn("push_conflict", "object", in.ObjectID, "server_revision", res[0].ServerRevision, "server_hash", res[0].ServerContentHash)
+		return nil
+	}
+	if res[0].Status != "ok" {
 		return errors.New("push event rejected")
 	}
 	start := ev.StartMS
 	if start == 0 {
-		start = EventStartMS(ev.ICS)
+		start = EventStartMS(ics)
 	}
 	return a.Map.Put(Mapping{
 		LocalID: ev.ID, Kind: kindEvent, ObjectID: in.ObjectID, CollectionID: collectionID,
 		ContentHash: hash, Revision: res[0].Revision, StartMS: start,
+		UID: uid, Name: name, LocalHash: rawHash,
 	})
 }
 
 func (a *Agent) pushTodo(collectionID string, td LocalTodo) error {
-	hash := ncrypto.SHA256Hex(td.ICS)
-	row, err := a.Map.ByLocal(kindTodo, td.ID)
-	if err == nil && row.ContentHash == hash {
-		return nil
+	rawHash := ncrypto.SHA256Hex(td.ICS)
+	row, mapErr := a.Map.ByLocal(kindTodo, td.ID)
+	if mapErr == nil {
+		if row.LocalHash == "" {
+			row.LocalHash = rawHash
+			return a.Map.Put(row)
+		}
+		if row.LocalHash == rawHash {
+			return nil
+		}
+	} else if !errors.Is(mapErr, sql.ErrNoRows) {
+		return mapErr
 	}
-	if err := a.putBlob(hash, td.ICS); err != nil {
-		return err
-	}
+
+	ics := td.ICS
 	uid := td.UID
+	name := ""
+	if mapErr == nil && row.UID != "" {
+		uid = row.UID
+		ics = SetICSUID(td.ICS, row.UID)
+		name = row.Name
+	}
 	if uid == "" {
-		uid = UIDFromICS(td.ICS)
+		uid = UIDFromICS(ics)
 	}
 	if uid == "" {
 		uid = td.ID
+	}
+	if name == "" {
+		name = dav.DAVResourceName(uid+".ics", ".ics")
+	}
+	hash := ncrypto.SHA256Hex(ics)
+	if err := a.putBlob(hash, ics); err != nil {
+		return err
 	}
 	in := syncengine.ChangeInput{
 		CollectionID: collectionID,
 		Kind:         kindTodo,
 		ContentHash:  hash,
 		BlobID:       hash,
-		Size:         int64(len(td.ICS)),
-		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: dav.DAVResourceName(uid+".ics", ".ics"), UID: uid, Comp: "VTODO"}),
-		Force:        true,
+		Size:         int64(len(ics)),
+		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: name, UID: uid, Comp: "VTODO"}),
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(mapErr, sql.ErrNoRows) {
 		in.ObjectID = ids.New()
 		in.Op = syncengine.OpCreate
-	} else if err != nil {
-		return err
 	} else {
 		in.ObjectID = row.ObjectID
 		in.Op = syncengine.OpUpdate
@@ -530,39 +666,70 @@ func (a *Agent) pushTodo(collectionID string, td LocalTodo) error {
 	if err != nil {
 		return err
 	}
-	if len(res) == 0 || res[0].Status != "ok" {
+	if len(res) == 0 {
+		return errors.New("push todo rejected")
+	}
+	if res[0].Status == "conflict" {
+		a.Log.Warn("push_conflict", "object", in.ObjectID, "server_revision", res[0].ServerRevision, "server_hash", res[0].ServerContentHash)
+		return nil
+	}
+	if res[0].Status != "ok" {
 		return errors.New("push todo rejected")
 	}
 	due := td.DueMS
 	if due == 0 {
-		due = TodoDueMS(td.ICS)
+		due = TodoDueMS(ics)
 	}
 	return a.Map.Put(Mapping{
 		LocalID: td.ID, Kind: kindTodo, ObjectID: in.ObjectID, CollectionID: collectionID,
 		ContentHash: hash, Revision: res[0].Revision, StartMS: due,
+		UID: uid, Name: name, LocalHash: rawHash,
 	})
 }
 
 func (a *Agent) pushContact(collectionID string, c LocalContact) error {
+	rawHash := ncrypto.SHA256Hex(c.VCard)
+	row, mapErr := a.Map.ByLocal(kindContact, c.ID)
+	if mapErr == nil {
+		if row.LocalHash == "" {
+			row.LocalHash = rawHash
+			return a.Map.Put(row)
+		}
+		if row.LocalHash == rawHash {
+			return nil
+		}
+	} else if !errors.Is(mapErr, sql.ErrNoRows) {
+		return mapErr
+	}
+
+	spec := ParseContactVCard(c.VCard)
+	if mapErr == nil && row.UID != "" && spec.UID == "" {
+		spec.UID = row.UID
+	}
 	vcf := c.VCard
 	if cached := a.Map.LoadContactCache(c.ID); len(cached) > 0 {
 		vcf = MergeContactVCard(cached, ParseContactVCard(c.VCard))
+	} else if mapErr == nil && row.UID != "" {
+		spec.UID = row.UID
+		vcf = EncodeContactVCard(spec)
 	}
-	hash := ncrypto.SHA256Hex(vcf)
-	row, err := a.Map.ByLocal(kindContact, c.ID)
-	if err == nil && row.ContentHash == hash {
-		_ = a.Map.SaveContactCache(c.ID, vcf)
-		return nil
-	}
-	if err := a.putBlob(hash, vcf); err != nil {
-		return err
-	}
-	uid := c.UID
+	uid := UIDFromVCard(vcf)
 	if uid == "" {
-		uid = UIDFromVCard(vcf)
+		uid = c.UID
 	}
 	if uid == "" {
 		uid = c.ID
+	}
+	name := ""
+	if mapErr == nil && row.Name != "" {
+		name = row.Name
+	}
+	if name == "" {
+		name = dav.DAVResourceName(uid+".vcf", ".vcf")
+	}
+	hash := ncrypto.SHA256Hex(vcf)
+	if err := a.putBlob(hash, vcf); err != nil {
+		return err
 	}
 	in := syncengine.ChangeInput{
 		CollectionID: collectionID,
@@ -570,14 +737,11 @@ func (a *Agent) pushContact(collectionID string, c LocalContact) error {
 		ContentHash:  hash,
 		BlobID:       hash,
 		Size:         int64(len(vcf)),
-		Metadata:     dav.EncodeContactMeta(dav.ContactMetaFromVCard(dav.DAVResourceName(uid+".vcf", ".vcf"), uid, vcf)),
-		Force:        true,
+		Metadata:     dav.EncodeContactMeta(dav.ContactMetaFromVCard(name, uid, vcf)),
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(mapErr, sql.ErrNoRows) {
 		in.ObjectID = ids.New()
 		in.Op = syncengine.OpCreate
-	} else if err != nil {
-		return err
 	} else {
 		in.ObjectID = row.ObjectID
 		in.Op = syncengine.OpUpdate
@@ -587,13 +751,21 @@ func (a *Agent) pushContact(collectionID string, c LocalContact) error {
 	if err != nil {
 		return err
 	}
-	if len(res) == 0 || res[0].Status != "ok" {
+	if len(res) == 0 {
+		return errors.New("push contact rejected")
+	}
+	if res[0].Status == "conflict" {
+		a.Log.Warn("push_conflict", "object", in.ObjectID, "server_revision", res[0].ServerRevision, "server_hash", res[0].ServerContentHash)
+		return nil
+	}
+	if res[0].Status != "ok" {
 		return errors.New("push contact rejected")
 	}
 	_ = a.Map.SaveContactCache(c.ID, vcf)
 	return a.Map.Put(Mapping{
 		LocalID: c.ID, Kind: kindContact, ObjectID: in.ObjectID, CollectionID: collectionID,
 		ContentHash: hash, Revision: res[0].Revision,
+		UID: uid, Name: name, LocalHash: rawHash,
 	})
 }
 

@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS audit (
 
 CREATE INDEX IF NOT EXISTS journal_seq ON journal(seq);
 CREATE INDEX IF NOT EXISTS journal_object ON journal(object_id, revision);
+CREATE INDEX IF NOT EXISTS journal_collection ON journal(collection_id, seq);
 CREATE INDEX IF NOT EXISTS objects_collection ON objects(collection_id);
 CREATE INDEX IF NOT EXISTS nonces_ts ON nonces(ts);
 CREATE INDEX IF NOT EXISTS pairing_expires ON pairing_sessions(expires_at);

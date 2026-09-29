@@ -41,6 +41,7 @@ type fakeCal struct {
 	seq       int
 	newIDs    bool
 	upsertErr error
+	lossy     bool
 }
 
 type fakeReminders struct {
@@ -155,6 +156,11 @@ func (f *fakeCal) UpsertEvent(calendarID, localID string, ics []byte) (string, e
 		ID: localID, CalendarID: calendarID, UID: agent.UIDFromICS(ics),
 		ICS: append([]byte(nil), ics...), StartMS: agent.EventStartMS(ics),
 	}
+	if f.lossy {
+		ics = agent.SetICSUID(ics, localID)
+		ev.UID = localID
+		ev.ICS = ics
+	}
 	list := f.events[calendarID]
 	for i := range list {
 		if list[i].ID == prevID || list[i].ID == localID {
@@ -197,6 +203,7 @@ type fakeBook struct {
 	mu      sync.Mutex
 	list    []agent.LocalContact
 	listErr error
+	lossy   bool
 }
 
 func (f *fakeBook) ListContacts() ([]agent.LocalContact, error) {
@@ -219,7 +226,15 @@ func (f *fakeBook) UpsertContact(localID string, vcf []byte) (string, error) {
 	if localID == "" {
 		localID = "cn-" + ids.New()[:8]
 	}
-	c := agent.LocalContact{ID: localID, UID: agent.UIDFromVCard(vcf), VCard: append([]byte(nil), vcf...)}
+	stored := append([]byte(nil), vcf...)
+	uid := agent.UIDFromVCard(vcf)
+	if f.lossy {
+		spec := agent.ParseContactVCard(vcf)
+		spec.UID = localID
+		stored = agent.EncodeContactVCard(spec)
+		uid = localID
+	}
+	c := agent.LocalContact{ID: localID, UID: uid, VCard: stored}
 	for i := range f.list {
 		if f.list[i].ID == localID {
 			f.list[i] = c
@@ -1276,5 +1291,323 @@ func TestNestedFilesPush(t *testing.T) {
 	}
 	if len(nestedObjs) != 1 {
 		t.Fatalf("nested objects %d want 1", len(nestedObjs))
+	}
+}
+
+func TestContactPullNoEchoPreservesUID(t *testing.T) {
+	h := startHarness(t)
+	book := &fakeBook{lossy: true}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
+	a := newAgent(h, sel, nil, book)
+
+	col, err := h.eng.EnsureNamedCollection(context.Background(), "addressbook", "Contacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vcf := testVCard("iphone-1", "Ada Lovelace")
+	hash := ncrypto.SHA256Hex(vcf)
+	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(vcf), hash); err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
+		ObjectID: ids.New(), CollectionID: col.ID, Kind: "contact", Op: syncengine.OpCreate,
+		ContentHash: hash, BlobID: hash, Size: int64(len(vcf)),
+		Metadata: dav.EncodeContactMeta(dav.ContactMeta{Name: "iphone-1.vcf", UID: "iphone-1", FN: "Ada Lovelace"}),
+	}})
+	if err != nil || res[0].Status != "ok" {
+		t.Fatalf("create %v %v", err, res)
+	}
+	objID := res[0].ObjectID
+	before, err := h.eng.GetObject(context.Background(), objID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := h.eng.GetObject(context.Background(), objID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision {
+		t.Fatalf("echo push bumped revision %d -> %d", before.Revision, after.Revision)
+	}
+	meta := dav.ParseContactMeta(after.Metadata)
+	if meta.UID != "iphone-1" || meta.Name != "iphone-1.vcf" {
+		t.Fatalf("meta %+v", meta)
+	}
+}
+
+func TestContactEditKeepsServerUID(t *testing.T) {
+	h := startHarness(t)
+	book := &fakeBook{lossy: true}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
+	a := newAgent(h, sel, nil, book)
+
+	col, err := h.eng.EnsureNamedCollection(context.Background(), "addressbook", "Contacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vcf := testVCard("iphone-1", "Ada Lovelace")
+	hash := ncrypto.SHA256Hex(vcf)
+	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(vcf), hash); err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
+		ObjectID: ids.New(), CollectionID: col.ID, Kind: "contact", Op: syncengine.OpCreate,
+		ContentHash: hash, BlobID: hash, Size: int64(len(vcf)),
+		Metadata: dav.EncodeContactMeta(dav.ContactMeta{Name: "iphone-1.vcf", UID: "iphone-1", FN: "Ada Lovelace"}),
+	}})
+	if err != nil || res[0].Status != "ok" {
+		t.Fatalf("create %v %v", err, res)
+	}
+	objID := res[0].ObjectID
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	book.mu.Lock()
+	if len(book.list) != 1 {
+		book.mu.Unlock()
+		t.Fatal("expected pulled contact")
+	}
+	edited := agent.EncodeContactVCard(agent.ContactSpec{
+		UID: book.list[0].UID, FN: "Ada L.", Given: "Ada", Family: "L.",
+		Emails: []agent.ContactValue{{Value: "ada@example.com"}},
+	})
+	book.list[0].VCard = edited
+	localID := book.list[0].ID
+	book.mu.Unlock()
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	obj, err := h.eng.GetObject(context.Background(), objID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := dav.ParseContactMeta(obj.Metadata)
+	if meta.UID != "iphone-1" || meta.Name != "iphone-1.vcf" {
+		t.Fatalf("meta %+v local=%s", meta, localID)
+	}
+	pt, err := h.st.GetBlobPlaintext(obj.BlobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(pt, []byte("UID:iphone-1")) || !bytes.Contains(pt, []byte("Ada L.")) {
+		t.Fatalf("blob %s", pt)
+	}
+}
+
+func TestEventPullNoEchoPreservesUID(t *testing.T) {
+	h := startHarness(t)
+	cal := &fakeCal{
+		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
+		events:    map[string][]agent.LocalEvent{},
+		lossy:     true,
+	}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
+	a := newAgent(h, sel, cal, nil)
+
+	col, err := h.eng.EnsureNamedCollection(context.Background(), "calendar", "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().UTC().Truncate(time.Second)
+	ics, err := agent.EncodeICS("iphone-ev", "From phone", start, start.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := ncrypto.SHA256Hex(ics)
+	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(ics), hash); err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
+		ObjectID: ids.New(), CollectionID: col.ID, Kind: "event", Op: syncengine.OpCreate,
+		ContentHash: hash, BlobID: hash, Size: int64(len(ics)),
+		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "iphone-ev.ics", UID: "iphone-ev", Comp: "VEVENT"}),
+	}})
+	if err != nil || res[0].Status != "ok" {
+		t.Fatalf("create %v %v", err, res)
+	}
+	objID := res[0].ObjectID
+	before, _ := h.eng.GetObject(context.Background(), objID)
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := h.eng.GetObject(context.Background(), objID)
+	if after.Revision != before.Revision {
+		t.Fatalf("echo push bumped revision %d -> %d", before.Revision, after.Revision)
+	}
+	meta := dav.ParseEventMeta(after.Metadata)
+	if meta.UID != "iphone-ev" || meta.Name != "iphone-ev.ics" {
+		t.Fatalf("meta %+v", meta)
+	}
+}
+
+func TestPushConflictServerWins(t *testing.T) {
+	h := startHarness(t)
+	start := time.Now().UTC().Truncate(time.Second)
+	ev := testEvent(t, "uid-conflict", "Local", start)
+	cal := &fakeCal{
+		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
+		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
+	}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
+	a := newAgent(h, sel, cal, nil)
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	col := collection(t, h.eng, "calendar", "Work")
+	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverICS, err := agent.EncodeICS("uid-conflict", "Server wins", start, start.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := ncrypto.SHA256Hex(serverICS)
+	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(serverICS), hash); err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
+		ObjectID: obj.ID, CollectionID: col.ID, Kind: "event", Op: syncengine.OpUpdate,
+		BaseRevision: obj.Revision, ContentHash: hash, BlobID: hash, Size: int64(len(serverICS)),
+		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "uid-conflict.ics", UID: "uid-conflict", Comp: "VEVENT"}),
+		Force:    true,
+	}})
+	if err != nil || res[0].Status != "ok" {
+		t.Fatalf("server update %v %v", err, res)
+	}
+	// Advance cursor past the server change without applying it, then push a local edit.
+	head, err := h.eng.HeadSeq(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Map.SetCursor(head); err != nil {
+		t.Fatal(err)
+	}
+	edited, _ := agent.EncodeICS("uid-conflict", "Local edit", start, start.Add(time.Hour))
+	cal.mu.Lock()
+	cal.events["cal-1"][0].ICS = edited
+	cal.mu.Unlock()
+	row, _ := a.Map.ByLocal("event", ev.ID)
+	row.LocalHash = "stale"
+	_ = a.Map.Put(row)
+
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	obj2, err := h.eng.GetObject(context.Background(), obj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt, err := h.st.GetBlobPlaintext(obj2.BlobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(pt, []byte("Server wins")) || bytes.Contains(pt, []byte("Local edit")) {
+		t.Fatalf("conflict push overwrote server: %s", pt)
+	}
+
+	// Recover by replaying journal from the start.
+	if err := a.Map.SetCursor(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := cal.eventICS("cal-1", ev.ID)
+	if !strings.Contains(string(got), "Server wins") {
+		t.Fatalf("expected pull to apply server version: %s", got)
+	}
+}
+
+func TestContactsRemapNoDelete(t *testing.T) {
+	h := startHarness(t)
+	book := &fakeBook{list: []agent.LocalContact{{
+		ID: "cn-old", UID: "cn-old", VCard: testVCard("cn-old", "Grace Hopper"),
+	}}}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
+	a := newAgent(h, sel, nil, book)
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := liveCount(t, h.eng, "addressbook", "Contacts"); n != 1 {
+		t.Fatalf("live %d", n)
+	}
+	col := collection(t, h.eng, "addressbook", "Contacts")
+	objs, err := h.eng.ListObjects(context.Background(), col.ID)
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("objs %v", err)
+	}
+	objectID := objs[0].ID
+
+	_ = a.Map.SetMetaInt("contacts_id_mode", 0)
+	book.mu.Lock()
+	book.list = []agent.LocalContact{{
+		ID: "cn-new", UID: "cn-new", VCard: testVCard("cn-new", "Grace Hopper"),
+	}}
+	book.mu.Unlock()
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := liveCount(t, h.eng, "addressbook", "Contacts"); n != 1 {
+		t.Fatalf("remap deleted/recreated, live=%d", n)
+	}
+	got, err := a.Map.ByObject(objectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LocalID != "cn-new" {
+		t.Fatalf("local id %q", got.LocalID)
+	}
+}
+
+func TestContactsEmptyListingSkipsDeletes(t *testing.T) {
+	h := startHarness(t)
+	book := &fakeBook{list: []agent.LocalContact{{
+		ID: "cn-1", UID: "contact-keep", VCard: testVCard("contact-keep", "Grace Hopper"),
+	}}}
+	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
+	a := newAgent(h, sel, nil, book)
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	book.mu.Lock()
+	book.list = nil
+	book.mu.Unlock()
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := liveCount(t, h.eng, "addressbook", "Contacts"); n != 1 {
+		t.Fatalf("empty listing deleted contacts, live=%d", n)
+	}
+}
+
+func TestSetICSUID(t *testing.T) {
+	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	ics, err := agent.EncodeEventICS(agent.EventSpec{
+		UID: "old-uid", Summary: "Weekly", Start: start, End: start.Add(time.Hour),
+		RRule: "FREQ=WEEKLY",
+		Exceptions: []agent.EventSpec{{
+			UID: "old-uid", Summary: "Weekly (moved)", Start: start.AddDate(0, 0, 7), End: start.AddDate(0, 0, 7).Add(time.Hour),
+			RecurrenceID: start.AddDate(0, 0, 7),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := agent.SetICSUID(ics, "kept-uid")
+	if strings.Count(string(got), "UID:kept-uid") < 2 {
+		t.Fatalf("expected UID on master and exception:\n%s", got)
+	}
+	if strings.Contains(string(got), "UID:old-uid") {
+		t.Fatalf("old uid remains:\n%s", got)
 	}
 }

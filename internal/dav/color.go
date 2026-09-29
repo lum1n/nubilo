@@ -14,6 +14,7 @@ import (
 )
 
 const appleICalNS = "http://apple.com/ns/ical/"
+const calendarServerNS = "http://calendarserver.org/ns/"
 
 type CalendarColMeta struct {
 	Color string `json:"color,omitempty"`
@@ -159,8 +160,12 @@ func (h appleDAV) serveCalPropFind(w http.ResponseWriter, r *http.Request) {
 	if code == 0 {
 		code = http.StatusOK
 	}
-	if h.cal != nil && (code == http.StatusMultiStatus || code == http.StatusOK) {
-		body = h.cal.injectCalendarAppleProps(r.Context(), body)
+	if code == http.StatusMultiStatus || code == http.StatusOK {
+		if h.cal != nil {
+			body = h.cal.injectCalendarAppleProps(r.Context(), body)
+		} else if h.card != nil {
+			body = h.card.injectAddressBookCTags(r.Context(), body)
+		}
 	}
 	for k, vs := range cw.h {
 		if strings.EqualFold(k, "Content-Length") {
@@ -182,19 +187,40 @@ func (b *CalDAV) injectCalendarAppleProps(ctx context.Context, body []byte) []by
 	if err != nil || len(cols) == 0 {
 		return body
 	}
+	ctags, err := b.Engine.CollectionCTags(ctx, calKind)
+	if err != nil {
+		ctags = map[string]string{}
+	}
 	s := string(body)
 	for i := range cols {
 		m := ParseCalendarColMeta(cols[i].Metadata)
-		if m.Color == "" && m.Order == 0 {
-			continue
-		}
 		href := Join(b.Prefix, calUserSeg, calHomeSeg, cols[i].Name)
-		s = injectApplePropsForHref(s, href, m)
+		s = injectApplePropsForHref(s, href, m, ctags[cols[i].ID])
 	}
 	return []byte(s)
 }
 
-func injectApplePropsForHref(body, href string, m CalendarColMeta) string {
+func (b *CardDAV) injectAddressBookCTags(ctx context.Context, body []byte) []byte {
+	if b == nil || b.Engine == nil || len(body) == 0 {
+		return body
+	}
+	cols, err := b.Engine.ChildCollections(ctx, bookKind, "")
+	if err != nil || len(cols) == 0 {
+		return body
+	}
+	ctags, err := b.Engine.CollectionCTags(ctx, bookKind)
+	if err != nil {
+		ctags = map[string]string{}
+	}
+	s := string(body)
+	for i := range cols {
+		href := Join(b.Prefix, cardUserSeg, cardHomeSeg, cols[i].Name)
+		s = injectApplePropsForHref(s, href, CalendarColMeta{}, ctags[cols[i].ID])
+	}
+	return []byte(s)
+}
+
+func injectApplePropsForHref(body, href string, m CalendarColMeta, ctag string) string {
 	href = strings.TrimSuffix(href, "/")
 	needles := []string{
 		href + "</",
@@ -215,7 +241,7 @@ func injectApplePropsForHref(body, href string, m CalendarColMeta) string {
 	if !ok {
 		return body
 	}
-	rewritten := rewriteCalendarPropBlock(body[start:end], m)
+	rewritten := rewriteCalendarPropBlock(body[start:end], m, ctag)
 	return body[:start] + rewritten + body[end:]
 }
 
@@ -241,7 +267,7 @@ func responseBounds(body string, hrefAt int) (start, end int, ok bool) {
 	return start, hrefAt + rel + n, true
 }
 
-func rewriteCalendarPropBlock(block string, m CalendarColMeta) string {
+func rewriteCalendarPropBlock(block string, m CalendarColMeta, ctag string) string {
 	var insert strings.Builder
 	if m.Color != "" {
 		insert.WriteString(`<calendar-color xmlns="` + appleICalNS + `">`)
@@ -253,17 +279,24 @@ func rewriteCalendarPropBlock(block string, m CalendarColMeta) string {
 		insert.WriteString(strconv.Itoa(m.Order))
 		insert.WriteString(`</calendar-order>`)
 	}
+	if ctag != "" {
+		insert.WriteString(`<getctag xmlns="` + calendarServerNS + `">`)
+		insert.WriteString(xmlEscape(ctag))
+		insert.WriteString(`</getctag>`)
+	}
 	if insert.Len() == 0 {
 		return block
 	}
 	block = stripNamedElems(block, "calendar-color")
 	block = stripNamedElems(block, "calendar-order")
+	block = stripNamedElems(block, "getctag")
 	return injectIntoOKProp(block, insert.String())
 }
 
 var (
 	calendarColorElemRe = namedElemRe("calendar-color")
 	calendarOrderElemRe = namedElemRe("calendar-order")
+	getctagElemRe       = namedElemRe("getctag")
 )
 
 func namedElemRe(local string) *regexp.Regexp {
@@ -276,6 +309,8 @@ func stripNamedElems(s, local string) string {
 		return calendarColorElemRe.ReplaceAllString(s, "")
 	case "calendar-order":
 		return calendarOrderElemRe.ReplaceAllString(s, "")
+	case "getctag":
+		return getctagElemRe.ReplaceAllString(s, "")
 	default:
 		return namedElemRe(local).ReplaceAllString(s, "")
 	}

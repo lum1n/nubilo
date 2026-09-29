@@ -19,7 +19,7 @@ import (
 
 func runUI(g global, args []string) int {
 	fs := flag.NewFlagSet("ui", flag.ContinueOnError)
-	listen := fs.String("listen", ui.DefaultListen, "loopback address for the web UI")
+	listen := fs.String("listen", ui.DefaultListen, "loopback address for the web UI (next free port if busy)")
 	open := fs.Bool("open", true, "open the UI in a browser")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -41,6 +41,9 @@ func runUI(g global, args []string) int {
 	if err != nil {
 		return fatal(err)
 	}
+	if err := srv.Bind(); err != nil {
+		return fatal(err)
+	}
 	url := srv.SessionURL()
 	fmt.Fprintf(os.Stderr, "Nubilo UI at %s\n", url)
 	fmt.Fprintf(os.Stderr, "Admin token: %s\n", rt.Paths.AdminToken)
@@ -50,7 +53,7 @@ func runUI(g global, args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
+	go func() { errCh <- srv.Serve() }()
 	select {
 	case <-ctx.Done():
 		shctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

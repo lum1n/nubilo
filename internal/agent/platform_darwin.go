@@ -9,7 +9,7 @@ func OpenPlatform(sel Selection) (CalendarSource, ContactSource, PhotoSource, Re
 	}
 	var book ContactSource
 	if sel.SyncContacts {
-		c, err := openContacts()
+		c, err := openContacts(sel.ContactsContainer)
 		if err != nil {
 			return cal, nil, nil, cal, err
 		}

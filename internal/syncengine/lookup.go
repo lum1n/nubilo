@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	ncrypto "nubilo/internal/crypto"
@@ -141,6 +142,32 @@ func (e *Engine) FindObjectByUID(ctx context.Context, collectionID, uid string) 
 		WHERE collection_id = ? AND deleted_at IS NULL AND json_extract(metadata, '$.uid') = ?
 	`, collectionID, uid)
 	return scanObject(row)
+}
+
+// CollectionCTags returns an opaque change tag per live collection of kind.
+// Tags bump when objects change (journal) or when collection metadata is updated.
+func (e *Engine) CollectionCTags(ctx context.Context, kind string) (map[string]string, error) {
+	rows, err := e.Store.DB.QueryContext(ctx, `
+		SELECT c.id, c.updated_at, COALESCE(MAX(j.seq), 0)
+		FROM collections c
+		LEFT JOIN journal j ON j.collection_id = c.id
+		WHERE c.kind = ? AND c.deleted_at IS NULL
+		GROUP BY c.id
+	`, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id string
+		var updatedAt, maxSeq int64
+		if err := rows.Scan(&id, &updatedAt, &maxSeq); err != nil {
+			return nil, err
+		}
+		out[id] = fmt.Sprintf("%d-%d", maxSeq, updatedAt)
+	}
+	return out, rows.Err()
 }
 
 func (e *Engine) SetCollectionMetadata(ctx context.Context, id string, metadata json.RawMessage) error {

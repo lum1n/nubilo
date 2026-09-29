@@ -124,6 +124,50 @@ func TestMergeContactVCardPreservesExtras(t *testing.T) {
 	}
 }
 
+func TestMergeContactVCardKeepsBaseUID(t *testing.T) {
+	base := []byte("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:iphone-uid\r\nFN:Ada\r\nEND:VCARD\r\n")
+	merged := MergeContactVCard(base, ContactSpec{
+		UID: "mac-local-id", FN: "Ada Lovelace", Given: "Ada", Family: "Lovelace",
+	})
+	if !strings.Contains(string(merged), "UID:iphone-uid") {
+		t.Fatalf("base UID lost: %s", merged)
+	}
+	if strings.Contains(string(merged), "mac-local-id") {
+		t.Fatalf("mac UID leaked: %s", merged)
+	}
+}
+
+func TestContactFidelityFieldsRoundTrip(t *testing.T) {
+	in := ContactSpec{
+		UID: "u", FN: "Ada Lovelace", Given: "Ada", Family: "Lovelace",
+		Middle: "Augusta", Prefix: "Dr", Suffix: "Jr",
+		Org: "Analytical", Department: "Engines", Title: "Mathematician",
+		Related: []ContactValue{{Label: "_$!<Friend>!$_", Value: "Charles"}},
+		Social:  []ContactSocial{{Service: "Twitter", User: "ada", URL: "https://twitter.com/ada"}},
+		IM:      []ContactIM{{Service: "jabber", User: "ada@jabber.example"}},
+		Dates:   []ContactDate{{Label: "_$!<Anniversary>!$_", Date: "1835-07-08"}},
+	}
+	out := ParseContactVCard(EncodeContactVCard(in))
+	if out.Middle != "Augusta" || out.Prefix != "Dr" || out.Suffix != "Jr" {
+		t.Fatalf("name %#v", out)
+	}
+	if out.Department != "Engines" || out.Title != "Mathematician" {
+		t.Fatalf("org %#v", out)
+	}
+	if len(out.Related) != 1 || out.Related[0].Value != "Charles" {
+		t.Fatalf("related %#v", out.Related)
+	}
+	if len(out.Social) != 1 || out.Social[0].User != "ada" {
+		t.Fatalf("social %#v", out.Social)
+	}
+	if len(out.IM) != 1 || out.IM[0].User != "ada@jabber.example" {
+		t.Fatalf("im %#v", out.IM)
+	}
+	if len(out.Dates) != 1 || out.Dates[0].Date != "1835-07-08" {
+		t.Fatalf("dates %#v", out.Dates)
+	}
+}
+
 func TestEncodeSkipsEmpty(t *testing.T) {
 	raw := EncodeContactVCard(ContactSpec{UID: "u", FN: "Solo"})
 	s := string(raw)

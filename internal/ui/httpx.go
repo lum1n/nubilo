@@ -6,10 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 const sessionCookie = "nubilo_ui"
@@ -38,6 +41,43 @@ func validateLoopbackListen(listen string) (string, error) {
 		return "", errors.New("ui: listen address must be loopback")
 	}
 	return listen, nil
+}
+
+const listenPortTries = 20
+
+// listenLoopback binds addr. If that port is in use, it tries the next ports
+// on the same host. Port 0 is left to the OS.
+func listenLoopback(addr string) (net.Listener, error) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, err
+	}
+	if port == 0 {
+		return net.Listen("tcp", addr)
+	}
+	var last error
+	for i := 0; i < listenPortTries; i++ {
+		p := port + i
+		if p > 65535 {
+			break
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p)))
+		if err == nil {
+			return ln, nil
+		}
+		last = err
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, err
+		}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("ui: no free port at or above %s", addr)
+	}
+	return nil, last
 }
 
 func (g sessionGate) sessionHex() string {
