@@ -179,6 +179,8 @@ App passwords:
 - are revocable independently of signing keys
 - are rate-limited on failure
 
+Since schema v2 every app password belongs to a **user**. HTTP Basic accepts either the user's username (each of the user's active app passwords is tried; at most 10 per user, which bounds Argon2 work) or, for accounts created before multi-user support, the password's device ULID. Successful logins are cached for 10 minutes keyed by `sha256(username, password)` because Apple clients send Basic on every request; revoking the password, revoking its device, or disabling the user invalidates the cache entry on the next request. Failures lock the username (5/min, 30 s) and the client IP (20/min, 30 s); a client whose credentials are in the success cache is not affected by a username lock, so others' wrong guesses cannot lock out a working phone.
+
 ### 4.4 Local CLI
 
 CLI commands that need a running server authenticate as a local admin using a token file `$data_dir/admin.token` (0600), accepted **only** on loopback or the Unix socket. The token is not a device and cannot be used on non-loopback binds.
@@ -189,7 +191,10 @@ CLI commands may also open `$data_dir/metadata.db` directly when the server is s
 
 Authentication answers *who*. Authorization answers *what*.
 
-Every resource access goes through `authz.Allow(device, action, resource)`.
+Every request is checked in two steps:
+
+1. `authz.Allow(device, action)` — protocol scope and role (a WebDAV-only app password cannot use CalDAV; only admins administer).
+2. `authz.AllowCollection(device, action, access)` — the device's **user** access to the collection: reads need `ro`, writes need `rw`, deleting, renaming and sharing a collection need ownership.
 
 Roles:
 
@@ -202,13 +207,25 @@ Roles:
 
 Actions: `sync.read`, `sync.write`, `dav.read`, `dav.write`, `device.list`, `device.revoke`, `metrics.read`, `backup.create`, `backup.restore`.
 
-Collection ACL:
+Users and roles (schema v2): every device belongs to one user. Users are `admin` or `member`; a device of an admin user (other than an app password) may use the admin API. Disabling a user revokes all their devices and app passwords. The last active admin cannot be demoted or disabled. The per-device `permissions.collections` list from v1 is no longer consulted.
 
-- `*` means all current and future collections (agents may have this)
-- explicit ULID list otherwise
-- tombstoned collections remain in the ACL until the tombstone is itself reconciled; access to tombstones is read-only
+Collection access: each collection has an owner and a root (`root_id`; children inherit both). A user's access is `owner` if they own it, else the share on its root (`ro` or `rw`), else none. Shares exist only on roots.
 
-Deny by default. A revoked device fails authentication, so authorization is never reached.
+### 5.1 Multi-user isolation invariants
+
+These are enforced in the sync engine (not only in HTTP handlers) and covered by `syncengine/access_test.go`, `server/isolation_test.go` and `dav/share_test.go`:
+
+1. `GET /sync/v1/changes` filters by access in SQL **before** `LIMIT`, so a user never sees another user's journal entries and pages stay full.
+2. A push needs `rw` on the target collection and, when an object moves, `rw` on its current collection; both must have the same owner (no handing data to another user, no pulling it out of a shared collection).
+3. Blobs are deduplicated across users by plaintext hash, so knowing a hash must not grant access: a push may only reference a blob the **pusher** holds a `blob_refs` row for (created by uploading the bytes, or by adding a photo they can read to an album), even when writing into a collection shared with them. `GET /sync/v1/blob/{hash}` answers 404 unless the caller holds a ref or can read a collection with a live object whose `blob_id` or blob metadata keys (`preview_hash`, `thumb_hash`, `live_pair_hash`, matched case-insensitively everywhere) name it; photo renditions only serve hashes the object references.
+8. Changes are filtered by where an object was when the journal entry was written; if it has since moved somewhere the caller cannot read, the entry is delivered as a deletion without metadata or blob.
+9. Shares of a disabled user stop working until the user is re-enabled. DAV lookups always resolve the caller's own collections before shared ones, so a shared collection cannot shadow an own calendar path. Usernames `owner`, `admin`, `root` and `system` are reserved.
+4. Creating an object whose ID exists in a collection the caller cannot read returns a generic error, not its revision or hash.
+5. Photos, albums, DAV homes and WebDAV roots are resolved per user; another user's principal path (`/caldav/u/<other>/…`) is 403 and shared collections appear only through the caller's own home (`/dav/shared/<owner>/…` for files).
+6. Idempotency keys are scoped per device.
+7. System callers (local admin token, local operator) are explicit and user-less; the admin UI acts *as* a chosen user (`X-Nubilo-Act-As`) so its writes go through the same checks.
+
+Deny by default. A revoked device (or a device of a disabled user) fails authentication, so authorization is never reached.
 
 ## 6. Encryption model
 
@@ -370,9 +387,10 @@ Default logs may include: device_id, collection_id, object_id, sequence numbers,
 
 | Endpoint | Limit (defaults) |
 | --- | --- |
-| `pair/begin` | 10 / hour / IP; 3 active sessions globally |
+| `pair/begin` | 10 / hour / IP; 3 active sessions per user |
 | `pair/complete` | 20 / hour / IP |
-| App-password failures | 5 / minute / device then 30s cooldown |
+| `invites/redeem` | 5 / hour / IP |
+| App-password failures | 5 / minute / username and 20 / minute / IP, then 30s cooldown |
 | Signed-request failures | 30 / minute / IP |
 | Request body | `sync.max_blob_bytes` (default 256 MiB) plus 1 MiB headroom |
 | Sync batch | 500 objects / request |
@@ -391,10 +409,26 @@ Default logs may include: device_id, collection_id, object_id, sequence numbers,
 2. GPS in image originals is preserved (required). Stripping GPS from *derivatives* is configurable (`photos.strip_gps_from_derivatives`, default true). Originals are never silently mutated. Coordinates are not stored in SQLite metadata.
 3. A root attacker on the server can decrypt blobs and impersonate the server to new clients until clients pin the server identity (server Ed25519 identity is returned at pair and should be pinned by the client).
 4. DAV app passwords are bearer secrets (unavoidable with Apple Calendar/Files). TLS and revocation are the controls.
-5. No built-in multi-user isolation. This is a single-owner personal cloud. All devices belong to one operator.
+5. Multi-user isolation is enforced per user (§5.1), but blobs share one master-derived key and are deduplicated across users; deleting a user does not crypto-shred their data. Server-side encryption, not end-to-end: the server (and its operator) can read everything, which Apple CalDAV/CardDAV require anyway.
+9. Behind the wired relay, the relay prepends a PROXY protocol v1 header with the client address and the home server trusts it **only** on the overlay listener (overlay members are the operator's own nodes). A compromised overlay member could therefore spoof client IPs for rate limiting and logs; it still cannot authenticate.
 6. Availability is not a security guarantee. An attacker who can DoS the listen port can prevent sync. They should not be able to read or write data.
 7. Client private keys: macOS agent uses Keychain (file fallback); server `master.key` remains a `0600` file.
 8. PhotoKit in-place edits on already-mapped assets are detected via `mod_ms` on the agent idmap.
+
+## 15a. Public exposure (relay and direct)
+
+`nubilo setup` offers three modes: **relay** (a VPS runs `nubilo relay`, an anchor of a [wired](https://github.com/lum1n/wired) overlay that forwards public TCP 443/80 to the home server as raw bytes), **direct** (this host listens on :443/:80) and **lan** (self-signed, LAN/Tailscale only).
+
+- TLS terminates on the home server with a Let's Encrypt certificate obtained by built-in ACME (TLS-ALPN-01 on :443, HTTP-01 on :80). The VPS never holds the master key, the database, or the certificate key; it sees TLS ciphertext only. It **can** deny service (drop or delay traffic) and see connection metadata (timing, sizes, client IPs). It **cannot** read or modify requests.
+- The relay invite is a credential for joining the overlay; the home node only listens for the `https`/`http` services. `nubilo relay revoke NAME` removes a node and rotates the invite.
+- Public listeners send `Strict-Transport-Security: max-age=31536000`. Plain HTTP only answers ACME HTTP-01 and redirects to HTTPS.
+- The LAN listener keeps its self-signed certificate (and serves the ACME certificate when the SNI is the public domain), so phones on Wi-Fi keep working when the relay is down.
+
+## 15b. Invites, upload tokens and configuration profiles
+
+- **Invites** (`nbi-` + 20 Crockford base32 characters, 100 bits) are stored as Argon2id hashes, expire (default 24 h, max 30 days), are single-use unless an admin sets `max_uses`, and are admin-only to create. Redeeming creates the user (or pairs a device for an existing one) and the pairing challenge in one transaction; a failed redeem (e.g. username taken) does not consume a use. QR links are `https://<domain>/join#<code>`: the code stays in the URL fragment and never reaches the server's logs.
+- **Upload tokens** (`POST /api/v1/me/upload-token`) are 256-bit bearer secrets bound to one device, valid 24 h, stored as SHA-256, and accepted only for `PUT /sync/v1/blob/*`, `POST /api/v1/photos/check` and `/commit`. They exist because iOS background uploads cannot be signed at send time (signatures expire after 60 s). A stolen token lets an attacker add photos to that user's library until it expires or the device is revoked; it cannot read anything.
+- **Configuration profiles** (`POST /api/v1/me/profile`) contain a freshly created CalDAV/CardDAV app password in plaintext (Apple requires it). The `.mobileconfig` is encrypted with the blob key at rest, downloadable **once** within 15 minutes from an unguessable URL, then wiped. Profiles are unsigned for now (iOS shows "Unverified"); revoke the app password to cut off a lost device.
 
 ## 16. Security review gates
 

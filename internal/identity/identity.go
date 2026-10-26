@@ -84,10 +84,34 @@ type Device struct {
 	CreatedAt   int64
 	LastSeen    *int64
 	RevokedAt   *int64
+	// UserID is the owning user. Empty only for synthetic system devices
+	// (local admin token, local operator), which act on all data.
+	UserID     string
+	UserRole   UserRole
+	UserStatus string
 }
 
+// Revoked reports whether the device may no longer authenticate, either
+// because it was revoked or because its user is disabled.
 func (d *Device) Revoked() bool {
-	return d.RevokedAt != nil
+	return d.RevokedAt != nil || d.UserStatus == UserDisabled
+}
+
+// System reports whether d is a synthetic, user-less admin device.
+func (d *Device) System() bool {
+	return d != nil && d.UserID == "" && d.Role == RoleAdmin
+}
+
+// IsAdmin reports whether d may use admin APIs: system devices, and
+// non-DAV devices of admin users.
+func (d *Device) IsAdmin() bool {
+	if d == nil || d.Revoked() {
+		return false
+	}
+	if d.System() {
+		return true
+	}
+	return d.UserRole == UserAdmin && d.Role != RoleDAV
 }
 
 type PairingSession struct {
@@ -101,7 +125,10 @@ type Service struct {
 	TTL         time.Duration
 	MaxAttempts int
 	MaxActive   int
-	now         func() time.Time
+	// OnUserCreated runs after a user row is committed (default collections).
+	OnUserCreated func(ctx context.Context, u *User) error
+	now           func() time.Time
+	basic         *basicCache
 }
 
 func NewService(st *store.Store) *Service {
@@ -111,6 +138,7 @@ func NewService(st *store.Store) *Service {
 		MaxAttempts: 5,
 		MaxActive:   3,
 		now:         time.Now,
+		basic:       newBasicCache(),
 	}
 }
 
@@ -125,16 +153,22 @@ func SanitizeName(name string) (string, error) {
 	return name, nil
 }
 
-func (s *Service) StartPairing(ctx context.Context, role Role) (code string, sess PairingSession, err error) {
+// StartPairing opens a pairing session whose device will belong to userID
+// ("" means the default owner admin).
+func (s *Service) StartPairing(ctx context.Context, userID string, role Role) (code string, sess PairingSession, err error) {
 	if role == "" {
 		role = RoleClient
+	}
+	u, err := s.resolveUser(ctx, userID)
+	if err != nil {
+		return "", sess, err
 	}
 	now := s.now()
 	var active int
 	err = s.Store.DB.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM pairing_sessions
-		WHERE completed_at IS NULL AND expires_at > ?
-	`, now.UnixMilli()).Scan(&active)
+		WHERE completed_at IS NULL AND expires_at > ? AND COALESCE(user_id, '') = ?
+	`, now.UnixMilli(), u.ID).Scan(&active)
 	if err != nil {
 		return "", sess, err
 	}
@@ -153,9 +187,9 @@ func (s *Service) StartPairing(ctx context.Context, role Role) (code string, ses
 	sess.ID = ids.New()
 	sess.ExpiresAt = now.Add(s.TTL).UnixMilli()
 	_, err = s.Store.DB.ExecContext(ctx, `
-		INSERT INTO pairing_sessions(id, code_hash, code_salt, created_at, expires_at, attempts, pending_role)
-		VALUES (?, ?, ?, ?, ?, 0, ?)
-	`, sess.ID, hash, salt, now.UnixMilli(), sess.ExpiresAt, string(role))
+		INSERT INTO pairing_sessions(id, code_hash, code_salt, created_at, expires_at, attempts, pending_role, user_id)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+	`, sess.ID, hash, salt, now.UnixMilli(), sess.ExpiresAt, string(role), u.ID)
 	if err != nil {
 		return "", sess, err
 	}
@@ -259,12 +293,12 @@ func (s *Service) Complete(ctx context.Context, pairingID string, signature []by
 		expires                    int64
 		tries                      int
 		completed                  sql.NullInt64
-		name, role                 sql.NullString
+		name, role, userID         sql.NullString
 	)
 	err := s.Store.DB.QueryRowContext(ctx, `
-		SELECT code_hash, code_salt, expires_at, attempts, completed_at, challenge, pending_pubkey, pending_name, pending_role
+		SELECT code_hash, code_salt, expires_at, attempts, completed_at, challenge, pending_pubkey, pending_name, pending_role, user_id
 		FROM pairing_sessions WHERE id = ?
-	`, pairingID).Scan(&hash, &salt, &expires, &tries, &completed, &challenge, &pub, &name, &role)
+	`, pairingID).Scan(&hash, &salt, &expires, &tries, &completed, &challenge, &pub, &name, &role, &userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -291,6 +325,10 @@ func (s *Service) Complete(ctx context.Context, pairingID string, signature []by
 	if r == "" {
 		r = RoleClient
 	}
+	u, err := s.resolveUser(ctx, userID.String)
+	if err != nil {
+		return nil, err
+	}
 	dev := &Device{
 		ID:          ids.New(),
 		Name:        name.String,
@@ -299,6 +337,9 @@ func (s *Service) Complete(ctx context.Context, pairingID string, signature []by
 		Permissions: DefaultPermissions(r),
 		CreatedAt:   now,
 		LastSeen:    &now,
+		UserID:      u.ID,
+		UserRole:    u.Role,
+		UserStatus:  u.Status,
 	}
 	perm, err := json.Marshal(dev.Permissions)
 	if err != nil {
@@ -306,9 +347,9 @@ func (s *Service) Complete(ctx context.Context, pairingID string, signature []by
 	}
 	err = s.Store.WithWrite(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`
-			INSERT INTO devices(id, name, public_key, role, permissions, created_at, last_seen)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, dev.ID, dev.Name, dev.PublicKey, string(dev.Role), string(perm), dev.CreatedAt, now); err != nil {
+			INSERT INTO devices(id, name, public_key, role, permissions, created_at, last_seen, user_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, dev.ID, dev.Name, dev.PublicKey, string(dev.Role), string(perm), dev.CreatedAt, now, dev.UserID); err != nil {
 			return err
 		}
 		_, err := tx.Exec(`
@@ -324,19 +365,27 @@ func (s *Service) Complete(ctx context.Context, pairingID string, signature []by
 	return dev, nil
 }
 
+const deviceSelect = `
+	SELECT d.id, d.name, d.public_key, d.role, d.permissions, d.created_at, d.last_seen, d.revoked_at,
+	       COALESCE(d.user_id, ''), COALESCE(u.role, ''), COALESCE(u.status, '')
+	FROM devices d LEFT JOIN users u ON u.id = d.user_id
+`
+
 func (s *Service) Get(ctx context.Context, id string) (*Device, error) {
-	d, err := s.scanDevice(ctx, `SELECT id, name, public_key, role, permissions, created_at, last_seen, revoked_at FROM devices WHERE id = ?`, id)
+	d, err := s.scanDevice(ctx, deviceSelect+` WHERE d.id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
 	return d, nil
 }
 
+// List returns every device of every user (admin view).
 func (s *Service) List(ctx context.Context) ([]Device, error) {
-	rows, err := s.Store.DB.QueryContext(ctx, `
-		SELECT id, name, public_key, role, permissions, created_at, last_seen, revoked_at
-		FROM devices ORDER BY created_at
-	`)
+	return s.listDevices(ctx, ``)
+}
+
+func (s *Service) listDevices(ctx context.Context, where string, args ...any) ([]Device, error) {
+	rows, err := s.Store.DB.QueryContext(ctx, deviceSelect+where+` ORDER BY d.created_at`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +415,7 @@ func (s *Service) Revoke(ctx context.Context, id string) error {
 	}
 	_, _ = s.Store.DB.ExecContext(ctx, `UPDATE app_passwords SET revoked_at = COALESCE(revoked_at, ?) WHERE device_id = ?`, now, id)
 	_, _ = s.Store.DB.ExecContext(ctx, `DELETE FROM nonces WHERE device_id = ?`, id)
+	s.basic.forgetDevice(id)
 	return nil
 }
 
@@ -401,8 +451,14 @@ func (s *Service) RotatePublicKey(ctx context.Context, id string, pub []byte) er
 	return nil
 }
 
-func (s *Service) Enroll(ctx context.Context, name string, pub []byte, role Role) (*Device, error) {
+// Enroll creates a key-authenticated device for userID ("" = default owner)
+// without a pairing code. Used by local tooling on the server host.
+func (s *Service) Enroll(ctx context.Context, userID, name string, pub []byte, role Role) (*Device, error) {
 	name, err := SanitizeName(name)
+	if err != nil {
+		return nil, err
+	}
+	u, err := s.resolveUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -421,15 +477,18 @@ func (s *Service) Enroll(ctx context.Context, name string, pub []byte, role Role
 		Permissions: DefaultPermissions(role),
 		CreatedAt:   now,
 		LastSeen:    &now,
+		UserID:      u.ID,
+		UserRole:    u.Role,
+		UserStatus:  u.Status,
 	}
 	perm, err := json.Marshal(dev.Permissions)
 	if err != nil {
 		return nil, err
 	}
 	_, err = s.Store.DB.ExecContext(ctx, `
-		INSERT INTO devices(id, name, public_key, role, permissions, created_at, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, dev.ID, dev.Name, dev.PublicKey, string(dev.Role), string(perm), now, now)
+		INSERT INTO devices(id, name, public_key, role, permissions, created_at, last_seen, user_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, dev.ID, dev.Name, dev.PublicKey, string(dev.Role), string(perm), now, now, dev.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -461,10 +520,11 @@ func scanDeviceRow(sc scanner) (*Device, error) {
 	var pub []byte
 	var perm string
 	var last, rev sql.NullInt64
-	var role string
-	if err := sc.Scan(&d.ID, &d.Name, &pub, &role, &perm, &d.CreatedAt, &last, &rev); err != nil {
+	var role, userRole string
+	if err := sc.Scan(&d.ID, &d.Name, &pub, &role, &perm, &d.CreatedAt, &last, &rev, &d.UserID, &userRole, &d.UserStatus); err != nil {
 		return nil, err
 	}
+	d.UserRole = UserRole(userRole)
 	d.PublicKey = pub
 	d.Role = Role(role)
 	d.LastSeen = store.NullInt64(last)

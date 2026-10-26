@@ -45,18 +45,13 @@ func calServer(t *testing.T) (*httptest.Server, *identity.Device, string, *ident
 	}
 	t.Cleanup(func() { st.Close() })
 	eng := syncengine.New(st)
-	if _, err := eng.EnsureNamedCollection(context.Background(), "files", "Files"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := eng.EnsureNamedCollection(context.Background(), "calendar", "Personal"); err != nil {
-		t.Fatal(err)
-	}
 	idsvc := identity.NewService(st)
-	calDev, calPass, err := idsvc.CreateDAVDevice(context.Background(), "iphone-cal", "caldav")
+	idsvc.OnUserCreated = func(ctx context.Context, u *identity.User) error { return eng.EnsureUserDefaults(ctx, u.ID) }
+	calDev, calPass, err := idsvc.CreateAppPassword(context.Background(), "", "iphone-cal", "caldav")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileDev, filePass, err := idsvc.CreateDAVDevice(context.Background(), "iphone-files", "webdav")
+	fileDev, filePass, err := idsvc.CreateAppPassword(context.Background(), "", "iphone-files", "webdav")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +63,9 @@ func calServer(t *testing.T) (*httptest.Server, *identity.Device, string, *ident
 	mux.Handle("/dav", davH)
 	mux.Handle("/caldav/", calH)
 	mux.Handle("/caldav", calH)
-	mux.Handle("/.well-known/caldav", dav.WellKnown(dav.CalDAVPrefix+"/user/", calH))
-	mux.Handle("/.well-known/caldav/", dav.WellKnown(dav.CalDAVPrefix+"/user/", calH))
+	wk := auth.Middleware(dav.WellKnown(dav.CalDAVPrefix, eng, calH))
+	mux.Handle("/.well-known/caldav", wk)
+	mux.Handle("/.well-known/caldav/", wk)
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts, calDev, calPass, fileDev, filePass, eng
@@ -112,7 +108,7 @@ func TestUnauthenticatedCalDAV(t *testing.T) {
 }
 
 func TestWellKnownCalDAV(t *testing.T) {
-	ts, _, _, _, _, _ := calServer(t)
+	ts, dev, pass, _, _, _ := calServer(t)
 	c := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -122,11 +118,21 @@ func TestWellKnownCalDAV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated discovery %d", resp.StatusCode)
+	}
+	r, _ := http.NewRequest(http.MethodGet, ts.URL+"/.well-known/caldav", nil)
+	r.SetBasicAuth(dev.ID, pass)
+	resp, err = c.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMovedPermanently {
 		t.Fatalf("%d", resp.StatusCode)
 	}
-	if loc := resp.Header.Get("Location"); loc != "/caldav/user/" {
+	if loc := resp.Header.Get("Location"); loc != "/caldav/u/owner/" {
 		t.Fatalf("location %q", loc)
 	}
 }
@@ -330,7 +336,7 @@ func TestCalDAVObjectIDNotInHref(t *testing.T) {
 	if resp.StatusCode >= 300 {
 		t.Fatalf("put %d", resp.StatusCode)
 	}
-	cols, _ := eng.ChildCollections(context.Background(), "calendar", "")
+	cols, _ := eng.ChildCollections(context.Background(), "", "calendar", "")
 	if len(cols) != 1 {
 		t.Fatalf("calendars %d", len(cols))
 	}
@@ -386,7 +392,7 @@ func TestCalDAVPropPatchAppleColor(t *testing.T) {
 	if !bytes.Contains(b, []byte("200 OK")) {
 		t.Fatalf("proppatch body %s", b)
 	}
-	col, err := eng.FindChildCollection(context.Background(), "calendar", "", "Personal")
+	col, err := eng.FindChildCollection(context.Background(), "", "calendar", "", "Personal")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +489,7 @@ func TestCalDAVVTODOPutGet(t *testing.T) {
 
 func TestCalDAVVTODOComponentSet(t *testing.T) {
 	ts, dev, pass, _, _, eng := calServer(t)
-	col, err := eng.FindChildCollection(context.Background(), "calendar", "", "Personal")
+	col, err := eng.FindChildCollection(context.Background(), "", "calendar", "", "Personal")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,11 +580,16 @@ func extractGetctag(body, hrefNeedle string) string {
 
 func TestCalDAVGetctagChangesOnPush(t *testing.T) {
 	ts, dev, pass, _, _, eng := calServer(t)
+	personal, err := eng.FindChildCollection(context.Background(), dev.UserID, "calendar", "", "Personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	personalHref := "/caldav/user/calendars/" + personal.ID
 	before := propfindGetctag(t, ts, "/caldav/user/calendars/", dev.ID, pass)
 	if !strings.Contains(strings.ToLower(before), "getctag") {
 		t.Fatalf("missing getctag %s", before)
 	}
-	personalBefore := extractGetctag(before, "/caldav/user/calendars/Personal")
+	personalBefore := extractGetctag(before, personalHref)
 	if personalBefore == "" {
 		t.Fatalf("no personal ctag in %s", before)
 	}
@@ -588,11 +599,11 @@ func TestCalDAVGetctagChangesOnPush(t *testing.T) {
 		t.Fatalf("put %d", resp.StatusCode)
 	}
 	after := propfindGetctag(t, ts, "/caldav/user/calendars/", dev.ID, pass)
-	personalAfter := extractGetctag(after, "/caldav/user/calendars/Personal")
+	personalAfter := extractGetctag(after, personalHref)
 	if personalAfter == "" || personalAfter == personalBefore {
 		t.Fatalf("ctag did not change: before=%q after=%q body=%s", personalBefore, personalAfter, after)
 	}
-	cols, _ := eng.ChildCollections(context.Background(), "calendar", "")
+	cols, _ := eng.ChildCollections(context.Background(), "", "calendar", "")
 	if len(cols) == 0 {
 		t.Fatal("no calendars")
 	}

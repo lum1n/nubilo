@@ -72,7 +72,7 @@ func TestUnauthenticatedAPI(t *testing.T) {
 
 func TestPairAndSignedSync(t *testing.T) {
 	ts, idsvc, st := start(t)
-	code, _, err := idsvc.StartPairing(context.Background(), identity.RoleClient)
+	code, _, err := idsvc.StartPairing(context.Background(), "", identity.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,11 @@ func TestPairAndSignedSync(t *testing.T) {
 	resp.Body.Close()
 
 	eng := syncengine.New(st)
-	col, err := eng.CreateCollection(context.Background(), "files", "docs", "", json.RawMessage(`{}`))
+	pairedDev, err := idsvc.Get(context.Background(), cr.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, err := eng.CreateCollection(context.Background(), pairedDev.UserID, "files", "docs", "", json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +140,7 @@ func TestPairAndSignedSync(t *testing.T) {
 func TestRevokedDeviceLosesAccess(t *testing.T) {
 	ts, idsvc, _ := start(t)
 	pub, priv, _ := ncrypto.GenerateEd25519()
-	dev, err := idsvc.Enroll(context.Background(), "x", pub, identity.RoleClient)
+	dev, err := idsvc.Enroll(context.Background(), "", "x", pub, identity.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +171,7 @@ func TestRevokedDeviceLosesAccess(t *testing.T) {
 
 func TestPairBeginRateLimit(t *testing.T) {
 	ts, idsvc, _ := start(t)
-	_, _, _ = idsvc.StartPairing(context.Background(), identity.RoleClient)
+	_, _, _ = idsvc.StartPairing(context.Background(), "", identity.RoleClient)
 	pub, _, _ := ncrypto.GenerateEd25519()
 	body, _ := json.Marshal(map[string]string{"code": "AAAAA-BBBBB", "name": "n", "public_key": base64.RawStdEncoding.EncodeToString(pub)})
 	limited := false
@@ -190,7 +194,7 @@ func TestPairBeginRateLimit(t *testing.T) {
 func TestBlobPathNotFromURLUserPath(t *testing.T) {
 	ts, idsvc, _ := start(t)
 	pub, priv, _ := ncrypto.GenerateEd25519()
-	dev, _ := idsvc.Enroll(context.Background(), "x", pub, identity.RoleClient)
+	dev, _ := idsvc.Enroll(context.Background(), "", "x", pub, identity.RoleClient)
 	payload := []byte("hi")
 	// traversal-like hash is rejected (must be 64 hex)
 	req, _ := http.NewRequest("PUT", ts.URL+"/sync/v1/blob/../../etc/passwd", bytes.NewReader(payload))
@@ -294,7 +298,7 @@ func TestPairCompleteRateLimit(t *testing.T) {
 func TestDavRoleCannotSync(t *testing.T) {
 	ts, idsvc, _ := start(t)
 	pub, priv, _ := ncrypto.GenerateEd25519()
-	dev, err := idsvc.Enroll(context.Background(), "iphone", pub, identity.RoleDAV)
+	dev, err := idsvc.Enroll(context.Background(), "", "iphone", pub, identity.RoleDAV)
 	if err != nil {
 		t.Fatal(err)
 	}

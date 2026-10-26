@@ -35,12 +35,12 @@ func setup(t *testing.T) *env {
 	t.Cleanup(func() { st.Close() })
 	idsvc := identity.NewService(st)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, err := idsvc.Enroll(context.Background(), "agent", pub, identity.RoleAgent)
+	dev, err := idsvc.Enroll(context.Background(), "", "agent", pub, identity.RoleAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	eng := syncengine.New(st)
-	col, err := eng.CreateCollection(context.Background(), "files", "docs", "", json.RawMessage(`{}`))
+	col, err := eng.CreateCollection(context.Background(), dev.UserID, "files", "docs", "", json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func push(t *testing.T, e *env, key string, items ...syncengine.ChangeInput) []s
 func put(t *testing.T, e *env, payload []byte) string {
 	t.Helper()
 	sum := ncrypto.SHA256Hex(payload)
-	got, _, err := e.st.PutBlob(e.ctx, bytes.NewReader(payload), sum)
+	got, _, err := e.st.PutUserBlob(e.ctx, e.dev.UserID, bytes.NewReader(payload), sum)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func put(t *testing.T, e *env, payload []byte) string {
 
 func TestCountLiveObjectsByKindNested(t *testing.T) {
 	e := setup(t)
-	child, err := e.eng.CreateCollection(e.ctx, "files", "sub", e.col.ID, nil)
+	child, err := e.eng.CreateCollection(e.ctx, "", "files", "sub", e.col.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestCreateUpdateDelete(t *testing.T) {
 	if r[0].Status != "ok" {
 		t.Fatalf("%+v", r[0])
 	}
-	ch, err := e.eng.GetChanges(e.ctx, e.dev, 0, 50, "")
+	ch, err := e.eng.GetChanges(e.ctx, syncengine.ScopeOf(e.dev), 0, 50, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestConcurrentUpdatesConflict(t *testing.T) {
 	})
 	pub2, _, _ := ncrypto.GenerateEd25519()
 	idsvc := identity.NewService(e.st)
-	dev2, err := idsvc.Enroll(e.ctx, "other", pub2, identity.RoleClient)
+	dev2, err := idsvc.Enroll(e.ctx, "", "other", pub2, identity.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestDuplicateDeliveryIdempotent(t *testing.T) {
 	if r1[0].Seq != r2[0].Seq || r1[0].Revision != r2[0].Revision {
 		t.Fatalf("%+v vs %+v", r1[0], r2[0])
 	}
-	ch, _ := e.eng.GetChanges(e.ctx, e.dev, 0, 50, "")
+	ch, _ := e.eng.GetChanges(e.ctx, syncengine.ScopeOf(e.dev), 0, 50, "")
 	if len(ch.Changes) != 1 {
 		t.Fatalf("journal grew: %d", len(ch.Changes))
 	}
@@ -207,8 +207,8 @@ func TestGetChangesReplay(t *testing.T) {
 	push(t, e, ids.New(), syncengine.ChangeInput{
 		ObjectID: ids.New(), CollectionID: e.col.ID, Op: syncengine.OpCreate, ContentHash: b, BlobID: b, Size: 1, Metadata: json.RawMessage(`{}`),
 	})
-	a, _ := e.eng.GetChanges(e.ctx, e.dev, 0, 10, "")
-	c, _ := e.eng.GetChanges(e.ctx, e.dev, 0, 10, "")
+	a, _ := e.eng.GetChanges(e.ctx, syncengine.ScopeOf(e.dev), 0, 10, "")
+	c, _ := e.eng.GetChanges(e.ctx, syncengine.ScopeOf(e.dev), 0, 10, "")
 	if len(a.Changes) != len(c.Changes) || a.Changes[0].Seq != c.Changes[0].Seq {
 		t.Fatal("GET_CHANGES must be repeatable before ACK")
 	}
@@ -216,7 +216,7 @@ func TestGetChangesReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ACK does not hide journal; client still can fetch if it wants
-	d, _ := e.eng.GetChanges(e.ctx, e.dev, a.NextSeq, 10, "")
+	d, _ := e.eng.GetChanges(e.ctx, syncengine.ScopeOf(e.dev), a.NextSeq, 10, "")
 	if len(d.Changes) != 0 {
 		t.Fatalf("unexpected %v", d.Changes)
 	}
@@ -224,14 +224,14 @@ func TestGetChangesReplay(t *testing.T) {
 
 func TestStaleAndFutureCursor(t *testing.T) {
 	e := setup(t)
-	h, err := e.eng.Hello(e.ctx, 99, false)
+	h, err := e.eng.Hello(e.ctx, syncengine.ScopeOf(e.dev), 99, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !h.NeedReconcile {
 		t.Fatal("cursor ahead should reconcile")
 	}
-	h, _ = e.eng.Hello(e.ctx, 0, true)
+	h, _ = e.eng.Hello(e.ctx, syncengine.ScopeOf(e.dev), 0, true)
 	if !h.NeedReconcile {
 		t.Fatal("restore hint")
 	}
@@ -254,7 +254,7 @@ func TestPartialBatch(t *testing.T) {
 	if res[1].Status == "ok" {
 		t.Fatalf("second should fail: %+v", res[1])
 	}
-	ch, _ := e.eng.GetChanges(e.ctx, e.dev, 0, 10, "")
+	ch, _ := e.eng.GetChanges(e.ctx, syncengine.ScopeOf(e.dev), 0, 10, "")
 	if len(ch.Changes) != 1 {
 		t.Fatalf("only first should commit, got %d", len(ch.Changes))
 	}
@@ -298,7 +298,7 @@ func TestAckDoesNotMoveBackwards(t *testing.T) {
 	e := setup(t)
 	b := put(t, e, []byte("n"))
 	push(t, e, ids.New(), syncengine.ChangeInput{ObjectID: ids.New(), CollectionID: e.col.ID, Op: syncengine.OpCreate, ContentHash: b, BlobID: b, Size: 1, Metadata: json.RawMessage(`{}`)})
-	ch, _ := e.eng.GetChanges(e.ctx, e.dev, 0, 10, "")
+	ch, _ := e.eng.GetChanges(e.ctx, syncengine.ScopeOf(e.dev), 0, 10, "")
 	if err := e.eng.Ack(e.ctx, e.dev.ID, ch.NextSeq); err != nil {
 		t.Fatal(err)
 	}

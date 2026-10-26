@@ -36,11 +36,11 @@ func TestBackupRestore(t *testing.T) {
 	eng := syncengine.New(st)
 	idsvc := identity.NewService(st)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, _ := idsvc.Enroll(context.Background(), "d", pub, identity.RoleAgent)
-	col, _ := eng.CreateCollection(context.Background(), "files", "f", "", json.RawMessage(`{}`))
+	dev, _ := idsvc.Enroll(context.Background(), "", "d", pub, identity.RoleAgent)
+	col, _ := eng.CreateCollection(context.Background(), dev.UserID, "files", "f", "", json.RawMessage(`{}`))
 	payload := []byte("keep-me")
 	sum := ncrypto.SHA256Hex(payload)
-	_, _, _ = st.PutBlob(context.Background(), bytes.NewReader(payload), sum)
+	_, _, _ = st.PutUserBlob(context.Background(), dev.UserID, bytes.NewReader(payload), sum)
 	_, err = eng.Push(context.Background(), dev, ids.New(), []syncengine.ChangeInput{{
 		ObjectID: ids.New(), CollectionID: col.ID, Op: syncengine.OpCreate, ContentHash: sum, BlobID: sum, Size: int64(len(payload)), Metadata: json.RawMessage(`{}`),
 	}})
@@ -124,7 +124,7 @@ func TestBackupRestorePhotosDrill(t *testing.T) {
 	eng := syncengine.New(st)
 	idsvc := identity.NewService(st)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, _ := idsvc.Enroll(context.Background(), "d", pub, identity.RoleAgent)
+	dev, _ := idsvc.Enroll(context.Background(), "", "d", pub, identity.RoleAgent)
 	img := image.NewRGBA(image.Rect(0, 0, 40, 30))
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 80}); err != nil {
@@ -224,11 +224,11 @@ func TestStreamingBackupManyChunks(t *testing.T) {
 	eng := syncengine.New(st)
 	idsvc := identity.NewService(st)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, _ := idsvc.Enroll(context.Background(), "d", pub, identity.RoleAgent)
-	col, _ := eng.CreateCollection(context.Background(), "files", "f", "", json.RawMessage(`{}`))
+	dev, _ := idsvc.Enroll(context.Background(), "", "d", pub, identity.RoleAgent)
+	col, _ := eng.CreateCollection(context.Background(), dev.UserID, "files", "f", "", json.RawMessage(`{}`))
 	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz"), 20) // > several chunk sizes
 	sum := ncrypto.SHA256Hex(payload)
-	_, _, _ = st.PutBlob(context.Background(), bytes.NewReader(payload), sum)
+	_, _, _ = st.PutUserBlob(context.Background(), dev.UserID, bytes.NewReader(payload), sum)
 	_, err = eng.Push(context.Background(), dev, ids.New(), []syncengine.ChangeInput{{
 		ObjectID: ids.New(), CollectionID: col.ID, Op: syncengine.OpCreate, ContentHash: sum, BlobID: sum, Size: int64(len(payload)), Metadata: json.RawMessage(`{}`),
 	}})

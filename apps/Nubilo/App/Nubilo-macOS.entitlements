@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists/1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	The App Sandbox is off on purpose. The Mac app runs the bundled `nubilo`
+	binary, which serves on ports 443/8443, writes ~/.nubilo and
+	~/.nubilo-agent, installs LaunchAgents in ~/Library/LaunchAgents and
+	opens a browser. A sandboxed parent would force all of that into the
+	sandbox too (child processes inherit it), which the server cannot run in.
+	That also means the macOS build cannot ship on the Mac App Store; it is
+	distributed signed with Developer ID and notarized.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

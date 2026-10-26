@@ -6,12 +6,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"nubilo/internal/auth"
 	"nubilo/internal/authz"
 	"nubilo/internal/photos"
+	"nubilo/internal/store"
 	"nubilo/internal/syncengine"
 )
 
@@ -40,7 +42,7 @@ func (s *Server) authedAny(h http.HandlerFunc) http.HandlerFunc {
 				s.rejectAuth(w, r, err)
 				return
 			}
-			dev, err = s.IDs.AuthenticatePassword(r.Context(), user, pass)
+			dev, err = s.IDs.AuthenticateBasic(r.Context(), user, pass)
 			if err != nil {
 				s.rejectAuth(w, r, err)
 				return
@@ -52,11 +54,13 @@ func (s *Server) authedAny(h http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) handlePhotosList(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.PhotosRead, ""); err != nil {
+	if err := authz.Allow(dev, authz.PhotosRead); err != nil || dev.UserID == "" {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	objs, err := s.photos().List(r.Context())
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	objs, next, err := s.photos().List(r.Context(), dev.UserID, q.Get("after"), limit)
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
@@ -65,12 +69,12 @@ func (s *Server) handlePhotosList(w http.ResponseWriter, r *http.Request) {
 	for i := range objs {
 		out = append(out, photoJSON(&objs[i]))
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"photos": out})
+	s.writeJSON(w, http.StatusOK, map[string]any{"photos": out, "next": next})
 }
 
 func (s *Server) handlePhotosUpload(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.PhotosWrite, ""); err != nil {
+	if err := authz.Allow(dev, authz.PhotosWrite); err != nil || dev.UserID == "" {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -113,11 +117,11 @@ func (s *Server) handlePhotoThumb(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) servePhoto(w http.ResponseWriter, r *http.Request, rendition string) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.PhotosRead, ""); err != nil {
+	if err := authz.Allow(dev, authz.PhotosRead); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	obj, err := s.photos().Get(r.Context(), r.PathValue("id"))
+	obj, err := s.photos().Get(r.Context(), dev, r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -143,5 +147,151 @@ func photoJSON(o *syncengine.Object) map[string]any {
 	out["revision"] = o.Revision
 	out["size"] = o.Size
 	out["content_hash"] = o.ContentHash
+	out["collection_id"] = o.CollectionID
+	if o.Kind == photos.AlbumItemKind {
+		out["photo_id"] = photos.AlbumItemPhotoID(o.Metadata)
+	}
 	return out
+}
+
+func (s *Server) handlePhotosCheck(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosWrite); err != nil || dev.UserID == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		Hashes []string `json:"hashes"`
+	}
+	if err := s.readJSON(r, &req); err != nil || len(req.Hashes) > 1000 {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	missing, err := s.photos().Missing(r.Context(), dev.UserID, req.Hashes)
+	if err != nil {
+		http.Error(w, "internal", http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"missing": missing})
+}
+
+func (s *Server) handlePhotosCommit(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosWrite); err != nil || dev.UserID == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		BlobID        string `json:"blob_id"`
+		Name          string `json:"name"`
+		TakenAt       int64  `json:"taken_at"`
+		LocalID       string `json:"local_id"`
+		LiveVideoBlob string `json:"live_video_blob"`
+	}
+	if err := s.readJSON(r, &req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	req.BlobID = strings.ToLower(req.BlobID)
+	req.LiveVideoBlob = strings.ToLower(req.LiveVideoBlob)
+	if !store.IsBlobID(req.BlobID) || (req.LiveVideoBlob != "" && !store.IsBlobID(req.LiveVideoBlob)) || len(req.LocalID) > 256 {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	obj, err := s.photos().Commit(r.Context(), dev, photos.CommitRequest{
+		BlobID: req.BlobID, Name: req.Name, TakenAtMS: req.TakenAt, LocalID: req.LocalID, LiveVideoBlob: req.LiveVideoBlob,
+	})
+	if errors.Is(err, photos.ErrForbidden) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, photoJSON(obj))
+}
+
+func (s *Server) handleAlbums(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosRead); err != nil || dev.UserID == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	albums, err := s.photos().Albums(r.Context(), dev.UserID)
+	if err != nil {
+		http.Error(w, "internal", http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"albums": albums})
+}
+
+func (s *Server) handleCreateAlbum(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosWrite); err != nil || dev.UserID == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := s.readJSON(r, &req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	a, err := s.photos().CreateAlbum(r.Context(), dev.UserID, req.Name)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, a)
+}
+
+func (s *Server) handleAlbumItems(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosRead); err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	objs, next, err := s.photos().AlbumItems(r.Context(), dev, r.PathValue("id"), q.Get("after"), limit)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	out := make([]map[string]any, 0, len(objs))
+	for i := range objs {
+		out = append(out, photoJSON(&objs[i]))
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"items": out, "next": next})
+}
+
+func (s *Server) handleAddAlbumItems(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosWrite); err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		PhotoIDs []string `json:"photo_ids"`
+	}
+	if err := s.readJSON(r, &req); err != nil || len(req.PhotoIDs) == 0 || len(req.PhotoIDs) > 500 {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	items, err := s.photos().AddToAlbum(r.Context(), dev, r.PathValue("id"), req.PhotoIDs)
+	if errors.Is(err, photos.ErrForbidden) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	out := make([]map[string]any, 0, len(items))
+	for i := range items {
+		out = append(out, photoJSON(&items[i]))
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }

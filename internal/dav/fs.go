@@ -38,26 +38,48 @@ type FS struct {
 	Engine *syncengine.Engine
 	Store  *store.Store
 	Prefix string
+	// Photos builds the photo service used for Camera Upload ingest.
+	Photos func() photos.Service
 }
 
 func NewFS(eng *syncengine.Engine, st *store.Store) *FS {
 	return &FS{Engine: eng, Store: st, Prefix: Prefix}
 }
 
+func (f *FS) photoService() photos.Service {
+	if f.Photos != nil {
+		return f.Photos()
+	}
+	return photos.Service{Engine: f.Engine, Store: f.Store}
+}
+
+// The WebDAV tree is per user:
+//
+//	/dav/files/<root>/…             the caller's own file roots
+//	/dav/shared/<owner>/<root>/…    roots other users shared with the caller
 type nodeKind int
 
 const (
 	nodeRoot nodeKind = iota
 	nodeFilesHome
+	nodeSharedHome
+	nodeSharedOwner
 	nodeCollection
 	nodeFile
 )
 
+const (
+	filesSeg  = "files"
+	sharedSeg = "shared"
+)
+
 type node struct {
-	kind nodeKind
-	path string
-	col  *syncengine.Collection
-	obj  *syncengine.Object
+	kind   nodeKind
+	path   string
+	col    *syncengine.Collection
+	obj    *syncengine.Object
+	access authz.Access // for collections and files
+	owner  string       // nodeSharedOwner: owner username
 }
 
 func (f *FS) resolve(ctx context.Context, name string) (*node, error) {
@@ -79,32 +101,67 @@ func (f *FS) resolve(ctx context.Context, name string) (*node, error) {
 	if len(segs) == 0 {
 		return &node{kind: nodeRoot, path: f.Prefix + "/"}, nil
 	}
-	if segs[0] != "files" {
+	u, err := currentUser(ctx, f.Engine)
+	if err != nil {
+		return nil, err
+	}
+	var col *syncengine.Collection
+	var access authz.Access
+	var rest []string
+	switch segs[0] {
+	case filesSeg:
+		if len(segs) == 1 {
+			return &node{kind: nodeFilesHome, path: Join(f.Prefix, filesSeg)}, nil
+		}
+		c, err := f.Engine.FindChildCollection(ctx, u.id, "files", "", segs[1])
+		if err != nil {
+			if errors.Is(err, syncengine.ErrNotFound) {
+				return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
+			}
+			return nil, err
+		}
+		col, access, rest = c, authz.AccessOwner, segs[2:]
+	case sharedSeg:
+		if len(segs) == 1 {
+			return &node{kind: nodeSharedHome, path: Join(f.Prefix, sharedSeg)}, nil
+		}
+		roots, err := f.sharedRoots(ctx, u, segs[1])
+		if err != nil {
+			return nil, err
+		}
+		if len(roots) == 0 {
+			return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
+		}
+		if len(segs) == 2 {
+			return &node{kind: nodeSharedOwner, path: Join(f.Prefix, sharedSeg, segs[1]), owner: roots[0].OwnerName}, nil
+		}
+		for i := range roots {
+			if roots[i].Name == segs[2] {
+				col = &roots[i]
+				access = authz.AccessRead
+				if roots[i].Access == authz.AccessWrite.String() {
+					access = authz.AccessWrite
+				}
+				break
+			}
+		}
+		if col == nil {
+			return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
+		}
+		rest = segs[3:]
+	default:
 		return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 	}
-	if len(segs) == 1 {
-		return &node{kind: nodeFilesHome, path: Join(f.Prefix, "files")}, nil
-	}
-	parentID := ""
-	var col *syncengine.Collection
-	for i := 1; i < len(segs); i++ {
-		name := segs[i]
-		child, err := f.Engine.FindChildCollection(ctx, "files", parentID, name)
+	for i, name := range rest {
+		child, err := f.Engine.FindChildCollection(ctx, "", "files", col.ID, name)
 		if err == nil {
 			col = child
-			parentID = child.ID
-			if i == len(segs)-1 {
-				return &node{kind: nodeCollection, path: p, col: col}, nil
-			}
 			continue
 		}
 		if !errors.Is(err, syncengine.ErrNotFound) {
 			return nil, err
 		}
-		if col == nil {
-			return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-		}
-		if i != len(segs)-1 {
+		if i != len(rest)-1 {
 			return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 		}
 		obj, err := f.Engine.FindObjectByName(ctx, col.ID, name)
@@ -114,21 +171,43 @@ func (f *FS) resolve(ctx context.Context, name string) (*node, error) {
 			}
 			return nil, err
 		}
-		return &node{kind: nodeFile, path: p, col: col, obj: obj}, nil
+		return &node{kind: nodeFile, path: p, col: col, obj: obj, access: access}, nil
 	}
-	return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
+	return &node{kind: nodeCollection, path: p, col: col, access: access}, nil
 }
 
-func (f *FS) allow(ctx context.Context, write bool, collectionID string) error {
-	dev := DeviceFrom(ctx)
+// sharedRoots returns file roots shared with u, optionally only those of one owner.
+func (f *FS) sharedRoots(ctx context.Context, u *davUser, owner string) ([]syncengine.Collection, error) {
+	all, err := f.Engine.SharedRoots(ctx, u.id, "files")
+	if err != nil {
+		return nil, err
+	}
+	if owner == "" {
+		return all, nil
+	}
+	out := all[:0]
+	for _, c := range all {
+		if strings.EqualFold(c.OwnerName, owner) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// allow checks the WebDAV protocol permission and, for collections and
+// files, the caller's access to them.
+func (f *FS) allow(ctx context.Context, write bool, n *node) error {
 	act := authz.DAVRead
 	if write {
 		act = authz.DAVWrite
 	}
-	if err := authz.Allow(dev, act, collectionID); err != nil {
-		return webdav.NewHTTPError(http.StatusForbidden, err)
+	if n == nil || (n.kind != nodeCollection && n.kind != nodeFile) {
+		if err := authz.Allow(DeviceFrom(ctx), act); err != nil {
+			return webdav.NewHTTPError(http.StatusForbidden, err)
+		}
+		return nil
 	}
-	return nil
+	return need(ctx, act, n.access)
 }
 
 func (f *FS) Stat(ctx context.Context, name string) (*webdav.FileInfo, error) {
@@ -136,7 +215,7 @@ func (f *FS) Stat(ctx context.Context, name string) (*webdav.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := f.allow(ctx, false, collectionID(n)); err != nil {
+	if err := f.allow(ctx, false, n); err != nil {
 		return nil, err
 	}
 	return f.info(n), nil
@@ -147,22 +226,61 @@ func (f *FS) ReadDir(ctx context.Context, name string, recursive bool) ([]webdav
 	if err != nil {
 		return nil, err
 	}
-	if err := f.allow(ctx, false, collectionID(n)); err != nil {
+	if err := f.allow(ctx, false, n); err != nil {
 		return nil, err
 	}
 	switch n.kind {
 	case nodeRoot:
-		return []webdav.FileInfo{*f.info(&node{kind: nodeFilesHome, path: Join(f.Prefix, "files")})}, nil
-	case nodeFilesHome:
-		cols, err := f.Engine.ChildCollections(ctx, "files", "")
+		return []webdav.FileInfo{
+			*f.info(&node{kind: nodeFilesHome, path: Join(f.Prefix, filesSeg)}),
+			*f.info(&node{kind: nodeSharedHome, path: Join(f.Prefix, sharedSeg)}),
+		}, nil
+	case nodeSharedHome:
+		u, err := currentUser(ctx, f.Engine)
+		if err != nil {
+			return nil, err
+		}
+		roots, err := f.sharedRoots(ctx, u, "")
+		if err != nil {
+			return nil, err
+		}
+		var out []webdav.FileInfo
+		seen := map[string]bool{}
+		for _, c := range roots {
+			if seen[c.OwnerName] {
+				continue
+			}
+			seen[c.OwnerName] = true
+			child := &node{kind: nodeSharedOwner, path: Join(n.path, c.OwnerName), owner: c.OwnerName}
+			out = append(out, *f.info(child))
+			if recursive {
+				more, err := f.ReadDir(ctx, child.path, true)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, more...)
+			}
+		}
+		return out, nil
+	case nodeFilesHome, nodeSharedOwner:
+		u, err := currentUser(ctx, f.Engine)
+		if err != nil {
+			return nil, err
+		}
+		var cols []syncengine.Collection
+		if n.kind == nodeFilesHome {
+			cols, err = f.Engine.ChildCollections(ctx, u.id, "files", "")
+		} else {
+			cols, err = f.sharedRoots(ctx, u, n.owner)
+		}
 		if err != nil {
 			return nil, err
 		}
 		var out []webdav.FileInfo
 		for i := range cols {
 			c := cols[i]
-			child := &node{kind: nodeCollection, path: Join(f.Prefix, "files", c.Name), col: &c}
-			if err := f.allow(ctx, false, c.ID); err != nil {
+			child, err := f.resolve(ctx, Join(n.path, c.Name))
+			if err != nil {
 				continue
 			}
 			out = append(out, *f.info(child))
@@ -184,13 +302,13 @@ func (f *FS) ReadDir(ctx context.Context, name string, recursive bool) ([]webdav
 
 func (f *FS) readCollection(ctx context.Context, n *node, recursive bool) ([]webdav.FileInfo, error) {
 	var out []webdav.FileInfo
-	children, err := f.Engine.ChildCollections(ctx, "files", n.col.ID)
+	children, err := f.Engine.ChildCollections(ctx, "", "files", n.col.ID)
 	if err != nil {
 		return nil, err
 	}
 	for i := range children {
 		c := children[i]
-		child := &node{kind: nodeCollection, path: Join(n.path, c.Name), col: &c}
+		child := &node{kind: nodeCollection, path: Join(n.path, c.Name), col: &c, access: n.access}
 		out = append(out, *f.info(child))
 		if recursive {
 			more, err := f.readCollection(ctx, child, true)
@@ -211,7 +329,7 @@ func (f *FS) readCollection(ctx context.Context, n *node, recursive bool) ([]web
 		if name == "" {
 			name = o.ID
 		}
-		out = append(out, *f.info(&node{kind: nodeFile, path: Join(n.path, name), col: n.col, obj: &o}))
+		out = append(out, *f.info(&node{kind: nodeFile, path: Join(n.path, name), col: n.col, obj: &o, access: n.access}))
 	}
 	return out, nil
 }
@@ -224,7 +342,7 @@ func (f *FS) Open(ctx context.Context, name string) (io.ReadCloser, error) {
 	if n.kind != nodeFile || n.obj == nil {
 		return nil, webdav.NewHTTPError(http.StatusMethodNotAllowed, errors.New("not a file"))
 	}
-	if err := f.allow(ctx, false, n.col.ID); err != nil {
+	if err := f.allow(ctx, false, n); err != nil {
 		return nil, err
 	}
 	if n.obj.BlobID == "" {
@@ -263,11 +381,11 @@ func (f *FS) Create(ctx context.Context, name string, body io.ReadCloser, opts *
 	if parent.kind != nodeCollection {
 		return nil, false, webdav.NewHTTPError(http.StatusConflict, errors.New("parent is not a collection"))
 	}
-	if err := f.allow(ctx, true, parent.col.ID); err != nil {
+	if err := f.allow(ctx, true, parent); err != nil {
 		return nil, false, err
 	}
 	dev := DeviceFrom(ctx)
-	if _, err := f.Engine.FindChildCollection(ctx, "files", parent.col.ID, fileName); err == nil {
+	if _, err := f.Engine.FindChildCollection(ctx, "", "files", parent.col.ID, fileName); err == nil {
 		return nil, false, webdav.NewHTTPError(http.StatusConflict, errors.New("name exists as collection"))
 	}
 
@@ -276,7 +394,7 @@ func (f *FS) Create(ctx context.Context, name string, body io.ReadCloser, opts *
 		return nil, false, err
 	}
 	sum := ncrypto.SHA256Hex(payload)
-	blobID, size, err := f.Store.PutBlob(ctx, bytes.NewReader(payload), sum)
+	blobID, size, err := f.Store.PutUserBlob(ctx, dev.UserID, bytes.NewReader(payload), sum)
 	if err != nil {
 		return nil, false, webdav.NewHTTPError(http.StatusRequestEntityTooLarge, err)
 	}
@@ -336,10 +454,9 @@ func (f *FS) Create(ctx context.Context, name string, body io.ReadCloser, opts *
 	}
 	// No-app iPhone path: Files.app → WebDAV "Camera Upload" folder also becomes a photo object.
 	if isCameraUploadName(parent.col.Name) && looksLikeMediaUpload(fileName, payload) {
-		svc := photos.Service{Engine: f.Engine, Store: f.Store}
-		_, _ = svc.Ingest(ctx, dev, payload, fileName, nil)
+		_, _ = f.photoService().Ingest(ctx, dev, payload, fileName, nil)
 	}
-	fi := f.info(&node{kind: nodeFile, path: p, col: parent.col, obj: obj})
+	fi := f.info(&node{kind: nodeFile, path: p, col: parent.col, obj: obj, access: parent.access})
 	return fi, created, nil
 }
 
@@ -359,19 +476,25 @@ func (f *FS) Mkdir(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	var parentID string
+	var parentID, owner string
 	switch parent.kind {
 	case nodeFilesHome:
-		parentID = ""
+		u, err := currentUser(ctx, f.Engine)
+		if err != nil {
+			return err
+		}
+		owner = u.id
 	case nodeCollection:
 		parentID = parent.col.ID
+	case nodeSharedHome, nodeSharedOwner:
+		return webdav.NewHTTPError(http.StatusForbidden, errors.New("cannot create folders in another user's space"))
 	default:
 		return webdav.NewHTTPError(http.StatusConflict, errors.New("cannot mkdir here"))
 	}
-	if err := f.allow(ctx, true, parentID); err != nil {
+	if err := f.allow(ctx, true, parent); err != nil {
 		return err
 	}
-	if _, err := f.Engine.FindChildCollection(ctx, "files", parentID, dirName); err == nil {
+	if _, err := f.Engine.FindChildCollection(ctx, owner, "files", parentID, dirName); err == nil {
 		return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
 	}
 	if parent.kind == nodeCollection {
@@ -379,7 +502,10 @@ func (f *FS) Mkdir(ctx context.Context, name string) error {
 			return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
 		}
 	}
-	_, err = f.Engine.CreateCollection(ctx, "files", dirName, parentID, nil)
+	_, err = f.Engine.CreateCollection(ctx, owner, "files", dirName, parentID, nil)
+	if errors.Is(err, syncengine.ErrCollectionExists) {
+		return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
+	}
 	return err
 }
 
@@ -389,10 +515,10 @@ func (f *FS) RemoveAll(ctx context.Context, name string, opts *webdav.RemoveAllO
 		return err
 	}
 	switch n.kind {
-	case nodeRoot, nodeFilesHome:
+	case nodeRoot, nodeFilesHome, nodeSharedHome, nodeSharedOwner:
 		return webdav.NewHTTPError(http.StatusForbidden, errors.New("cannot delete dav root"))
 	case nodeFile:
-		if err := f.allow(ctx, true, n.col.ID); err != nil {
+		if err := f.allow(ctx, true, n); err != nil {
 			return err
 		}
 		if opts != nil && opts.IfMatch.IsSet() && !opts.IfMatch.IsWildcard() {
@@ -414,7 +540,7 @@ func (f *FS) RemoveAll(ctx context.Context, name string, opts *webdav.RemoveAllO
 		}
 		return nil
 	case nodeCollection:
-		if err := f.allow(ctx, true, n.col.ID); err != nil {
+		if err := f.allowCollectionAdmin(ctx, n); err != nil {
 			return err
 		}
 		return f.deleteCollection(ctx, n.col)
@@ -424,7 +550,7 @@ func (f *FS) RemoveAll(ctx context.Context, name string, opts *webdav.RemoveAllO
 
 func (f *FS) deleteCollection(ctx context.Context, col *syncengine.Collection) error {
 	dev := DeviceFrom(ctx)
-	children, err := f.Engine.ChildCollections(ctx, "files", col.ID)
+	children, err := f.Engine.ChildCollections(ctx, "", "files", col.ID)
 	if err != nil {
 		return err
 	}
@@ -460,7 +586,7 @@ func (f *FS) Copy(ctx context.Context, name, dest string, options *webdav.CopyOp
 	noOverwrite := options != nil && options.NoOverwrite
 	switch src.kind {
 	case nodeFile:
-		if err := f.allow(ctx, false, src.col.ID); err != nil {
+		if err := f.allow(ctx, false, src); err != nil {
 			return false, err
 		}
 		if noOverwrite {
@@ -475,7 +601,7 @@ func (f *FS) Copy(ctx context.Context, name, dest string, options *webdav.CopyOp
 		_, created, err := f.Create(ctx, dest, body, nil)
 		return created, err
 	case nodeCollection:
-		if err := f.allow(ctx, false, src.col.ID); err != nil {
+		if err := f.allow(ctx, false, src); err != nil {
 			return false, err
 		}
 		return f.copyCollection(ctx, src, dest, noOverwrite)
@@ -500,26 +626,26 @@ func (f *FS) copyCollection(ctx context.Context, src *node, dest string, noOverw
 	if parent.kind != nodeFilesHome && parent.kind != nodeCollection {
 		return false, webdav.NewHTTPError(http.StatusConflict, errors.New("dest parent"))
 	}
-	parentID := ""
+	parentID, owner := "", ""
 	if parent.kind == nodeCollection {
 		parentID = parent.col.ID
 		if parentID == src.col.ID || isAncestor(ctx, f.Engine, src.col.ID, parentID) {
 			return false, webdav.NewHTTPError(http.StatusConflict, errors.New("cannot copy into self"))
 		}
-		if err := f.allow(ctx, true, parentID); err != nil {
-			return false, err
-		}
-	} else if err := f.allow(ctx, true, ""); err != nil {
+	} else {
+		owner = DeviceFrom(ctx).UserID
+	}
+	if err := f.allow(ctx, true, parent); err != nil {
 		return false, err
 	}
-	existing, findErr := f.Engine.FindChildCollection(ctx, "files", parentID, newName)
+	existing, findErr := f.Engine.FindChildCollection(ctx, owner, "files", parentID, newName)
 	created := errors.Is(findErr, syncengine.ErrNotFound)
 	if findErr != nil && !created {
 		return false, findErr
 	}
 	var destCol *syncengine.Collection
 	if created {
-		destCol, err = f.Engine.CreateCollection(ctx, "files", newName, parentID, nil)
+		destCol, err = f.Engine.CreateCollection(ctx, owner, "files", newName, parentID, nil)
 		if err != nil {
 			return false, err
 		}
@@ -553,7 +679,7 @@ func (f *FS) copyCollectionContents(ctx context.Context, src, dest *syncengine.C
 			return err
 		}
 		sum := ncrypto.SHA256Hex(pt)
-		blobID, size, err := f.Store.PutBlob(ctx, bytes.NewReader(pt), sum)
+		blobID, size, err := f.Store.PutUserBlob(ctx, dev.UserID, bytes.NewReader(pt), sum)
 		if err != nil {
 			return err
 		}
@@ -585,13 +711,13 @@ func (f *FS) copyCollectionContents(ctx context.Context, src, dest *syncengine.C
 			return webdav.NewHTTPError(http.StatusConflict, errors.New("copy object failed"))
 		}
 	}
-	children, err := f.Engine.ChildCollections(ctx, "files", src.ID)
+	children, err := f.Engine.ChildCollections(ctx, "", "files", src.ID)
 	if err != nil {
 		return err
 	}
 	for i := range children {
 		child := &children[i]
-		sub, err := f.Engine.EnsureChildCollection(ctx, "files", dest.ID, child.Name)
+		sub, err := f.Engine.EnsureChildCollection(ctx, "", "files", dest.ID, child.Name)
 		if err != nil {
 			return err
 		}
@@ -625,11 +751,14 @@ func (f *FS) Move(ctx context.Context, name, dest string, options *webdav.MoveOp
 		if parent.kind != nodeCollection {
 			return false, webdav.NewHTTPError(http.StatusConflict, errors.New("dest parent"))
 		}
-		if err := f.allow(ctx, true, src.col.ID); err != nil {
+		if err := f.allow(ctx, true, src); err != nil {
 			return false, err
 		}
-		if err := f.allow(ctx, true, parent.col.ID); err != nil {
+		if err := f.allow(ctx, true, parent); err != nil {
 			return false, err
+		}
+		if parent.col.OwnerUserID != src.col.OwnerUserID {
+			return false, webdav.NewHTTPError(http.StatusForbidden, errors.New("cannot move between users; copy instead"))
 		}
 		destObj, destErr := f.Engine.FindObjectByName(ctx, parent.col.ID, newName)
 		created := errors.Is(destErr, syncengine.ErrNotFound)
@@ -666,17 +795,25 @@ func (f *FS) Move(ctx context.Context, name, dest string, options *webdav.MoveOp
 		if parent.kind != nodeFilesHome && parent.kind != nodeCollection {
 			return false, webdav.NewHTTPError(http.StatusConflict, errors.New("dest parent"))
 		}
-		if err := f.allow(ctx, true, src.col.ID); err != nil {
+		if err := f.allowCollectionAdmin(ctx, src); err != nil {
 			return false, err
 		}
-		parentID := ""
+		if err := f.allow(ctx, true, parent); err != nil {
+			return false, err
+		}
+		parentID, owner := "", src.col.OwnerUserID
 		if parent.kind == nodeCollection {
 			parentID = parent.col.ID
 			if parentID == src.col.ID || isAncestor(ctx, f.Engine, src.col.ID, parentID) {
 				return false, webdav.NewHTTPError(http.StatusConflict, errors.New("cannot move into self"))
 			}
+			if parent.col.OwnerUserID != src.col.OwnerUserID {
+				return false, webdav.NewHTTPError(http.StatusForbidden, errors.New("cannot move between users; copy instead"))
+			}
+		} else if src.col.OwnerUserID != DeviceFrom(ctx).UserID {
+			return false, webdav.NewHTTPError(http.StatusForbidden, errors.New("cannot move between users; copy instead"))
 		}
-		if _, err := f.Engine.FindChildCollection(ctx, "files", parentID, newName); err == nil {
+		if _, err := f.Engine.FindChildCollection(ctx, owner, "files", parentID, newName); err == nil {
 			if noOverwrite {
 				return false, os.ErrExist
 			}
@@ -708,7 +845,7 @@ func isAncestor(ctx context.Context, eng *syncengine.Engine, id, maybeChild stri
 func (f *FS) info(n *node) *webdav.FileInfo {
 	fi := &webdav.FileInfo{Path: n.path}
 	switch n.kind {
-	case nodeRoot, nodeFilesHome, nodeCollection:
+	case nodeRoot, nodeFilesHome, nodeSharedHome, nodeSharedOwner, nodeCollection:
 		fi.IsDir = true
 		if n.col != nil {
 			fi.ModTime = syncengine.ModTime(n.col.UpdatedAt)
@@ -728,11 +865,13 @@ func (f *FS) info(n *node) *webdav.FileInfo {
 	return fi
 }
 
-func collectionID(n *node) string {
-	if n == nil || n.col == nil {
-		return ""
+// allowCollectionAdmin guards deleting, renaming and moving a folder: roots
+// need ownership, subfolders need write access.
+func (f *FS) allowCollectionAdmin(ctx context.Context, n *node) error {
+	if n.col != nil && n.col.ParentID == "" {
+		return need(ctx, authz.CollectionAdmin, n.access)
 	}
-	return n.col.ID
+	return f.allow(ctx, true, n)
 }
 
 func splitParent(p string) (parent, base string, err error) {

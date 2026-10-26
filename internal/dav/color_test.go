@@ -2,6 +2,8 @@ package dav
 
 import (
 	"encoding/json"
+
+	"nubilo/internal/authz"
 	"strings"
 	"testing"
 )
@@ -46,7 +48,7 @@ func TestInjectApplePropsForHref(t *testing.T) {
 </D:propstat>
 </D:response>
 </D:multistatus>`
-	got := injectApplePropsForHref(body, "/caldav/user/calendars/Personal", CalendarColMeta{Color: "#FF0000", Order: 2}, "1-2")
+	got := injectApplePropsForHref(body, "/caldav/user/calendars/Personal", CalendarColMeta{Color: "#FF0000", Order: 2}, "1-2", authz.AccessOwner)
 	if !strings.Contains(got, "#FF0000") {
 		t.Fatalf("missing color %s", got)
 	}

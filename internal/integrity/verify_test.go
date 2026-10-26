@@ -28,11 +28,11 @@ func TestVerifyCleanAndMissingBlob(t *testing.T) {
 	eng := syncengine.New(st)
 	idsvc := identity.NewService(st)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, _ := idsvc.Enroll(context.Background(), "d", pub, identity.RoleAgent)
-	col, _ := eng.CreateCollection(context.Background(), "files", "f", "", json.RawMessage(`{}`))
+	dev, _ := idsvc.Enroll(context.Background(), "", "d", pub, identity.RoleAgent)
+	col, _ := eng.CreateCollection(context.Background(), dev.UserID, "files", "f", "", json.RawMessage(`{}`))
 	payload := []byte("orig")
 	sum := ncrypto.SHA256Hex(payload)
-	_, _, err = st.PutBlob(context.Background(), bytes.NewReader(payload), sum)
+	_, _, err = st.PutUserBlob(context.Background(), dev.UserID, bytes.NewReader(payload), sum)
 	if err != nil {
 		t.Fatal(err)
 	}

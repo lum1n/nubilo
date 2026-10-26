@@ -89,6 +89,7 @@ func Server(ctx context.Context, dataDir string, opt Options) (Report, error) {
 	checkBackup(&r, cfg)
 	checkDiskEncryption(&r, dataDir)
 	checkServerService(&r)
+	checkPublic(ctx, &r, cfg)
 
 	rt, err := app.Open(dataDir)
 	if err != nil {

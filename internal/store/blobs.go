@@ -121,7 +121,7 @@ func (s *Store) BlobExists(hash string) bool {
 func (s *Store) RemoveBlob(ctx context.Context, hash string) error {
 	hash = strings.ToLower(hash)
 	_ = os.Remove(s.BlobPath(hash))
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM blob_uploads WHERE blob_id = ?`, hash); err != nil {
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM blob_refs WHERE hash = ?`, hash); err != nil {
 		return err
 	}
 	_, err := s.DB.ExecContext(ctx, `DELETE FROM blobs WHERE id = ?`, hash)
@@ -178,11 +178,40 @@ func (s *Store) DecBlobRef(tx *sql.Tx, hash string) error {
 	return err
 }
 
-func (s *Store) RecordUpload(ctx context.Context, blobID, deviceID string) error {
-	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO blob_uploads(blob_id, device_id, created_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(blob_id, device_id) DO UPDATE SET created_at = excluded.created_at
-	`, blobID, deviceID, NowMS())
+// PutUserBlob stores a blob and records that userID holds a reference to it.
+func (s *Store) PutUserBlob(ctx context.Context, userID string, r io.Reader, expectedHash string) (hash string, size int64, err error) {
+	hash, size, err = s.PutBlob(ctx, r, expectedHash)
+	if err != nil {
+		return "", 0, err
+	}
+	if err := s.AddBlobRef(ctx, userID, hash); err != nil {
+		return "", 0, err
+	}
+	return hash, size, nil
+}
+
+// AddBlobRef records that userID may reference hash. Empty userID is a no-op
+// (system writers are not tracked).
+func (s *Store) AddBlobRef(ctx context.Context, userID, hash string) error {
+	if userID == "" || hash == "" {
+		return nil
+	}
+	_, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO blob_refs(user_id, hash) VALUES (?, ?)`, userID, strings.ToLower(hash))
 	return err
+}
+
+// AddBlobRefTx is AddBlobRef inside a write transaction.
+func (s *Store) AddBlobRefTx(tx *sql.Tx, userID, hash string) error {
+	if userID == "" || hash == "" {
+		return nil
+	}
+	_, err := tx.Exec(`INSERT OR IGNORE INTO blob_refs(user_id, hash) VALUES (?, ?)`, userID, strings.ToLower(hash))
+	return err
+}
+
+// HasBlobRef reports whether userID holds a reference to hash.
+func (s *Store) HasBlobRef(ctx context.Context, userID, hash string) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM blob_refs WHERE user_id = ? AND hash = ?`, userID, strings.ToLower(hash)).Scan(&n)
+	return n > 0, err
 }

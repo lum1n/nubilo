@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"nubilo/internal/audit"
@@ -20,6 +21,7 @@ import (
 	"nubilo/internal/ids"
 	"nubilo/internal/store"
 	"nubilo/internal/syncengine"
+	"nubilo/internal/wiredx"
 
 	"github.com/emersion/go-webdav"
 )
@@ -35,10 +37,16 @@ type Server struct {
 	ServerID  string
 	ServerPub ed25519.PublicKey
 
-	http    *http.Server
-	pairLim *ipLimiter
-	pairOK  *ipLimiter
-	sigFail *ipLimiter
+	http      *http.Server
+	pairLim   *ipLimiter
+	pairOK    *ipLimiter
+	sigFail   *ipLimiter
+	redeemLim *ipLimiter
+	davAuth   *dav.Auth
+
+	mu    sync.Mutex
+	extra []*http.Server // public listeners (direct, relay)
+	node  wiredx.Node
 }
 
 func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Authenticator, eng *syncengine.Engine, al *audit.Logger, log *slog.Logger, serverPub ed25519.PublicKey) *Server {
@@ -54,11 +62,34 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 		pairLim:   newIPLimiter(cfg.Pairing.BeginsPerHour, time.Hour),
 		pairOK:    newIPLimiter(cfg.Pairing.CompletesPerHour, time.Hour),
 		sigFail:   newIPLimiter(30, time.Minute),
+		redeemLim: newIPLimiter(5, time.Hour),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/pair/begin", s.handlePairBegin)
 	mux.HandleFunc("POST /api/v1/pair/complete", s.handlePairComplete)
+	mux.HandleFunc("POST /api/v1/invites/redeem", s.handleInviteRedeem)
+	mux.HandleFunc("GET /api/v1/profile/{token}", s.handleProfileDownload)
+	mux.HandleFunc("GET /join", s.handleJoinPage)
 	mux.HandleFunc("GET /api/v1/status", s.authed(s.handleStatus))
+	mux.HandleFunc("GET /api/v1/me", s.authed(s.handleMe))
+	mux.HandleFunc("GET /api/v1/me/passwords", s.authed(s.handleMyPasswords))
+	mux.HandleFunc("POST /api/v1/me/passwords", s.authed(s.handleCreatePassword))
+	mux.HandleFunc("DELETE /api/v1/me/passwords/{id}", s.authed(s.handleRevokePassword))
+	mux.HandleFunc("POST /api/v1/me/profile", s.authed(s.handleCreateProfile))
+	mux.HandleFunc("POST /api/v1/me/upload-token", s.authed(s.handleUploadToken))
+	mux.HandleFunc("GET /api/v1/users", s.authed(s.handleUserDirectory))
+	mux.HandleFunc("GET /api/v1/collections", s.authed(s.handleCollectionList))
+	mux.HandleFunc("GET /api/v1/collections/{id}/shares", s.authed(s.handleSharesGet))
+	mux.HandleFunc("PUT /api/v1/collections/{id}/shares", s.authed(s.handleSharesPut))
+	mux.HandleFunc("DELETE /api/v1/collections/{id}/shares", s.authed(s.handleSharesDelete))
+	mux.HandleFunc("GET /api/v1/admin/users", s.authed(s.handleAdminUsers))
+	mux.HandleFunc("POST /api/v1/admin/users", s.authed(s.handleAdminCreateUser))
+	mux.HandleFunc("PATCH /api/v1/admin/users/{id}", s.authed(s.handleAdminPatchUser))
+	mux.HandleFunc("GET /api/v1/admin/invites", s.authed(s.handleAdminInvites))
+	mux.HandleFunc("POST /api/v1/admin/invites", s.authed(s.handleAdminCreateInvite))
+	mux.HandleFunc("DELETE /api/v1/admin/invites/{id}", s.authed(s.handleAdminRevokeInvite))
+	mux.HandleFunc("GET /api/v1/admin/stats", s.authed(s.handleAdminStats))
+	mux.HandleFunc("POST /api/v1/admin/devices/{id}/revoke", s.authed(s.handleAdminRevokeDevice))
 	mux.HandleFunc("GET /api/v1/devices", s.authed(s.handleDevices))
 	mux.HandleFunc("POST /api/v1/devices/{id}/revoke", s.authed(s.handleRevoke))
 	mux.HandleFunc("POST /api/v1/devices/{id}/rename", s.authed(s.handleRename))
@@ -69,7 +100,7 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("POST /sync/v1/ack", s.authed(s.handleAck))
 	mux.HandleFunc("POST /sync/v1/reconcile", s.authed(s.handleReconcile))
 	mux.HandleFunc("POST /sync/v1/collection", s.authed(s.handleEnsureCollection))
-	mux.HandleFunc("PUT /sync/v1/blob/{hash}", s.authed(s.handleBlobPut))
+	mux.HandleFunc("PUT /sync/v1/blob/{hash}", s.authedUpload(s.handleBlobPut))
 	mux.HandleFunc("GET /sync/v1/blob/{hash}", s.authed(s.handleBlobGet))
 	mux.HandleFunc("GET /api/v1/photos", s.authedAny(s.handlePhotosList))
 	mux.HandleFunc("POST /api/v1/photos", s.authedAny(s.handlePhotosUpload))
@@ -77,8 +108,17 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("GET /api/v1/photos/{id}/original", s.authedAny(s.handlePhotoOriginal))
 	mux.HandleFunc("GET /api/v1/photos/{id}/preview", s.authedAny(s.handlePhotoPreview))
 	mux.HandleFunc("GET /api/v1/photos/{id}/thumb", s.authedAny(s.handlePhotoThumb))
+	mux.HandleFunc("POST /api/v1/photos/check", s.authedUpload(s.handlePhotosCheck))
+	mux.HandleFunc("POST /api/v1/photos/commit", s.authedUpload(s.handlePhotosCommit))
+	mux.HandleFunc("GET /api/v1/albums", s.authedAny(s.handleAlbums))
+	mux.HandleFunc("POST /api/v1/albums", s.authedAny(s.handleCreateAlbum))
+	mux.HandleFunc("GET /api/v1/albums/{id}/items", s.authedAny(s.handleAlbumItems))
+	mux.HandleFunc("POST /api/v1/albums/{id}/items", s.authedAny(s.handleAddAlbumItems))
 	davAuth := dav.NewAuth(ids)
-	davH := davAuth.Middleware(dav.LockCompat(&webdav.Handler{FileSystem: dav.NewFS(eng, st)}))
+	s.davAuth = davAuth
+	fs := dav.NewFS(eng, st)
+	fs.Photos = s.photos
+	davH := davAuth.Middleware(dav.LockCompat(&webdav.Handler{FileSystem: fs}))
 	calH := davAuth.Middleware(dav.WrapCalDAV(dav.NewCalDAV(eng, st)))
 	cardH := davAuth.Middleware(dav.WrapCardDAV(dav.NewCardDAV(eng, st)))
 	mux.Handle("/dav/", davH)
@@ -87,10 +127,14 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.Handle("/caldav", calH)
 	mux.Handle("/carddav/", cardH)
 	mux.Handle("/carddav", cardH)
-	mux.Handle("/.well-known/caldav", dav.WellKnown(dav.CalDAVPrefix+"/user/", calH))
-	mux.Handle("/.well-known/caldav/", dav.WellKnown(dav.CalDAVPrefix+"/user/", calH))
-	mux.Handle("/.well-known/carddav", dav.WellKnown(dav.CardDAVPrefix+"/user/", cardH))
-	mux.Handle("/.well-known/carddav/", dav.WellKnown(dav.CardDAVPrefix+"/user/", cardH))
+	// Discovery redirects to the authenticated user's principal, so it runs
+	// inside the auth middleware.
+	calWK := davAuth.Middleware(dav.WellKnown(dav.CalDAVPrefix, eng, calH))
+	cardWK := davAuth.Middleware(dav.WellKnown(dav.CardDAVPrefix, eng, cardH))
+	mux.Handle("/.well-known/caldav", calWK)
+	mux.Handle("/.well-known/caldav/", calWK)
+	mux.Handle("/.well-known/carddav", cardWK)
+	mux.Handle("/.well-known/carddav/", cardWK)
 	s.http = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           s.limitBody(mux),
@@ -113,23 +157,26 @@ func (s *Server) Handler() http.Handler {
 	return s.http.Handler
 }
 
+// ListenAndServe serves the LAN listener only. Run serves every configured listener.
 func (s *Server) ListenAndServe() error {
-	ln, err := net.Listen("tcp", s.Cfg.Listen)
-	if err != nil {
-		return err
-	}
-	s.Log.Info("listen", "addr", s.Cfg.Listen, "tls", !s.Cfg.Loopback() || s.Cfg.TLS.Cert != "")
-	if s.Cfg.TLS.Cert != "" && s.Cfg.TLS.Key != "" {
-		return s.http.ServeTLS(ln, s.Cfg.TLS.Cert, s.Cfg.TLS.Key)
-	}
-	if !s.Cfg.Loopback() {
-		return errors.New("server: TLS required for non-loopback")
-	}
-	return s.http.Serve(ln)
+	return s.Run(context.Background())
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.http.Shutdown(ctx)
+	s.mu.Lock()
+	servers := append([]*http.Server{s.http}, s.extra...)
+	node := s.node
+	s.mu.Unlock()
+	var first error
+	for _, h := range servers {
+		if err := h.Shutdown(ctx); err != nil && first == nil {
+			first = err
+		}
+	}
+	if node != nil {
+		_ = node.Close()
+	}
+	return first
 }
 
 type ctxKey int
@@ -253,53 +300,105 @@ func (s *Server) handlePairComplete(w http.ResponseWriter, r *http.Request) {
 	s.Audit.Event(r.Context(), dev.ID, "pair.complete", map[string]any{"name": "(redacted)"})
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"device_id":         dev.ID,
+		"user_id":           dev.UserID,
 		"created_at":        dev.CreatedAt,
 		"server_public_key": b64(s.ServerPub),
 	})
 }
 
+// APIVersion is bumped when the HTTP API gains incompatible changes.
+const APIVersion = 2
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	head, _ := s.Engine.HeadSeq(r.Context())
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
-		"head_seq": head,
-		"listen":   s.Cfg.Listen,
+		"ok":          true,
+		"head_seq":    head,
+		"listen":      s.Cfg.Listen,
+		"api_version": APIVersion,
+		"server_name": s.Cfg.Public.Name(),
+		"domain":      s.Cfg.Public.Domain,
+		"features":    []string{"users", "shares", "invites", "profiles", "upload_tokens", "albums"},
+		"relay":       s.relayStatus(),
 	})
+}
+
+// relayStatus reports the wired relay connection for doctor (nil when unused).
+func (s *Server) relayStatus() map[string]any {
+	if s.Cfg.Public.Relay.Invite == "" {
+		return nil
+	}
+	s.mu.Lock()
+	node := s.node
+	s.mu.Unlock()
+	if node == nil {
+		return map[string]any{"joined": false, "path": "none"}
+	}
+	path := "none"
+	for _, m := range node.Members() {
+		if m.Anchor {
+			if p := node.Path(m.Name); p != "none" {
+				path = p
+			}
+		}
+	}
+	return map[string]any{"joined": true, "node": node.Name(), "path": path}
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.DeviceList, ""); err != nil {
+	if err := authz.Allow(dev, authz.DeviceList); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	list, err := s.IDs.List(r.Context())
+	var list []identity.Device
+	var err error
+	if dev.System() || (r.URL.Query().Get("all") == "1" && dev.IsAdmin()) {
+		list, err = s.IDs.List(r.Context())
+	} else {
+		list, err = s.IDs.ListUserDevices(r.Context(), dev.UserID)
+	}
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
 	}
-	type row struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Role      string `json:"role"`
-		CreatedAt int64  `json:"created_at"`
-		LastSeen  *int64 `json:"last_seen,omitempty"`
-		Revoked   bool   `json:"revoked"`
-	}
-	out := make([]row, 0, len(list))
+	out := make([]deviceRow, 0, len(list))
 	for _, d := range list {
-		out = append(out, row{ID: d.ID, Name: d.Name, Role: string(d.Role), CreatedAt: d.CreatedAt, LastSeen: d.LastSeen, Revoked: d.Revoked()})
+		out = append(out, toDeviceRow(&d))
 	}
 	s.writeJSON(w, http.StatusOK, out)
 }
 
+type deviceRow struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Role      string `json:"role"`
+	UserID    string `json:"user_id,omitempty"`
+	CreatedAt int64  `json:"created_at"`
+	LastSeen  *int64 `json:"last_seen,omitempty"`
+	Revoked   bool   `json:"revoked"`
+}
+
+func toDeviceRow(d *identity.Device) deviceRow {
+	return deviceRow{ID: d.ID, Name: d.Name, Role: string(d.Role), UserID: d.UserID, CreatedAt: d.CreatedAt, LastSeen: d.LastSeen, Revoked: d.Revoked()}
+}
+
+// ownsDevice reports whether caller may manage target: same user, or admin.
+func (s *Server) ownsDevice(r *http.Request, caller *identity.Device, targetID string) bool {
+	if caller.IsAdmin() {
+		return true
+	}
+	t, err := s.IDs.Get(r.Context(), targetID)
+	return err == nil && caller.UserID != "" && t.UserID == caller.UserID
+}
+
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.DeviceRevoke, ""); err != nil {
+	id := r.PathValue("id")
+	if dev.Revoked() || !s.ownsDevice(r, dev, id) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	id := r.PathValue("id")
 	if err := s.IDs.Revoke(r.Context(), id); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -310,7 +409,8 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.DeviceRename, ""); err != nil {
+	id := r.PathValue("id")
+	if dev.Revoked() || !s.ownsDevice(r, dev, id) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -321,7 +421,6 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	id := r.PathValue("id")
 	if err := s.IDs.Rename(r.Context(), id, req.Name); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -330,7 +429,8 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
-	if err := authz.Allow(deviceFrom(r), authz.SyncRead, ""); err != nil {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.SyncRead); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -344,7 +444,7 @@ func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	h, err := s.Engine.Hello(r.Context(), req.Cursor, req.RestoreHint)
+	h, err := s.Engine.Hello(r.Context(), syncengine.ScopeOf(dev), req.Cursor, req.RestoreHint)
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
@@ -354,11 +454,11 @@ func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.SyncRead, ""); err != nil {
+	if err := authz.Allow(dev, authz.SyncRead); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	cols, err := s.Engine.GetCollections(r.Context(), dev)
+	cols, err := s.Engine.GetCollections(r.Context(), syncengine.ScopeOf(dev))
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
@@ -368,7 +468,7 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.SyncRead, ""); err != nil {
+	if err := authz.Allow(dev, authz.SyncRead); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -381,7 +481,13 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	res, err := s.Engine.GetChanges(r.Context(), dev, req.SinceSeq, req.Limit, req.CollectionID)
+	if req.CollectionID != "" {
+		if access, err := s.Engine.AccessFor(r.Context(), dev, req.CollectionID); err != nil || access < authz.AccessRead {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+	res, err := s.Engine.GetChanges(r.Context(), syncengine.ScopeOf(dev), req.SinceSeq, req.Limit, req.CollectionID)
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
@@ -391,7 +497,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.SyncWrite, ""); err != nil {
+	if err := authz.Allow(dev, authz.SyncWrite); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -413,7 +519,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.SyncWrite, ""); err != nil {
+	if err := authz.Allow(dev, authz.SyncWrite); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -433,7 +539,7 @@ func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.SyncRead, ""); err != nil {
+	if err := authz.Allow(dev, authz.SyncRead); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -455,7 +561,7 @@ func (s *Server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEnsureCollection(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.SyncWrite, ""); err != nil {
+	if err := authz.Allow(dev, authz.SyncWrite); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -469,12 +575,25 @@ func (s *Server) handleEnsureCollection(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	c, err := s.Engine.EnsureChildCollection(r.Context(), req.Kind, req.ParentID, req.Name)
+	if req.ParentID != "" {
+		if access, err := s.Engine.AccessFor(r.Context(), dev, req.ParentID); err != nil || access < authz.AccessWrite {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	} else if dev.UserID == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	c, err := s.Engine.EnsureChildCollection(r.Context(), dev.UserID, req.Kind, req.ParentID, req.Name)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	if len(req.Metadata) > 0 && string(req.Metadata) != "null" {
+		if access, err := s.Engine.AccessFor(r.Context(), dev, c.ID); err != nil || access < authz.AccessOwner {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		c, err = s.Engine.PatchCollectionMetadata(r.Context(), c.ID, req.Metadata)
 		if err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -486,7 +605,7 @@ func (s *Server) handleEnsureCollection(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleBlobPut(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.SyncWrite, ""); err != nil {
+	if err := authz.Allow(dev, authz.SyncWrite); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -495,22 +614,30 @@ func (s *Server) handleBlobPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad hash", http.StatusBadRequest)
 		return
 	}
-	sum, size, err := s.Store.PutBlob(r.Context(), r.Body, hash)
+	sum, size, err := s.Store.PutUserBlob(r.Context(), dev.UserID, r.Body, hash)
 	if err != nil {
 		http.Error(w, "blob rejected", http.StatusBadRequest)
 		return
 	}
-	_ = s.Store.RecordUpload(r.Context(), sum, dev.ID)
 	s.writeJSON(w, http.StatusOK, map[string]any{"blob_id": sum, "size": size})
 }
 
 func (s *Server) handleBlobGet(w http.ResponseWriter, r *http.Request) {
 	dev := deviceFrom(r)
-	if err := authz.Allow(dev, authz.SyncRead, ""); err != nil {
+	if err := authz.Allow(dev, authz.SyncRead); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	hash := strings.ToLower(r.PathValue("hash"))
+	if !dev.System() {
+		// Blobs are deduplicated across users; never confirm that a hash
+		// exists unless the caller already has a right to it.
+		ok, err := s.Engine.BlobReadable(r.Context(), dev.UserID, hash)
+		if err != nil || !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+	}
 	pt, err := s.Store.GetBlobPlaintext(hash)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)

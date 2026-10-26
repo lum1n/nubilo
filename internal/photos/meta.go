@@ -10,6 +10,8 @@ const (
 	CollectionKind = "photos"
 	ObjectKind     = "photo"
 	DefaultName    = "Photos"
+	AlbumKind      = "album"
+	AlbumItemKind  = "album_item"
 )
 
 // Meta is stored in the object metadata JSON. Coordinates are never stored here:

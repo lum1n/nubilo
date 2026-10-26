@@ -19,8 +19,17 @@ func IsBlobID(s string) bool {
 	return true
 }
 
+func metadataBlobKey(k string) bool {
+	for _, want := range []string{"preview_hash", "thumb_hash", "live_pair_hash"} {
+		if strings.EqualFold(k, want) {
+			return true
+		}
+	}
+	return false
+}
+
 // MetadataBlobIDs returns extra blob hashes stored in object metadata
-// (preview_hash, thumb_hash). These are not objects.blob_id but must
+// (preview_hash, thumb_hash, live_pair_hash). These are not objects.blob_id but must
 // stay live for as long as the object does.
 func MetadataBlobIDs(raw json.RawMessage) []string {
 	if len(raw) == 0 {
@@ -32,8 +41,13 @@ func MetadataBlobIDs(raw json.RawMessage) []string {
 	}
 	var out []string
 	seen := map[string]struct{}{}
-	for _, k := range []string{"preview_hash", "thumb_hash"} {
-		s, ok := m[k].(string)
+	// Keys match case-insensitively, the way encoding/json fills photos.Meta,
+	// so "Preview_Hash" cannot slip a blob past the reference checks.
+	for k, v := range m {
+		if !metadataBlobKey(k) {
+			continue
+		}
+		s, ok := v.(string)
 		if !ok {
 			continue
 		}

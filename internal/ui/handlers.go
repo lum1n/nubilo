@@ -29,7 +29,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		counts[kind] = n
 	}
 	events, reminders := 0, 0
-	if cols, err := s.RT.Engine.ChildCollections(ctx, "calendar", ""); err == nil {
+	if cols, err := s.RT.Engine.ChildCollections(ctx, "", "calendar", ""); err == nil {
 		for i := range cols {
 			n, err := s.RT.Engine.CountLiveObjects(ctx, cols[i].ID)
 			if err != nil {
@@ -199,12 +199,14 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		LastSeen  *int64   `json:"last_seen,omitempty"`
 		Revoked   bool     `json:"revoked"`
 		Protocols []string `json:"protocols,omitempty"`
+		UserID    string   `json:"user_id,omitempty"`
 	}
 	out := make([]row, 0, len(list))
 	for _, d := range list {
 		out = append(out, row{
 			ID: d.ID, Name: d.Name, Role: string(d.Role), CreatedAt: d.CreatedAt,
 			LastSeen: d.LastSeen, Revoked: d.Revoked(), Protocols: d.Permissions.Protocols,
+			UserID: d.UserID,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
@@ -253,31 +255,32 @@ func (s *Server) handleDevicePassword(w http.ResponseWriter, r *http.Request) {
 	if req.Scope == "" {
 		req.Scope = "all"
 	}
-	dev, pass, err := s.RT.IDs.CreateDAVDevice(r.Context(), req.Name, req.Scope)
+	u := s.actingUser(w, r)
+	if u == nil {
+		return
+	}
+	dev, pass, err := s.RT.IDs.CreateAppPassword(r.Context(), u.ID, req.Name, req.Scope)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	scheme := "http://"
-	if !s.RT.Cfg.Loopback() {
-		scheme = "https://"
-	}
-	base := scheme + s.RT.Cfg.Listen
+	base := s.publicBase()
 	urls := map[string]string{}
 	if dev.Permissions.HasProtocol("webdav") {
 		urls["webdav"] = base + "/dav/"
 	}
 	if dev.Permissions.HasProtocol("caldav") {
-		urls["caldav"] = base + "/caldav/"
+		urls["caldav"] = base + "/caldav/u/" + u.Username + "/"
 	}
 	if dev.Permissions.HasProtocol("carddav") {
-		urls["carddav"] = base + "/carddav/"
+		urls["carddav"] = base + "/carddav/u/" + u.Username + "/"
 	}
 	if dev.Permissions.HasProtocol("photos") {
 		urls["photos"] = base + "/api/v1/photos"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_id": dev.ID,
+		"username":  u.Username,
 		"password":  pass,
 		"scope":     req.Scope,
 		"urls":      urls,
@@ -291,7 +294,11 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	compFilter := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("comp")))
-	cols, err := s.RT.Engine.ChildCollections(r.Context(), kind, "")
+	u := s.actingUser(w, r)
+	if u == nil {
+		return
+	}
+	cols, err := s.RT.Engine.ChildCollections(r.Context(), u.ID, kind, "")
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
@@ -348,7 +355,11 @@ func (s *Server) handleCollectionCreate(w http.ResponseWriter, r *http.Request) 
 			meta = dav.EncodeCalendarColMeta(dav.CalendarColMeta{Comp: "VTODO"})
 		}
 	}
-	c, err := s.RT.Engine.CreateCollection(r.Context(), req.Kind, strings.TrimSpace(req.Name), "", meta)
+	u := s.actingUser(w, r)
+	if u == nil {
+		return
+	}
+	c, err := s.RT.Engine.CreateCollection(r.Context(), u.ID, req.Kind, strings.TrimSpace(req.Name), "", meta)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -436,7 +447,11 @@ func (s *Server) handleCollectionUpload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	sum := ncrypto.SHA256Hex(payload)
-	blobID, size, err := s.RT.Store.PutBlob(r.Context(), bytes.NewReader(payload), sum)
+	u := s.actingUser(w, r)
+	if u == nil {
+		return
+	}
+	blobID, size, err := s.RT.Store.PutUserBlob(r.Context(), u.ID, bytes.NewReader(payload), sum)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -463,7 +478,7 @@ func (s *Server) handleCollectionUpload(w http.ResponseWriter, r *http.Request) 
 		in.Op = syncengine.OpUpdate
 		in.BaseRevision = existing.Revision
 	}
-	res, err := s.RT.Engine.Push(r.Context(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{in})
+	res, err := s.RT.Engine.Push(r.Context(), s.operator(u), ids.New(), []syncengine.ChangeInput{in})
 	if err != nil || len(res) == 0 || res[0].Status != "ok" {
 		http.Error(w, "upload failed", http.StatusConflict)
 		return
@@ -542,7 +557,7 @@ func (s *Server) handleCollectionObjects(w http.ResponseWriter, r *http.Request)
 	}
 	payload := map[string]any{"collection": col, "objects": out}
 	if col.Kind == "files" {
-		children, err := s.RT.Engine.ChildCollections(r.Context(), "files", id)
+		children, err := s.RT.Engine.ChildCollections(r.Context(), "", "files", id)
 		if err != nil {
 			http.Error(w, "internal", http.StatusInternalServerError)
 			return
@@ -646,7 +661,11 @@ func (s *Server) photosSvc() photos.Service {
 }
 
 func (s *Server) handlePhotos(w http.ResponseWriter, r *http.Request) {
-	objs, err := s.photosSvc().List(r.Context())
+	u := s.actingUser(w, r)
+	if u == nil {
+		return
+	}
+	objs, _, err := s.photosSvc().List(r.Context(), u.ID, "", 1000)
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
@@ -685,7 +704,11 @@ func (s *Server) handlePhotoUpload(w http.ResponseWriter, r *http.Request) {
 			name = "upload.mp4"
 		}
 	}
-	obj, err := s.photosSvc().Ingest(r.Context(), syncengine.LocalOperator(), payload, name, nil)
+	u := s.actingUser(w, r)
+	if u == nil {
+		return
+	}
+	obj, err := s.photosSvc().Ingest(r.Context(), s.operator(u), payload, name, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -700,7 +723,7 @@ func (s *Server) handlePhotoUpload(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePhotoRendition(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rend := strings.ToLower(r.PathValue("rendition"))
-	obj, err := s.photosSvc().Get(r.Context(), id)
+	obj, err := s.photosSvc().Get(r.Context(), syncengine.LocalOperator(), id)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return

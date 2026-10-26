@@ -648,6 +648,51 @@ table.data input[type="radio"] {
   width: 28%;
 }
 
+/* Act-as switcher: highlighted when viewing someone other than the owner */
+.topbar-right { display: flex; align-items: center; gap: 0.75rem; }
+
+.topbar label.act-as {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  max-width: none;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.topbar label.act-as.other { color: var(--accent); }
+.topbar label.act-as.other select { border-color: var(--accent-dim); color: var(--accent); }
+
+/* Users */
+.users-table td.row-actions,
+table.data td.row-actions { white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+.users-table th:last-child { width: 17rem; }
+.row-disabled td { color: var(--text-muted); }
+.status-off { color: var(--danger) !important; }
+.hint.error { color: var(--danger); }
+.hint.error:empty { display: none; }
+
+.invite-out {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  align-items: flex-start;
+}
+
+.invite-qr {
+  width: 200px;
+  height: 200px;
+  image-rendering: pixelated;
+  background: #fff;
+  border: 1px solid var(--border);
+}
+
+.invite-info { flex: 1; min-width: 12rem; }
+.copy-val { overflow-wrap: anywhere; }
+
 .health-ok { color: var(--accent); }
 .health-warn { color: #c9a227; }
 .health-fail { color: var(--danger); }

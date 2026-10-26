@@ -29,6 +29,7 @@
         <a href="#/reminders" class="nav-link" data-route="reminders">reminders</a>
         <a href="#/contacts" class="nav-link" data-route="contacts">contacts</a>
         <a href="#/files" class="nav-link" data-route="files">files</a>
+        <a href="#/users" class="nav-link" data-route="users">users</a>
         <a href="#/ops" class="nav-link" data-route="ops">ops</a>
         <a href="#/settings" class="nav-link" data-route="settings">settings</a>
       </nav>
@@ -40,7 +41,12 @@
     <main class="main">
       <header class="topbar">
         <h2 id="page-title" class="page-title">overview</h2>
-        <div id="topbar-actions" class="topbar-actions"></div>
+        <div class="topbar-right">
+          <div id="topbar-actions" class="topbar-actions"></div>
+          <label class="act-as" id="act-as-wrap" title="data views and writes apply to this user">acting as
+            <select id="act-as"></select>
+          </label>
+        </div>
       </header>
       <div id="content" class="content"></div>
     </main>

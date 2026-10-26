@@ -33,11 +33,9 @@ func davServer(t *testing.T) (*httptest.Server, *identity.Device, string, *synce
 	}
 	t.Cleanup(func() { st.Close() })
 	eng := syncengine.New(st)
-	if _, err := eng.CreateCollection(context.Background(), "files", "Files", "", nil); err != nil {
-		t.Fatal(err)
-	}
 	idsvc := identity.NewService(st)
-	dev, pass, err := idsvc.CreateDAVDevice(context.Background(), "iphone", "webdav")
+	idsvc.OnUserCreated = func(ctx context.Context, u *identity.User) error { return eng.EnsureUserDefaults(ctx, u.ID) }
+	dev, pass, err := idsvc.CreateAppPassword(context.Background(), "", "iphone", "webdav")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +187,7 @@ func TestCopyCollectionAndMoveFile(t *testing.T) {
 	if resp.StatusCode != 200 || string(body) != "hello" {
 		t.Fatalf("moved %d %q", resp.StatusCode, body)
 	}
-	cols, _ := eng.ChildCollections(context.Background(), "files", "")
+	cols, _ := eng.ChildCollections(context.Background(), "", "files", "")
 	var otherID string
 	for _, c := range cols {
 		if c.Name == "Other" {
@@ -288,7 +286,7 @@ func TestObjectIDNotInFilesystem(t *testing.T) {
 	if resp.StatusCode >= 300 {
 		t.Fatalf("put %d", resp.StatusCode)
 	}
-	cols, _ := eng.GetCollections(context.Background(), nil)
+	cols, _ := eng.GetCollections(context.Background(), syncengine.ScopeAll())
 	var colID string
 	for _, c := range cols {
 		if c.Name == "Files" {
@@ -315,7 +313,7 @@ func TestCameraUploadAlsoIngestsPhoto(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusMethodNotAllowed {
 		// some stacks return 405 if exists; create via engine if needed
-		if _, err := eng.CreateCollection(context.Background(), "files", "Camera Upload", "", nil); err != nil {
+		if _, err := eng.CreateCollection(context.Background(), dev.UserID, "files", "Camera Upload", "", nil); err != nil {
 			t.Fatalf("mkcol %d create %v", resp.StatusCode, err)
 		}
 	}
@@ -330,7 +328,7 @@ func TestCameraUploadAlsoIngestsPhoto(t *testing.T) {
 	if resp.StatusCode >= 300 {
 		t.Fatalf("put %d %s", resp.StatusCode, body)
 	}
-	photoCol, err := eng.FindChildCollection(context.Background(), "photos", "", "Photos")
+	photoCol, err := eng.FindChildCollection(context.Background(), "", "photos", "", "Photos")
 	if err != nil {
 		t.Fatalf("photos collection: %v", err)
 	}

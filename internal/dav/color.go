@@ -3,10 +3,13 @@ package dav
 import (
 	"bytes"
 	"context"
+
 	"encoding/json"
 	"encoding/xml"
 	"io"
 	"net/http"
+	"nubilo/internal/authz"
+	"nubilo/internal/syncengine"
 	"regexp"
 	"strconv"
 	"strings"
@@ -135,26 +138,31 @@ func parseAppleCalPatch(body []byte) (color string, order int) {
 	return color, order
 }
 
+// serveCalendarPropPatch stores Apple color/order: in calendar metadata for
+// the owner, and as the caller's own preference on calendars shared with them.
 func (b *CalDAV) serveCalendarPropPatch(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	color, order := parseAppleCalPatch(body)
-	_, name, file, err := b.parseCalPath(r.URL.Path)
-	if err == nil && file == "" && name != "" && (color != "" || order != 0) {
-		if col, err := b.Engine.FindChildCollection(r.Context(), calKind, "", name); err == nil {
-			if err := b.allow(r.Context(), true, col.ID); err != nil {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
+	if color != "" || order != 0 {
+		if u, hc, file, err := b.resolve(r.Context(), r.URL.Path); err == nil && file == "" {
+			if hc.access == authz.AccessOwner {
+				if err := b.allow(r.Context(), true); err != nil {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+				meta := PatchCalendarColMeta(hc.col.Metadata, CalendarColMeta{Color: color, Order: order})
+				_ = b.Engine.SetCollectionMetadata(r.Context(), hc.col.ID, meta)
+			} else {
+				_ = b.Engine.SetPref(r.Context(), u.id, hc.col.ID, syncengine.Pref{Color: color, Order: order})
 			}
-			meta := PatchCalendarColMeta(col.Metadata, CalendarColMeta{Color: color, Order: order})
-			_ = b.Engine.SetCollectionMetadata(r.Context(), col.ID, meta)
 		}
 	}
 	writePropPatchOK(w, r.URL.Path, body)
 }
 
-func (h appleDAV) serveCalPropFind(w http.ResponseWriter, r *http.Request) {
+func (h appleDAV) serveCalPropFind(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	cw := &captureWriter{}
-	h.next.ServeHTTP(cw, r)
+	next.ServeHTTP(cw, r)
 	body := cw.buf.Bytes()
 	code := cw.code
 	if code == 0 {
@@ -183,19 +191,34 @@ func (b *CalDAV) injectCalendarAppleProps(ctx context.Context, body []byte) []by
 	if b == nil || b.Engine == nil || len(body) == 0 {
 		return body
 	}
-	cols, err := b.Engine.ChildCollections(ctx, calKind, "")
+	u, err := currentUser(ctx, b.Engine)
+	if err != nil {
+		return body
+	}
+	cols, err := listHome(ctx, b.Engine, u, calKind)
 	if err != nil || len(cols) == 0 {
 		return body
 	}
-	ctags, err := b.Engine.CollectionCTags(ctx, calKind)
+	ctags, err := b.Engine.CollectionCTags(ctx, syncengine.UserScope(u.id), calKind)
 	if err != nil {
 		ctags = map[string]string{}
 	}
+	base := homeBase(ctx, b.Prefix, u)
 	s := string(body)
 	for i := range cols {
-		m := ParseCalendarColMeta(cols[i].Metadata)
-		href := Join(b.Prefix, calUserSeg, calHomeSeg, cols[i].Name)
-		s = injectApplePropsForHref(s, href, m, ctags[cols[i].ID])
+		m := ParseCalendarColMeta(cols[i].col.Metadata)
+		if cols[i].access != authz.AccessOwner {
+			if p, err := b.Engine.GetPref(ctx, u.id, cols[i].col.ID); err == nil {
+				if c := NormalizeCalendarColor(p.Color); c != "" {
+					m.Color = c
+				}
+				if p.Order != 0 {
+					m.Order = p.Order
+				}
+			}
+		}
+		href := Join(base, calHomeSeg, cols[i].seg)
+		s = injectApplePropsForHref(s, href, m, ctags[cols[i].col.ID], cols[i].access)
 	}
 	return []byte(s)
 }
@@ -204,23 +227,28 @@ func (b *CardDAV) injectAddressBookCTags(ctx context.Context, body []byte) []byt
 	if b == nil || b.Engine == nil || len(body) == 0 {
 		return body
 	}
-	cols, err := b.Engine.ChildCollections(ctx, bookKind, "")
+	u, err := currentUser(ctx, b.Engine)
+	if err != nil {
+		return body
+	}
+	cols, err := listHome(ctx, b.Engine, u, bookKind)
 	if err != nil || len(cols) == 0 {
 		return body
 	}
-	ctags, err := b.Engine.CollectionCTags(ctx, bookKind)
+	ctags, err := b.Engine.CollectionCTags(ctx, syncengine.UserScope(u.id), bookKind)
 	if err != nil {
 		ctags = map[string]string{}
 	}
+	base := homeBase(ctx, b.Prefix, u)
 	s := string(body)
 	for i := range cols {
-		href := Join(b.Prefix, cardUserSeg, cardHomeSeg, cols[i].Name)
-		s = injectApplePropsForHref(s, href, CalendarColMeta{}, ctags[cols[i].ID])
+		href := Join(base, cardHomeSeg, cols[i].seg)
+		s = injectApplePropsForHref(s, href, CalendarColMeta{}, ctags[cols[i].col.ID], cols[i].access)
 	}
 	return []byte(s)
 }
 
-func injectApplePropsForHref(body, href string, m CalendarColMeta, ctag string) string {
+func injectApplePropsForHref(body, href string, m CalendarColMeta, ctag string, access authz.Access) string {
 	href = strings.TrimSuffix(href, "/")
 	needles := []string{
 		href + "</",
@@ -241,7 +269,7 @@ func injectApplePropsForHref(body, href string, m CalendarColMeta, ctag string) 
 	if !ok {
 		return body
 	}
-	rewritten := rewriteCalendarPropBlock(body[start:end], m, ctag)
+	rewritten := rewriteCalendarPropBlock(body[start:end], m, ctag, access)
 	return body[:start] + rewritten + body[end:]
 }
 
@@ -267,7 +295,15 @@ func responseBounds(body string, hrefAt int) (start, end int, ok bool) {
 	return start, hrefAt + rel + n, true
 }
 
-func rewriteCalendarPropBlock(block string, m CalendarColMeta, ctag string) string {
+// readOnlyPrivileges is what read-only shares advertise, so Apple clients
+// show the calendar or address book as locked.
+const readOnlyPrivileges = `<current-user-privilege-set xmlns="DAV:"><privilege><read/></privilege><privilege><read-current-user-privilege-set/></privilege></current-user-privilege-set>`
+
+func rewriteCalendarPropBlock(block string, m CalendarColMeta, ctag string, access authz.Access) string {
+	if access > authz.AccessNone && access < authz.AccessWrite && currentUserPrivilegeElemRe.MatchString(block) {
+		block = currentUserPrivilegeElemRe.ReplaceAllString(block, "")
+		block = injectIntoOKProp(block, readOnlyPrivileges)
+	}
 	var insert strings.Builder
 	if m.Color != "" {
 		insert.WriteString(`<calendar-color xmlns="` + appleICalNS + `">`)
@@ -297,6 +333,8 @@ var (
 	calendarColorElemRe = namedElemRe("calendar-color")
 	calendarOrderElemRe = namedElemRe("calendar-order")
 	getctagElemRe       = namedElemRe("getctag")
+
+	currentUserPrivilegeElemRe = namedElemRe("current-user-privilege-set")
 )
 
 func namedElemRe(local string) *regexp.Regexp {

@@ -2,12 +2,17 @@ package server
 
 import (
 	"encoding/base64"
+	"net/url"
 	"sync"
 	"time"
 )
 
 func b64(b []byte) string {
 	return base64.RawStdEncoding.EncodeToString(b)
+}
+
+func b64url(b []byte) string {
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func b64decode(s string) ([]byte, error) {
@@ -49,4 +54,8 @@ func (l *ipLimiter) Allow(ip string) bool {
 	}
 	l.hits[ip] = append(kept, now)
 	return true
+}
+
+func queryEscape(s string) string {
+	return url.QueryEscape(s)
 }

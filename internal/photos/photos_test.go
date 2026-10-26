@@ -96,7 +96,7 @@ func TestIngestDedupAndNoGPS(t *testing.T) {
 	eng := syncengine.New(st)
 	idsvc := identity.NewService(st)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, err := idsvc.Enroll(context.Background(), "cli", pub, identity.RoleClient)
+	dev, err := idsvc.Enroll(context.Background(), "", "cli", pub, identity.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}

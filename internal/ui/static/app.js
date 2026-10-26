@@ -8,6 +8,15 @@
   const loginEl = $("#login");
   const appEl = $("#app");
   const toastEl = $("#toast");
+  const actAsEl = $("#act-as");
+  const actAsWrap = $("#act-as-wrap");
+
+  // Act-as: data views and writes apply to the selected user (header
+  // X-Nubilo-Act-As on every /api call); empty means the default owner admin.
+  const ACT_AS_KEY = "nubilo.actAs";
+  let actAs = localStorage.getItem(ACT_AS_KEY) || "";
+  let users = [];
+  let defaultUser = "";
 
   const routes = {
     home: { title: "overview", render: renderHome },
@@ -16,19 +25,25 @@
     reminders: { title: "reminders", render: renderReminders },
     contacts: { title: "contacts", render: renderContacts },
     files: { title: "files", render: renderFiles },
+    users: { title: "users", render: renderUsers },
     ops: { title: "ops", render: renderOps },
     settings: { title: "settings", render: renderSettings },
   };
 
+  function actHeaders(headers = {}) {
+    if (actAs) headers["X-Nubilo-Act-As"] = actAs;
+    return headers;
+  }
+
   async function api(path, opts = {}) {
-    const headers = { ...(opts.headers || {}) };
+    const headers = actHeaders({ ...(opts.headers || {}) });
     if (opts.body && !headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
     }
     const res = await fetch("/api" + path, {
       credentials: "same-origin",
-      headers,
       ...opts,
+      headers,
     });
     if (res.status === 401) {
       showLogin();
@@ -76,6 +91,42 @@
 
   function kvRow(label, value) {
     return `<tr><td>${esc(label)}</td><td>${value}</td></tr>`;
+  }
+
+  function userName(id) {
+    const u = users.find((x) => x.id === id);
+    return u ? u.username : id || "system";
+  }
+
+  // loadUsers refreshes the user cache and the act-as switcher. A stored
+  // selection that no longer exists or is disabled falls back to the default.
+  async function loadUsers() {
+    const data = await api("/users");
+    users = data.users || [];
+    defaultUser = data.default_user || "";
+    const active = users.filter((u) => u.status === "active");
+    if (!active.some((u) => u.id === actAs)) setActAs(defaultUser);
+    actAsEl.innerHTML = active
+      .map(
+        (u) =>
+          `<option value="${esc(u.id)}"${u.id === actAs ? " selected" : ""}>${esc(u.username)}${u.id === defaultUser ? " (owner)" : ""}</option>`
+      )
+      .join("");
+    actAsWrap.classList.toggle("other", actAs !== defaultUser);
+  }
+
+  function setActAs(id) {
+    actAs = id || "";
+    if (actAs) localStorage.setItem(ACT_AS_KEY, actAs);
+    else localStorage.removeItem(ACT_AS_KEY);
+    actAsWrap.classList.toggle("other", actAs !== defaultUser);
+  }
+
+  function copyText(text) {
+    navigator.clipboard.writeText(text).then(
+      () => toast("copied"),
+      () => prompt("copy:", text)
+    );
   }
 
   function route() {
@@ -209,7 +260,7 @@
               const res = await fetch("/api/photos?name=" + encodeURIComponent(f.name), {
                 method: "POST",
                 credentials: "same-origin",
-                headers: { "Content-Type": f.type || "application/octet-stream" },
+                headers: actHeaders({ "Content-Type": f.type || "application/octet-stream" }),
                 body: f,
               });
               if (!res.ok) throw new Error(await res.text());
@@ -360,7 +411,7 @@
               const res = await fetch("/api/collections/" + encodeURIComponent(active) + "/upload?name=" + encodeURIComponent(file.name), {
                 method: "POST",
                 credentials: "same-origin",
-                headers: { "Content-Type": "application/octet-stream", "X-Filename": file.name },
+                headers: actHeaders({ "Content-Type": "application/octet-stream", "X-Filename": file.name }),
                 body: file,
               });
               if (!res.ok) throw new Error(await res.text());
@@ -549,7 +600,10 @@
           : ds.mime || "application/octet-stream";
     const dl =
       `/api/blobs/${ds.blob}?mime=${encodeURIComponent(mime)}&name=${encodeURIComponent(ds.name || "blob")}&download=1`;
-    const res = await fetch(`/api/blobs/${ds.blob}?mime=${encodeURIComponent(mime)}`, { credentials: "same-origin" });
+    const res = await fetch(`/api/blobs/${ds.blob}?mime=${encodeURIComponent(mime)}`, {
+      credentials: "same-origin",
+      headers: actHeaders(),
+    });
     const text = await res.text();
     content.innerHTML = `
       <div class="block">
@@ -587,6 +641,211 @@
   }
   function renderFiles() {
     return renderBrowse("files", "no file collections — create one", "new folder");
+  }
+
+  async function renderUsers() {
+    content.innerHTML = '<div class="empty">loading</div>';
+    try {
+      const [, inv] = await Promise.all([loadUsers(), api("/invites")]);
+      const invites = inv.invites || [];
+      const activeUsers = users.filter((u) => u.status === "active");
+      const userRows = users
+        .map((u) => {
+          const admin = u.role === "admin";
+          const disabled = u.status !== "active";
+          const name = esc(u.username) + (u.id === defaultUser ? ' <span class="muted">(owner)</span>' : "");
+          return `<tr${disabled ? ' class="row-disabled"' : ""}>
+            <td>${u.id === actAs ? `<span class="accent">${name}</span>` : name}</td>
+            <td>${esc(u.display_name || "")}</td>
+            <td>${esc(u.role)}</td>
+            <td class="${disabled ? "status-off" : ""}">${esc(u.status)}</td>
+            <td>${u.devices || 0}</td>
+            <td>${u.objects || 0}</td>
+            <td>${fmtSize(u.bytes || 0)}</td>
+            <td class="row-actions">
+              <button type="button" class="btn sm u-role" data-id="${esc(u.id)}" data-role="${admin ? "member" : "admin"}">${admin ? "make member" : "make admin"}</button>
+              <button type="button" class="btn sm u-status${disabled ? "" : " danger"}" data-id="${esc(u.id)}" data-status="${disabled ? "active" : "disabled"}">${disabled ? "enable" : "disable"}</button>
+              ${disabled || u.id === actAs ? "" : `<button type="button" class="btn sm u-act" data-id="${esc(u.id)}">act as</button>`}
+            </td>
+          </tr>`;
+        })
+        .join("");
+      const inviteRows = invites
+        .map(
+          (i) => `<tr>
+            <td>${esc(i.user_id ? "device for " + userName(i.user_id) : "new " + i.role)}</td>
+            <td>${i.uses || 0} / ${i.max_uses || 0}</td>
+            <td>${esc(fmtDate(i.expires_at))}</td>
+            <td>${esc(fmtDate(i.created_at))}</td>
+            <td class="row-actions"><button type="button" class="btn sm danger inv-revoke" data-id="${esc(i.id)}">revoke</button></td>
+          </tr>`
+        )
+        .join("");
+      content.innerHTML = `
+        <div class="section">
+          <p class="section-title">users</p>
+          <div class="block">
+            <table class="data wide users-table">
+              <thead><tr><th>username</th><th>display name</th><th>role</th><th>status</th><th>devices</th><th>objects</th><th>storage</th><th></th></tr></thead>
+              <tbody>${userRows}</tbody>
+            </table>
+          </div>
+          <p class="hint error" id="users-err"></p>
+          <p class="hint">disabling a user revokes all their devices and app passwords · the last admin cannot be demoted or disabled</p>
+        </div>
+        <div class="section">
+          <p class="section-title">new user</p>
+          <div class="block form-grid">
+            <div class="block-head"><h3>create user</h3></div>
+            <div class="form-body">
+              <div class="form-row"><label>username</label><input id="nu-name" autocomplete="off" placeholder="a-z 0-9 . _ - (max 32)"></div>
+              <div class="form-row"><label>display name</label><input id="nu-display" autocomplete="off"></div>
+              <div class="form-row"><label>role</label>
+                <select id="nu-role"><option value="member">member</option><option value="admin">admin</option></select>
+              </div>
+              <button type="button" class="btn sm primary" id="nu-create">create</button>
+              <p class="hint error" id="nu-err"></p>
+            </div>
+          </div>
+        </div>
+        <div class="section">
+          <p class="section-title">invites</p>
+          <div class="block">
+            ${
+              invites.length
+                ? `<table class="data wide">
+                    <thead><tr><th>for</th><th>uses</th><th>expires</th><th>created</th><th></th></tr></thead>
+                    <tbody>${inviteRows}</tbody>
+                  </table>`
+                : '<div class="empty form-body">no active invites</div>'
+            }
+          </div>
+          <p class="hint error" id="inv-list-err"></p>
+          <div class="block form-grid" style="margin-top:1rem">
+            <div class="block-head"><h3>invite member</h3></div>
+            <div class="form-body">
+              <div class="form-row"><label>for existing user</label>
+                <select id="inv-user">
+                  <option value="">— new user (signs up with the invite) —</option>
+                  ${activeUsers.map((u) => `<option value="${esc(u.id)}">${esc(u.username)} (pair a device)</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-row"><label>role</label>
+                <select id="inv-role"><option value="member">member</option><option value="admin">admin</option></select>
+              </div>
+              <div class="form-row"><label>ttl (hours)</label><input type="number" id="inv-ttl" value="24" min="1" max="720"></div>
+              <div class="form-row"><label>max uses</label><input type="number" id="inv-uses" value="1" min="1" max="50"></div>
+              <button type="button" class="btn sm primary" id="inv-create">create invite</button>
+              <p class="hint error" id="inv-err"></p>
+              <div id="inv-out"></div>
+            </div>
+          </div>
+        </div>`;
+
+      const showErr = (id, msg) => {
+        const el = $("#" + id);
+        if (el) el.textContent = msg || "";
+      };
+
+      const patchUser = async (id, body) => {
+        showErr("users-err", "");
+        try {
+          await api("/users/" + encodeURIComponent(id), { method: "PATCH", body: JSON.stringify(body) });
+          renderUsers();
+        } catch (e) {
+          showErr("users-err", e.message);
+        }
+      };
+      content.querySelectorAll(".u-role").forEach((btn) => {
+        btn.onclick = () => patchUser(btn.dataset.id, { role: btn.dataset.role });
+      });
+      content.querySelectorAll(".u-status").forEach((btn) => {
+        btn.onclick = () => {
+          if (btn.dataset.status === "disabled") {
+            const msg = `disable ${userName(btn.dataset.id)}?\n\nthis revokes all their devices and app passwords.`;
+            if (!confirm(msg)) return;
+          }
+          patchUser(btn.dataset.id, { status: btn.dataset.status });
+        };
+      });
+      content.querySelectorAll(".u-act").forEach((btn) => {
+        btn.onclick = () => {
+          setActAs(btn.dataset.id);
+          toast("acting as " + userName(actAs));
+          renderUsers();
+        };
+      });
+
+      $("#nu-create").onclick = async () => {
+        showErr("nu-err", "");
+        try {
+          const u = await api("/users", {
+            method: "POST",
+            body: JSON.stringify({
+              username: $("#nu-name").value.trim(),
+              display_name: $("#nu-display").value.trim(),
+              role: $("#nu-role").value,
+            }),
+          });
+          toast("created " + u.username);
+          renderUsers();
+        } catch (e) {
+          showErr("nu-err", e.message);
+        }
+      };
+
+      content.querySelectorAll(".inv-revoke").forEach((btn) => {
+        btn.onclick = async () => {
+          if (!confirm("revoke this invite?")) return;
+          try {
+            await api("/invites/" + encodeURIComponent(btn.dataset.id), { method: "DELETE" });
+            toast("invite revoked");
+            renderUsers();
+          } catch (e) {
+            showErr("inv-list-err", e.message);
+          }
+        };
+      });
+
+      // Pairing a device for an existing user inherits that user's role.
+      const invUser = $("#inv-user");
+      invUser.onchange = () => {
+        $("#inv-role").disabled = !!invUser.value;
+      };
+      $("#inv-create").onclick = async () => {
+        showErr("inv-err", "");
+        const body = {
+          role: $("#inv-role").value,
+          ttl_hours: parseInt($("#inv-ttl").value, 10) || undefined,
+          max_uses: parseInt($("#inv-uses").value, 10) || undefined,
+        };
+        if (invUser.value) body.user_id = invUser.value;
+        try {
+          const r = await api("/invites", { method: "POST", body: JSON.stringify(body) });
+          const forWho = r.user_id ? "a new device for " + userName(r.user_id) : "a new " + r.role;
+          $("#inv-out").innerHTML = `
+            <div class="invite-out">
+              ${r.qr ? `<img class="invite-qr" src="${esc(r.qr)}" alt="invite QR code">` : ""}
+              <div class="invite-info">
+                <p class="hint">Scan with the Nubilo app to join as ${esc(forWho)}, or open the link on the device.</p>
+                <table class="kv">
+                  ${kvRow("url", `<span class="copy-val">${esc(r.url)}</span> <button type="button" class="btn sm" id="inv-copy-url">copy</button>`)}
+                  ${kvRow("code", `<strong class="accent">${esc(r.code)}</strong> <button type="button" class="btn sm" id="inv-copy-code">copy</button>`)}
+                  ${kvRow("expires", esc(fmtDate(r.expires_at)))}
+                </table>
+                <button type="button" class="btn sm" id="inv-refresh">done</button>
+              </div>
+            </div>`;
+          $("#inv-copy-url").onclick = () => copyText(r.url);
+          $("#inv-copy-code").onclick = () => copyText(r.code);
+          $("#inv-refresh").onclick = () => renderUsers();
+        } catch (e) {
+          showErr("inv-err", e.message);
+        }
+      };
+    } catch (e) {
+      content.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
   }
 
   let pairPoll = null;
@@ -635,7 +894,7 @@
               <button type="button" class="btn sm primary" id="pair-start">start</button>
             </div>
           </div>
-          <div class="form-body" id="pair-out"><p class="hint">generates a code for nubilo pair --server …</p></div>
+          <div class="form-body" id="pair-out"><p class="hint">generates a code for nubilo pair --server … · device belongs to ${esc(userName(actAs))}</p></div>
         </div>
       </div>
       <div class="section">
@@ -816,7 +1075,12 @@
       fd.append("dest", $("#restore-dest")?.value || "");
       fd.append("confirm", $("#restore-confirm")?.value || "");
       try {
-        const res = await fetch("/api/restore", { method: "POST", body: fd, credentials: "same-origin" });
+        const res = await fetch("/api/restore", {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+          headers: actHeaders(),
+        });
         const t = await res.text();
         if (!res.ok) throw new Error(t || res.statusText);
         toast("restored");
@@ -840,7 +1104,7 @@
   async function renderSettings() {
     content.innerHTML = '<div class="empty">loading</div>';
     try {
-      const [cfg, devs] = await Promise.all([api("/config"), api("/devices")]);
+      const [cfg, devs] = await Promise.all([api("/config"), api("/devices"), loadUsers()]);
       const devices = devs.devices || [];
       content.innerHTML = `
         <div class="section">
@@ -873,7 +1137,7 @@
         <div class="section">
           <p class="section-title">devices</p>
           <div class="block form-grid">
-            <div class="block-head"><h3>enroll pubkey</h3></div>
+            <div class="block-head"><h3>enroll pubkey</h3><span>for ${esc(userName(actAs))}</span></div>
             <div class="form-body">
               <div class="form-row"><label>name</label><input id="enroll-name"></div>
               <div class="form-row"><label>role</label>
@@ -886,14 +1150,14 @@
           <div class="block" style="margin-top:1rem">
             <div class="block-head">
               <h3>paired</h3>
-              <button type="button" class="btn sm" id="new-pass">new password</button>
+              <button type="button" class="btn sm" id="new-pass">new password for ${esc(userName(actAs))}</button>
             </div>
             <ul class="list" id="dev-list">${devices
               .map(
                 (d) => `<li class="list-item" style="cursor:default">
                 <div class="list-item-main">
                   <p class="list-item-title">${esc(d.name)}${d.revoked ? " (revoked)" : ""}</p>
-                  <p class="list-item-sub">${esc(d.id)} · ${esc(d.role)}${d.protocols ? " · " + esc((d.protocols || []).join(",")) : ""}</p>
+                  <p class="list-item-sub">user ${esc(userName(d.user_id))} · ${esc(d.id)} · ${esc(d.role)}${d.protocols ? " · " + esc((d.protocols || []).join(",")) : ""}</p>
                 </div>
                 ${
                   d.revoked
@@ -970,7 +1234,7 @@
           const urls = Object.entries(r.urls || {})
             .map(([k, v]) => `${k}: ${v}`)
             .join("\n");
-          alert(`save this password now\n\nusername: ${r.device_id}\npassword: ${r.password}\n\n${urls}`);
+          alert(`save this password now\n\nusername: ${r.username}\npassword: ${r.password}\n\n${urls}`);
           renderSettings();
         } catch (e) {
           toast(e.message);
@@ -1021,9 +1285,14 @@
     appEl.classList.add("hidden");
   }
 
-  function showApp() {
+  async function showApp() {
     loginEl.classList.add("hidden");
     appEl.classList.remove("hidden");
+    try {
+      await loadUsers();
+    } catch (e) {
+      toast(e.message);
+    }
     route();
   }
 
@@ -1034,7 +1303,7 @@
         await fetch("/api/login", {
           method: "POST",
           credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
+          headers: actHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({ token }),
         }).then((r) => {
           if (!r.ok) throw new Error("invalid token");
@@ -1053,11 +1322,16 @@
     } catch (_) {}
     showLogin();
     try {
-      const info = await fetch("/api/info").then((r) => r.json());
+      const info = await fetch("/api/info", { headers: actHeaders() }).then((r) => r.json());
       if (info.admin_token) $("#token-path").textContent = info.admin_token;
     } catch (_) {}
   }
 
+  actAsEl.onchange = () => {
+    setActAs(actAsEl.value);
+    toast("acting as " + userName(actAs));
+    route();
+  };
   window.addEventListener("hashchange", () => {
     if (!appEl.classList.contains("hidden")) route();
   });

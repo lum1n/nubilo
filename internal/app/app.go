@@ -90,21 +90,9 @@ func Init(dataDir string, listen string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	eng := syncengine.New(st)
-	if _, err := eng.EnsureNamedCollection(context.Background(), "files", "Files"); err != nil {
-		return err
-	}
-	if _, err := eng.EnsureNamedCollection(context.Background(), "calendar", "Personal"); err != nil {
-		return err
-	}
-	if _, err := eng.EnsureNamedCollection(context.Background(), "addressbook", "Contacts"); err != nil {
-		return err
-	}
-	if _, err := eng.EnsureNamedCollection(context.Background(), "photos", "Photos"); err != nil {
-		return err
-	}
-	return nil
+	// Users (and their default collections) are created later: by redeeming
+	// the setup invite, or lazily as the "owner" admin for CLI pairing.
+	return st.Close()
 }
 
 func Open(dataDir string) (*Runtime, error) {
@@ -165,19 +153,10 @@ func Open(dataDir string) (*Runtime, error) {
 		MaxBody:  cfg.Sync.MaxBlobBytes,
 	}
 	eng := syncengine.New(st)
-	if _, err := eng.EnsureNamedCollection(context.Background(), "files", "Files"); err != nil {
-		st.Close()
-		return nil, err
+	ids.OnUserCreated = func(ctx context.Context, u *identity.User) error {
+		return eng.EnsureUserDefaults(ctx, u.ID)
 	}
-	if _, err := eng.EnsureNamedCollection(context.Background(), "calendar", "Personal"); err != nil {
-		st.Close()
-		return nil, err
-	}
-	if _, err := eng.EnsureNamedCollection(context.Background(), "addressbook", "Contacts"); err != nil {
-		st.Close()
-		return nil, err
-	}
-	if _, err := eng.EnsureNamedCollection(context.Background(), "photos", "Photos"); err != nil {
+	if err := ensureAllUserDefaults(context.Background(), ids, eng); err != nil {
 		st.Close()
 		return nil, err
 	}
@@ -196,6 +175,24 @@ func Open(dataDir string) (*Runtime, error) {
 		ServerPriv: priv,
 		AdminTok:   tok,
 	}, nil
+}
+
+// ensureAllUserDefaults makes sure every active user has the default
+// collections (users created before the hook existed, or after deletions).
+func ensureAllUserDefaults(ctx context.Context, ids *identity.Service, eng *syncengine.Engine) error {
+	users, err := ids.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, u := range users {
+		if !u.Active() {
+			continue
+		}
+		if err := eng.EnsureUserDefaults(ctx, u.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) Close() error {

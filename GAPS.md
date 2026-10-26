@@ -72,7 +72,7 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 
 - Failed `apply_change` no longer advances the journal cursor.
 - Synthetic `EXDATE` skipped when EventKit listing looks incomplete (missing ≫ listed).
-- One operator, one object graph. No multi-user isolation.
+- Multi-user since schema v2: users, per-collection ownership, read-only/read-write shares of top-level collections, isolated journal/blobs/photos/DAV (SECURITY.md §5.1). Groups, quotas and per-user web logins are not implemented yet; the admin console acts as a chosen user.
 
 ## Security / ops
 
@@ -90,4 +90,4 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 
 - Hands-on phone/Finder restore drills remain operator actions; `nubilo doctor` surfaces the checklist in product.
 - Corporate credentials never leave the Mac. Linux `nubilo agent` stays refused. GPS never lands in SQLite. Originals are never mutated.
-- No iOS/Android app (Calendar/Contacts/Files/photos via Apple accounts + WebDAV/Shortcuts + optional UI).
+- iOS/macOS app (`apps/Nubilo`): onboarding by QR, CalDAV/CardDAV profile install, best-effort photo backup, gallery and shared albums, family admin. No Android app. File Provider extension and signed profiles are later work.

@@ -4,15 +4,16 @@ import (
 	"context"
 	"fmt"
 
-	"nubilo/internal/ids"
 	"nubilo/internal/identity"
+	"nubilo/internal/ids"
 )
 
 // LocalOperatorID is a fixed ULID used as origin_device for local admin mutations
 // (UI / operator tooling). It is not a real paired device row.
 const LocalOperatorID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
-// LocalOperator returns a synthetic admin device for Push from local tooling.
+// LocalOperator returns a synthetic system admin device for Push from local
+// tooling. It is not bound to a user and may write any collection.
 func LocalOperator() *identity.Device {
 	return &identity.Device{
 		ID:          LocalOperatorID,
@@ -20,6 +21,18 @@ func LocalOperator() *identity.Device {
 		Role:        identity.RoleAdmin,
 		Permissions: identity.DefaultPermissions(identity.RoleAdmin),
 	}
+}
+
+// LocalOperatorAs returns the local operator acting as user u, so writes are
+// checked against and attributed to that user ("act as" in the admin UI).
+func LocalOperatorAs(u *identity.User) *identity.Device {
+	d := LocalOperator()
+	if u != nil {
+		d.UserID = u.ID
+		d.UserRole = u.Role
+		d.UserStatus = u.Status
+	}
+	return d
 }
 
 // DeleteObject tombstones a live object via the sync journal (same path as CalDAV/WebDAV).
@@ -65,4 +78,22 @@ func (e *Engine) DeleteCollection(ctx context.Context, id string) error {
 		}
 	}
 	return e.TombstoneCollection(ctx, id)
+}
+
+// DefaultCollections are created for every new user.
+var DefaultCollections = []struct{ Kind, Name string }{
+	{"files", "Files"},
+	{"calendar", "Personal"},
+	{"addressbook", "Contacts"},
+	{"photos", "Photos"},
+}
+
+// EnsureUserDefaults creates the default collections a user starts with.
+func (e *Engine) EnsureUserDefaults(ctx context.Context, userID string) error {
+	for _, d := range DefaultCollections {
+		if _, err := e.EnsureNamedCollection(ctx, userID, d.Kind, d.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }

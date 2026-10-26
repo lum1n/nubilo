@@ -3,6 +3,7 @@ package ui
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -153,4 +154,8 @@ func readJSON(r *http.Request, v any) error {
 		return nil
 	}
 	return err
+}
+
+func b64url(b []byte) string {
+	return base64.RawURLEncoding.EncodeToString(b)
 }

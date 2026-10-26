@@ -2,19 +2,29 @@ package dav
 
 import (
 	"encoding/xml"
+	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/emersion/go-webdav/caldav"
 	"github.com/emersion/go-webdav/carddav"
+
+	"nubilo/internal/syncengine"
 )
 
-// WellKnown serves RFC 6764 discovery. iOS Calendar sends PROPFIND (not GET)
-// to /.well-known/caldav. GET/HEAD stay unauthenticated redirects; other
-// methods are rewritten to the DAV principal so Basic auth and PROPFIND work.
-func WellKnown(principal string, dav http.Handler) http.Handler {
+// WellKnown serves RFC 6764 discovery for the authenticated user (it must
+// run inside the auth middleware). GET/HEAD redirect to the user's
+// principal; iOS sends PROPFIND, which is served at the principal directly.
+func WellKnown(prefix string, eng *syncengine.Engine, dav http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, err := currentUser(r.Context(), eng)
+		if err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		principal := prefix + "/" + userSeg + "/" + u.username + "/"
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
 			http.Redirect(w, r, principal, http.StatusMovedPermanently)
@@ -29,13 +39,11 @@ func WellKnown(principal string, dav http.Handler) http.Handler {
 
 // WrapCalDAV adds Apple Calendar compatibility around go-webdav.
 func WrapCalDAV(b *CalDAV) http.Handler {
-	inner := &caldav.Handler{Backend: b, Prefix: b.Prefix}
 	return appleDAV{
-		next: inner,
-		slash: []string{
-			b.Prefix,
-			b.Prefix + "/" + calUserSeg,
-			b.Prefix + "/" + calUserSeg + "/" + calHomeSeg,
+		prefix:  b.Prefix,
+		homeSeg: calHomeSeg,
+		inner: func(prefix string) http.Handler {
+			return &caldav.Handler{Backend: b, Prefix: prefix}
 		},
 		mkcalendar: b,
 		cal:        b,
@@ -44,13 +52,11 @@ func WrapCalDAV(b *CalDAV) http.Handler {
 
 // WrapCardDAV adds Apple Contacts compatibility around go-webdav.
 func WrapCardDAV(b *CardDAV) http.Handler {
-	inner := &carddav.Handler{Backend: b, Prefix: b.Prefix}
 	return appleDAV{
-		next: inner,
-		slash: []string{
-			b.Prefix,
-			b.Prefix + "/" + cardUserSeg,
-			b.Prefix + "/" + cardUserSeg + "/" + cardHomeSeg,
+		prefix:  b.Prefix,
+		homeSeg: cardHomeSeg,
+		inner: func(prefix string) http.Handler {
+			return &carddav.Handler{Backend: b, Prefix: prefix}
 		},
 		card: b,
 	}
@@ -61,17 +67,24 @@ type mkCalendarHandler interface {
 }
 
 type appleDAV struct {
-	next       http.Handler
-	slash      []string
+	prefix     string
+	homeSeg    string
+	inner      func(prefix string) http.Handler
 	mkcalendar mkCalendarHandler
 	cal        *CalDAV
 	card       *CardDAV
 }
 
 func (h appleDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if canonicalDAVSlash(w, r, h.slash) {
+	if canonicalDAVSlash(w, r, h.containers(r.URL.Path)) {
 		return
 	}
+	if !h.ownHome(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	r = r.WithContext(withLegacyStyle(r.Context(), isLegacyPath(h.prefix, r.URL.Path)))
+	next := h.inner(handlerPrefix(h.prefix, r.URL.Path))
 	switch r.Method {
 	case "PROPPATCH":
 		if h.cal != nil {
@@ -86,12 +99,46 @@ func (h appleDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "PROPFIND":
-		if h.cal != nil || h.card != nil {
-			h.serveCalPropFind(w, r)
-			return
-		}
+		h.serveCalPropFind(w, r, next)
+		return
 	}
-	h.next.ServeHTTP(w, r)
+	next.ServeHTTP(w, r)
+}
+
+// ownHome rejects requests under another user's /<prefix>/u/<username>/.
+func (h appleDAV) ownHome(r *http.Request) bool {
+	segs, err := Split(strings.TrimPrefix(r.URL.Path, h.prefix))
+	if err != nil || len(segs) < 2 || segs[0] != userSeg {
+		return true
+	}
+	eng := h.engine()
+	if eng == nil {
+		return false
+	}
+	u, err := currentUser(r.Context(), eng)
+	return err == nil && strings.EqualFold(segs[1], u.username)
+}
+
+func (h appleDAV) engine() *syncengine.Engine {
+	if h.cal != nil {
+		return h.cal.Engine
+	}
+	if h.card != nil {
+		return h.card.Engine
+	}
+	return nil
+}
+
+// containers lists the collection paths (root, principal, home) that must be
+// addressed with a trailing slash for p's layout.
+func (h appleDAV) containers(p string) []string {
+	out := []string{h.prefix, h.prefix + "/" + legacyUserSeg, h.prefix + "/" + legacyUserSeg + "/" + h.homeSeg}
+	segs, err := Split(strings.TrimPrefix(p, h.prefix))
+	if err == nil && len(segs) >= 2 && segs[0] == userSeg {
+		base := h.prefix + "/" + userSeg + "/" + segs[1]
+		out = append(out, base, base+"/"+h.homeSeg)
+	}
+	return out
 }
 
 func canonicalDAVSlash(w http.ResponseWriter, r *http.Request, need []string) bool {
@@ -162,15 +209,66 @@ func propPatchNames(body []byte) []string {
 }
 
 func (b *CalDAV) createFromPath(w http.ResponseWriter, r *http.Request) {
-	_, name, file, err := b.parseCalPath(r.URL.Path)
-	if err != nil || file != "" || name == "" {
-		http.Error(w, "calendar creation not allowed here", http.StatusForbidden)
-		return
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	name := mkcalendarDisplayName(body)
+	if name == "" {
+		segs, _ := Split(r.URL.Path)
+		if len(segs) > 0 {
+			name = DAVResourceName(segs[len(segs)-1], "")
+		}
 	}
-	name = DAVResourceName(name, "")
 	if err := b.CreateCalendar(r.Context(), &caldav.Calendar{Path: r.URL.Path, Name: name}); err != nil {
+		if code := httpErrorCode(err); code == http.StatusForbidden || code == http.StatusNotFound {
+			http.Error(w, err.Error(), code)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
+}
+
+// mkcalendarDisplayName extracts DAV:displayname from a MKCALENDAR body.
+func mkcalendarDisplayName(body []byte) string {
+	dec := xml.NewDecoder(strings.NewReader(string(body)))
+	in := false
+	var b strings.Builder
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			in = t.Name.Local == "displayname"
+		case xml.EndElement:
+			if t.Name.Local == "displayname" {
+				name := strings.TrimSpace(b.String())
+				if ValidDisplayName(name) {
+					return name
+				}
+				return ""
+			}
+		case xml.CharData:
+			if in {
+				b.Write(t)
+			}
+		}
+	}
+	return ""
+}
+
+// httpErrorCode returns the status of a go-webdav HTTP error (its type is
+// internal to go-webdav, so read the Code field by reflection), or 0.
+func httpErrorCode(err error) int {
+	for err != nil {
+		v := reflect.ValueOf(err)
+		if v.Kind() == reflect.Pointer && !v.IsNil() && v.Elem().Kind() == reflect.Struct {
+			if f := v.Elem().FieldByName("Code"); f.IsValid() && f.Kind() == reflect.Int {
+				return int(f.Int())
+			}
+		}
+		err = errors.Unwrap(err)
+	}
+	return 0
 }

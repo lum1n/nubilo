@@ -11,6 +11,7 @@ import (
 
 type pairingFile struct {
 	DeviceID        string `json:"device_id"`
+	UserID          string `json:"user_id,omitempty"`
 	Server          string `json:"server"`
 	ServerPublicKey string `json:"server_public_key"`
 	Name            string `json:"name"`

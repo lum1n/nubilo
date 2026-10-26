@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +36,10 @@ func Open(dir, dbPath, blobDir, tmpDir string, blobKey []byte, maxBlob int64) (*
 	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
 		return nil, err
 	}
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", filepath.ToSlash(dbPath))
+	// Escape URI metacharacters: a '#' or '?' in the data dir would otherwise
+	// truncate the path and silently open a different database file.
+	dsnPath := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(filepath.ToSlash(dbPath))
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", dsnPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open: %w", err)
@@ -72,14 +76,19 @@ func Open(dir, dbPath, blobDir, tmpDir string, blobKey []byte, maxBlob int64) (*
 	if maxBlob <= 0 {
 		maxBlob = config.DefaultMaxBlobBytes
 	}
-	return &Store{
+	s := &Store{
 		DB:      db,
 		Dir:     dir,
 		BlobDir: blobDir,
 		TmpDir:  tmpDir,
 		BlobKey: append([]byte(nil), blobKey...),
 		MaxBlob: maxBlob,
-	}, nil
+	}
+	if err := s.Migrate(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate: %w", err)
+	}
+	return s, nil
 }
 
 func (s *Store) Close() error {

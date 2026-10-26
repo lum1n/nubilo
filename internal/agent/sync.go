@@ -45,6 +45,11 @@ type Agent struct {
 	Log       *slog.Logger
 
 	routes map[string]route
+
+	// Collection list cache, valid while the server's collections_rev is unchanged.
+	colRev      string
+	colCache    []syncengine.Collection
+	colCacheRev string
 }
 
 type route struct {
@@ -73,12 +78,13 @@ func (a *Agent) SyncOnce(ctx context.Context) error {
 	if err := a.reloadSelection(); err != nil {
 		return err
 	}
-	if err := a.bindRoutes(); err != nil {
-		return err
-	}
 	cursor := a.Map.Cursor()
 	hello, err := a.Client.Hello(cursor, false)
 	if err != nil {
+		return err
+	}
+	a.colRev = hello.CollectionsRev
+	if err := a.bindRoutes(); err != nil {
 		return err
 	}
 	if hello.NeedReconcile {
@@ -1300,17 +1306,39 @@ func (a *Agent) bindFileSubdirs(root, parentColID, relDir string) error {
 
 func (a *Agent) ensureChildFilesCollection(parentID, name string) (*syncengine.Collection, error) {
 	name = dav.DAVResourceName(name, "")
-	cols, err := a.Client.Collections()
+	cols, err := a.collections()
 	if err != nil {
 		return nil, err
 	}
 	for i := range cols {
 		c := &cols[i]
-		if c.Kind == kindFiles && c.Name == name && c.ParentID == parentID && c.DeletedAt == nil {
+		if c.Kind == kindFiles && c.Name == name && c.ParentID == parentID && c.DeletedAt == nil && ownCollection(c) {
 			return c, nil
 		}
 	}
+	a.colCache = nil
 	return a.Client.EnsureChildCollection(kindFiles, parentID, name, nil)
+}
+
+// collections returns the server's collection list, refetching only when
+// Hello reported a different collections_rev (or the server sends none).
+func (a *Agent) collections() ([]syncengine.Collection, error) {
+	if a.colCache != nil && a.colRev != "" && a.colCacheRev == a.colRev {
+		return a.colCache, nil
+	}
+	cols, err := a.Client.Collections()
+	if err != nil {
+		return nil, err
+	}
+	a.colCache, a.colCacheRev = cols, a.colRev
+	return cols, nil
+}
+
+// ownCollection reports whether c belongs to this device's user. The agent
+// mirrors local data only into its own collections, never into calendars or
+// folders other users shared with it (older servers send no access field).
+func ownCollection(c *syncengine.Collection) bool {
+	return c.Access == "" || c.Access == "owner"
 }
 
 func (a *Agent) ensureCollection(kind, name string) (*syncengine.Collection, error) {
@@ -1318,15 +1346,16 @@ func (a *Agent) ensureCollection(kind, name string) (*syncengine.Collection, err
 		name = "Untitled"
 	}
 	name = dav.DAVResourceName(name, "")
-	cols, err := a.Client.Collections()
+	cols, err := a.collections()
 	if err != nil {
 		return nil, err
 	}
 	for i := range cols {
-		if cols[i].Kind == kind && cols[i].Name == name && cols[i].DeletedAt == nil {
+		if cols[i].Kind == kind && cols[i].Name == name && cols[i].DeletedAt == nil && ownCollection(&cols[i]) {
 			return &cols[i], nil
 		}
 	}
+	a.colCache = nil
 	return a.Client.EnsureCollection(kind, name, nil)
 }
 
@@ -1334,7 +1363,7 @@ func reminderDAVName(title string, cols []syncengine.Collection) string {
 	base := dav.DAVResourceName(title, "")
 	for i := range cols {
 		c := &cols[i]
-		if c.Kind != kindCal || c.DeletedAt != nil || c.Name != base {
+		if c.Kind != kindCal || c.DeletedAt != nil || c.Name != base || !ownCollection(c) {
 			continue
 		}
 		if dav.ParseCalendarColMeta(c.Metadata).Comp == "VTODO" {
@@ -1349,7 +1378,7 @@ func (a *Agent) ensureReminderCollection(title, color string) (*syncengine.Colle
 	if title == "" {
 		title = "Reminders"
 	}
-	cols, err := a.Client.Collections()
+	cols, err := a.collections()
 	if err != nil {
 		return nil, err
 	}
@@ -1358,7 +1387,7 @@ func (a *Agent) ensureReminderCollection(title, color string) (*syncengine.Colle
 	patch := dav.EncodeCalendarColMeta(dav.CalendarColMeta{Comp: "VTODO", Color: color})
 	for i := range cols {
 		c := &cols[i]
-		if c.Kind != kindCal || c.Name != name || c.DeletedAt != nil {
+		if c.Kind != kindCal || c.Name != name || c.DeletedAt != nil || !ownCollection(c) {
 			continue
 		}
 		meta := dav.ParseCalendarColMeta(c.Metadata)
@@ -1366,8 +1395,10 @@ func (a *Agent) ensureReminderCollection(title, color string) (*syncengine.Colle
 		if !need {
 			return c, nil
 		}
+		a.colCache = nil
 		return a.Client.EnsureCollection(kindCal, name, patch)
 	}
+	a.colCache = nil
 	return a.Client.EnsureCollection(kindCal, name, patch)
 }
 
@@ -1379,6 +1410,7 @@ func (a *Agent) syncCollectionColor(col *syncengine.Collection, color string) er
 	if dav.ParseCalendarColMeta(col.Metadata).Color == color {
 		return nil
 	}
+	a.colCache = nil
 	updated, err := a.Client.EnsureCollection(kindCal, col.Name, dav.EncodeCalendarColMeta(dav.CalendarColMeta{Color: color}))
 	if err != nil {
 		return err

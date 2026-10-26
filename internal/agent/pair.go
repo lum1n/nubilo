@@ -120,6 +120,7 @@ func PairWithServer(dataDir, serverURL, code, name string, insecure bool) (devic
 	}
 	var cr struct {
 		DeviceID        string `json:"device_id"`
+		UserID          string `json:"user_id"`
 		ServerPublicKey string `json:"server_public_key"`
 	}
 	if err := json.NewDecoder(resp2.Body).Decode(&cr); err != nil {
@@ -130,6 +131,7 @@ func PairWithServer(dataDir, serverURL, code, name string, insecure bool) (devic
 	}
 	out := pairingFile{
 		DeviceID:        cr.DeviceID,
+		UserID:          cr.UserID,
 		Server:          serverURL,
 		ServerPublicKey: cr.ServerPublicKey,
 		Name:            name,

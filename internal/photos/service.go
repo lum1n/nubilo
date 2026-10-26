@@ -7,17 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
-	ncrypto "nubilo/internal/crypto"
+	"nubilo/internal/authz"
 	"nubilo/internal/config"
+	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/identity"
 	"nubilo/internal/ids"
 	"nubilo/internal/store"
 	"nubilo/internal/syncengine"
 )
 
-var ErrNotPhoto = errors.New("photos: not a photo object")
+var (
+	ErrNotPhoto  = errors.New("photos: not a photo object")
+	ErrNoUser    = errors.New("photos: device has no user")
+	ErrForbidden = errors.New("photos: forbidden")
+)
 
 type Service struct {
 	Engine *syncengine.Engine
@@ -38,44 +44,113 @@ func (s Service) options() Options {
 	return o
 }
 
-func (s Service) Collection(ctx context.Context) (*syncengine.Collection, error) {
-	return s.Engine.EnsureNamedCollection(ctx, CollectionKind, DefaultName)
+// Library returns (creating if needed) the photo library of userID.
+func (s Service) Library(ctx context.Context, userID string) (*syncengine.Collection, error) {
+	if userID == "" {
+		return nil, ErrNoUser
+	}
+	return s.Engine.EnsureNamedCollection(ctx, userID, CollectionKind, DefaultName)
 }
 
+// Ingest stores an original, generates derivatives and adds the photo to the
+// device user's library.
 func (s Service) Ingest(ctx context.Context, dev *identity.Device, original []byte, name string, albums []string) (*syncengine.Object, error) {
 	if len(original) == 0 {
 		return nil, fmt.Errorf("photos: empty body")
+	}
+	if dev == nil || dev.UserID == "" {
+		return nil, ErrNoUser
 	}
 	prep, err := Prepare(original, name, s.options())
 	if err != nil {
 		return nil, err
 	}
+	return s.ingestPrepared(ctx, dev, prep, albums, "")
+}
+
+// CommitRequest adds a photo whose original was already uploaded as a blob.
+type CommitRequest struct {
+	BlobID        string
+	Name          string
+	TakenAtMS     int64
+	LocalID       string
+	LiveVideoBlob string
+}
+
+// Commit ingests an already-uploaded blob (PUT /sync/v1/blob) into the
+// device user's library. The user must hold references to the blobs.
+func (s Service) Commit(ctx context.Context, dev *identity.Device, req CommitRequest) (*syncengine.Object, error) {
+	if dev == nil || dev.UserID == "" {
+		return nil, ErrNoUser
+	}
+	for _, h := range []string{req.BlobID, req.LiveVideoBlob} {
+		if h == "" {
+			continue
+		}
+		ok, err := s.Store.HasBlobRef(ctx, dev.UserID, h)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrForbidden
+		}
+	}
+	original, err := s.Store.GetBlobPlaintext(req.BlobID)
+	if err != nil {
+		return nil, err
+	}
+	prep, err := Prepare(original, req.Name, s.options())
+	if err != nil {
+		return nil, err
+	}
+	if req.TakenAtMS > 0 && prep.Meta.TakenAtMS == 0 {
+		prep.Meta.TakenAtMS = req.TakenAtMS
+	}
+	if req.LiveVideoBlob != "" {
+		prep.Meta.LivePairHash = req.LiveVideoBlob
+		if prep.Meta.Kind == "image" || prep.Meta.Kind == "" {
+			prep.Meta.Kind = "live"
+		}
+	}
+	return s.ingestPrepared(ctx, dev, prep, nil, req.LocalID)
+}
+
+func (s Service) ingestPrepared(ctx context.Context, dev *identity.Device, prep Prepared, albums []string, localID string) (*syncengine.Object, error) {
 	origHash := ncrypto.SHA256Hex(prep.Original)
-	if _, _, err := s.Store.PutBlob(ctx, bytes.NewReader(prep.Original), origHash); err != nil {
+	if _, _, err := s.Store.PutUserBlob(ctx, dev.UserID, bytes.NewReader(prep.Original), origHash); err != nil {
 		return nil, err
 	}
 	prep.Meta.Checksum = origHash
 	if len(prep.Preview) > 0 {
 		ph := ncrypto.SHA256Hex(prep.Preview)
-		if _, _, err := s.Store.PutBlob(ctx, bytes.NewReader(prep.Preview), ph); err != nil {
+		if _, _, err := s.Store.PutUserBlob(ctx, dev.UserID, bytes.NewReader(prep.Preview), ph); err != nil {
 			return nil, err
 		}
 		prep.Meta.PreviewHash = ph
 	}
 	if len(prep.Thumb) > 0 {
 		th := ncrypto.SHA256Hex(prep.Thumb)
-		if _, _, err := s.Store.PutBlob(ctx, bytes.NewReader(prep.Thumb), th); err != nil {
+		if _, _, err := s.Store.PutUserBlob(ctx, dev.UserID, bytes.NewReader(prep.Thumb), th); err != nil {
 			return nil, err
 		}
 		prep.Meta.ThumbHash = th
 	}
 	prep.Meta.Albums = albums
-	col, err := s.Collection(ctx)
+	col, err := s.Library(ctx, dev.UserID)
 	if err != nil {
 		return nil, err
 	}
 	if existing, err := s.Engine.FindObjectByName(ctx, col.ID, prep.Meta.Name); err == nil && existing.ContentHash == origHash {
 		return existing, nil
+	}
+	if existing, err := s.findByChecksum(ctx, col.ID, origHash); err == nil {
+		return existing, nil
+	}
+	meta := EncodeMeta(prep.Meta)
+	if localID != "" {
+		if m, err := syncengine.MergeJSON(meta, mustJSON(map[string]string{"local_id": localID})); err == nil {
+			meta = m
+		}
 	}
 	res, err := s.Engine.Push(ctx, dev, ids.New(), []syncengine.ChangeInput{{
 		ObjectID:     ids.New(),
@@ -85,43 +160,97 @@ func (s Service) Ingest(ctx context.Context, dev *identity.Device, original []by
 		ContentHash:  origHash,
 		BlobID:       origHash,
 		Size:         int64(len(prep.Original)),
-		Metadata:     EncodeMeta(prep.Meta),
+		Metadata:     meta,
 		Force:        true,
 	}})
 	if err != nil {
 		return nil, err
 	}
 	if len(res) == 0 || res[0].Status != "ok" {
-		return nil, fmt.Errorf("photos: push rejected")
+		msg := "push rejected"
+		if len(res) > 0 && res[0].Error != "" {
+			msg = res[0].Error
+		}
+		return nil, fmt.Errorf("photos: %s", msg)
 	}
 	return s.Engine.GetObject(ctx, res[0].ObjectID)
 }
 
-func (s Service) List(ctx context.Context) ([]syncengine.Object, error) {
-	col, err := s.Collection(ctx)
+func (s Service) findByChecksum(ctx context.Context, collectionID, hash string) (*syncengine.Object, error) {
+	return s.Engine.FindLiveObjectByBlob(ctx, collectionID, hash)
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+// Missing returns the hashes in want that userID's library does not hold yet.
+func (s Service) Missing(ctx context.Context, userID string, want []string) ([]string, error) {
+	col, err := s.Library(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	objs, err := s.Engine.ListObjects(ctx, col.ID)
-	if err != nil {
-		return nil, err
-	}
-	out := objs[:0]
-	for _, o := range objs {
-		if o.Kind == ObjectKind {
-			out = append(out, o)
+	out := []string{}
+	for _, h := range want {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if !store.IsBlobID(h) {
+			continue
+		}
+		if _, err := s.Engine.FindLiveObjectByBlob(ctx, col.ID, h); errors.Is(err, syncengine.ErrNotFound) {
+			out = append(out, h)
+		} else if err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
 }
 
-func (s Service) Get(ctx context.Context, id string) (*syncengine.Object, error) {
+// List pages through userID's library in id order. next is empty on the last page.
+func (s Service) List(ctx context.Context, userID, after string, limit int) (objs []syncengine.Object, next string, err error) {
+	col, err := s.Library(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	return s.ListCollection(ctx, col.ID, ObjectKind, after, limit)
+}
+
+// ListCollection pages live objects of kind in one collection.
+func (s Service) ListCollection(ctx context.Context, collectionID, kind, after string, limit int) ([]syncengine.Object, string, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	objs, err := s.Engine.ListObjectsPage(ctx, collectionID, kind, after, limit+1)
+	if err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(objs) > limit {
+		objs = objs[:limit]
+		next = objs[limit-1].ID
+	}
+	return objs, next, nil
+}
+
+// Get returns a photo or album item the device may read.
+func (s Service) Get(ctx context.Context, dev *identity.Device, id string) (*syncengine.Object, error) {
 	obj, err := s.Engine.GetObject(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if obj.Kind != ObjectKind {
+	if obj.DeletedAt != nil {
+		return nil, syncengine.ErrNotFound
+	}
+	if obj.Kind != ObjectKind && obj.Kind != AlbumItemKind {
 		return nil, ErrNotPhoto
+	}
+	access, err := s.Engine.AccessFor(ctx, dev, obj.CollectionID)
+	if err != nil {
+		return nil, err
+	}
+	if access < authz.AccessRead {
+		// Same answer as a missing photo: do not reveal other users' ids.
+		return nil, syncengine.ErrNotFound
 	}
 	return obj, nil
 }
@@ -157,6 +286,10 @@ func (s Service) Blob(obj *syncengine.Object, which string) (mime string, body [
 		return "", nil, fmt.Errorf("photos: unknown rendition")
 	}
 	if hash == "" {
+		return "", nil, syncengine.ErrNotFound
+	}
+	// Serve only blobs this object holds a counted reference to.
+	if hash != obj.BlobID && !slices.Contains(store.MetadataBlobIDs(obj.Metadata), strings.ToLower(hash)) {
 		return "", nil, syncengine.ErrNotFound
 	}
 	body, err = s.Store.GetBlobPlaintext(hash)

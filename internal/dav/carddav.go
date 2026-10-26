@@ -3,6 +3,7 @@ package dav
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -25,7 +26,6 @@ const CardDAVPrefix = "/carddav"
 const (
 	bookKind    = "addressbook"
 	contactKind = "contact"
-	cardUserSeg = "user"
 	cardHomeSeg = "addressbooks"
 )
 
@@ -39,112 +39,126 @@ func NewCardDAV(eng *syncengine.Engine, st *store.Store) *CardDAV {
 	return &CardDAV{Engine: eng, Store: st, Prefix: CardDAVPrefix}
 }
 
+func (b *CardDAV) user(ctx context.Context) (*davUser, error) {
+	if err := b.allow(ctx, false); err != nil {
+		return nil, err
+	}
+	return currentUser(ctx, b.Engine)
+}
+
 func (b *CardDAV) CurrentUserPrincipal(ctx context.Context) (string, error) {
-	if err := b.allow(ctx, false, ""); err != nil {
+	u, err := b.user(ctx)
+	if err != nil {
 		return "", err
 	}
-	return b.Prefix + "/user/", nil
+	return homeBase(ctx, b.Prefix, u) + "/", nil
 }
 
 func (b *CardDAV) AddressBookHomeSetPath(ctx context.Context) (string, error) {
-	if err := b.allow(ctx, false, ""); err != nil {
+	u, err := b.user(ctx)
+	if err != nil {
 		return "", err
 	}
-	return b.Prefix + "/user/addressbooks/", nil
+	return homeBase(ctx, b.Prefix, u) + "/" + cardHomeSeg + "/", nil
 }
 
 func (b *CardDAV) CreateAddressBook(ctx context.Context, addressBook *carddav.AddressBook) error {
-	if err := b.allow(ctx, true, ""); err != nil {
+	if err := b.allow(ctx, true); err != nil {
 		return err
+	}
+	u, err := currentUser(ctx, b.Engine)
+	if err != nil {
+		return err
+	}
+	seg, file, err := parseHomePath(b.Prefix, cardHomeSeg, addressBook.Path, u)
+	if err != nil {
+		return err
+	}
+	if file != "" {
+		return webdav.NewHTTPError(http.StatusForbidden, errors.New("address book creation not allowed here"))
 	}
 	name := strings.TrimSpace(addressBook.Name)
 	if name == "" {
-		_, bookName, file, err := b.parseCardPath(addressBook.Path)
-		if err != nil {
-			return err
-		}
-		if file != "" || bookName == "" {
-			return webdav.NewHTTPError(http.StatusForbidden, errors.New("address book creation not allowed here"))
-		}
-		name = bookName
+		name = seg
 	}
 	if !ValidDisplayName(name) {
 		return webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid address book name"))
 	}
-	if _, err := b.Engine.FindChildCollection(ctx, bookKind, "", name); err == nil {
+	if _, err := findHome(ctx, b.Engine, u, bookKind, seg); err == nil {
 		return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
 	}
-	_, err := b.Engine.CreateCollection(ctx, bookKind, name, "", nil)
+	if _, err := b.Engine.FindChildCollection(ctx, u.id, bookKind, "", name); err == nil {
+		return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
+	}
+	var meta json.RawMessage
+	if !ids.Valid(seg) && seg != name {
+		meta, _ = json.Marshal(colSlug{Slug: seg})
+	}
+	_, err = b.Engine.CreateCollection(ctx, u.id, bookKind, name, "", meta)
+	if errors.Is(err, syncengine.ErrCollectionExists) {
+		return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
+	}
 	return err
 }
 
 func (b *CardDAV) ListAddressBooks(ctx context.Context) ([]carddav.AddressBook, error) {
-	if err := b.allow(ctx, false, ""); err != nil {
-		return nil, err
-	}
-	cols, err := b.Engine.ChildCollections(ctx, bookKind, "")
+	u, err := b.user(ctx)
 	if err != nil {
 		return nil, err
 	}
+	cols, err := listHome(ctx, b.Engine, u, bookKind)
+	if err != nil {
+		return nil, err
+	}
+	base := homeBase(ctx, b.Prefix, u)
 	out := make([]carddav.AddressBook, 0, len(cols))
 	for i := range cols {
-		if err := b.allow(ctx, false, cols[i].ID); err != nil {
-			continue
-		}
-		out = append(out, b.bookInfo(&cols[i]))
+		out = append(out, b.bookInfo(base, &cols[i]))
 	}
 	return out, nil
 }
 
 func (b *CardDAV) GetAddressBook(ctx context.Context, path string) (*carddav.AddressBook, error) {
-	col, err := b.bookByPath(ctx, path)
+	u, hc, err := b.bookByPath(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	if err := b.allow(ctx, false, col.ID); err != nil {
-		return nil, err
-	}
-	ab := b.bookInfo(col)
+	ab := b.bookInfo(homeBase(ctx, b.Prefix, u), hc)
 	return &ab, nil
 }
 
 func (b *CardDAV) DeleteAddressBook(ctx context.Context, path string) error {
-	col, err := b.bookByPath(ctx, path)
+	_, hc, err := b.bookByPath(ctx, path)
 	if err != nil {
 		return err
 	}
-	if err := b.allow(ctx, true, col.ID); err != nil {
+	if err := need(ctx, authz.CollectionAdmin, hc.access); err != nil {
 		return err
 	}
-	return b.deleteBook(ctx, col)
+	return b.deleteBook(ctx, &hc.col)
 }
 
 func (b *CardDAV) GetAddressObject(ctx context.Context, path string, req *carddav.AddressDataRequest) (*carddav.AddressObject, error) {
-	col, obj, href, err := b.objectByPath(ctx, path)
+	_, obj, href, err := b.objectByPath(ctx, path)
 	if err != nil {
-		return nil, err
-	}
-	if err := b.allow(ctx, false, col.ID); err != nil {
 		return nil, err
 	}
 	return b.toAddressObject(obj, href)
 }
 
 func (b *CardDAV) ListAddressObjects(ctx context.Context, path string, req *carddav.AddressDataRequest) ([]carddav.AddressObject, error) {
-	col, err := b.bookByPath(ctx, path)
+	u, hc, err := b.bookByPath(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	if err := b.allow(ctx, false, col.ID); err != nil {
-		return nil, err
-	}
-	objs, err := b.Engine.ListObjects(ctx, col.ID)
+	objs, err := b.Engine.ListObjects(ctx, hc.col.ID)
 	if err != nil {
 		return nil, err
 	}
+	base := homeBase(ctx, b.Prefix, u)
 	out := make([]carddav.AddressObject, 0, len(objs))
 	for i := range objs {
-		href := Join(b.Prefix, cardUserSeg, cardHomeSeg, col.Name, contactFileName(&objs[i]))
+		href := Join(base, cardHomeSeg, hc.seg, contactFileName(&objs[i]))
 		ao, err := b.toAddressObject(&objs[i], href)
 		if err != nil {
 			continue
@@ -173,23 +187,28 @@ func (b *CardDAV) QueryAddressObjects(ctx context.Context, path string, query *c
 }
 
 func (b *CardDAV) PutAddressObject(ctx context.Context, path string, card vcard.Card, opts *carddav.PutAddressObjectOptions) (*carddav.AddressObject, error) {
-	_, bookName, fileName, err := b.parseCardPath(path)
+	if err := b.allow(ctx, true); err != nil {
+		return nil, err
+	}
+	u, err := currentUser(ctx, b.Engine)
+	if err != nil {
+		return nil, err
+	}
+	seg, fileName, err := parseHomePath(b.Prefix, cardHomeSeg, path, u)
 	if err != nil {
 		return nil, err
 	}
 	if fileName == "" || !ValidDisplayName(fileName) {
 		return nil, webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid address object path"))
 	}
-	col, err := b.Engine.FindChildCollection(ctx, bookKind, "", bookName)
+	hc, err := findHome(ctx, b.Engine, u, bookKind, seg)
 	if err != nil {
-		if errors.Is(err, syncengine.ErrNotFound) {
-			return nil, webdav.NewHTTPError(http.StatusConflict, errors.New("address book not found"))
-		}
+		return nil, webdav.NewHTTPError(http.StatusConflict, errors.New("address book not found"))
+	}
+	if err := need(ctx, authz.CardDAVWrite, hc.access); err != nil {
 		return nil, err
 	}
-	if err := b.allow(ctx, true, col.ID); err != nil {
-		return nil, err
-	}
+	col := &hc.col
 	uid := strings.TrimSpace(card.Value(vcard.FieldUID))
 	if uid == "" {
 		return nil, carddav.NewPreconditionError(carddav.PreconditionValidAddressData)
@@ -242,7 +261,7 @@ func (b *CardDAV) PutAddressObject(ctx context.Context, path string, card vcard.
 	}
 
 	sum := ncrypto.SHA256Hex(payload)
-	blobID, size, err := b.Store.PutBlob(ctx, bytes.NewReader(payload), sum)
+	blobID, size, err := b.Store.PutUserBlob(ctx, u.id, bytes.NewReader(payload), sum)
 	if err != nil {
 		if errors.Is(err, io.ErrUnexpectedEOF) || int64(len(payload)) > b.Store.MaxBlob {
 			return nil, carddav.NewPreconditionError(carddav.PreconditionMaxResourceSize)
@@ -282,38 +301,30 @@ func (b *CardDAV) PutAddressObject(ctx context.Context, path string, card vcard.
 	if err != nil {
 		return nil, err
 	}
-	href := Join(b.Prefix, cardUserSeg, cardHomeSeg, col.Name, fileName)
+	href := Join(homeBase(ctx, b.Prefix, u), cardHomeSeg, hc.seg, fileName)
 	return b.toAddressObject(obj, href)
 }
 
 func (b *CardDAV) DeleteAddressObject(ctx context.Context, path string) error {
-	_, bookName, fileName, err := b.parseCardPath(path)
+	u, hc, file, err := b.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
-	if fileName == "" {
+	if file == "" {
 		return webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 	}
-	col, err := b.Engine.FindChildCollection(ctx, bookKind, "", bookName)
+	if err := need(ctx, authz.CardDAVWrite, hc.access); err != nil {
+		return err
+	}
+	obj, err := b.Engine.FindObjectByName(ctx, hc.col.ID, file)
 	if err != nil {
 		if errors.Is(err, syncengine.ErrNotFound) {
 			return webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 		}
 		return err
 	}
-	if err := b.allow(ctx, true, col.ID); err != nil {
-		return err
-	}
-	obj, err := b.Engine.FindObjectByName(ctx, col.ID, fileName)
-	if err != nil {
-		if errors.Is(err, syncengine.ErrNotFound) {
-			return webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-		}
-		return err
-	}
-	dev := DeviceFrom(ctx)
-	res, err := b.Engine.Push(ctx, dev, ids.New(), []syncengine.ChangeInput{{
-		ObjectID: obj.ID, CollectionID: col.ID, Op: syncengine.OpDelete,
+	res, err := b.Engine.Push(ctx, u.dev, ids.New(), []syncengine.ChangeInput{{
+		ObjectID: obj.ID, CollectionID: hc.col.ID, Op: syncengine.OpDelete,
 		BaseRevision: obj.Revision, Force: true,
 	}})
 	if err != nil {
@@ -346,98 +357,70 @@ func (b *CardDAV) deleteBook(ctx context.Context, col *syncengine.Collection) er
 	return b.Engine.TombstoneCollection(ctx, col.ID)
 }
 
-func (b *CardDAV) allow(ctx context.Context, write bool, collectionID string) error {
-	dev := DeviceFrom(ctx)
+func (b *CardDAV) allow(ctx context.Context, write bool) error {
 	act := authz.CardDAVRead
 	if write {
 		act = authz.CardDAVWrite
 	}
-	if err := authz.Allow(dev, act, collectionID); err != nil {
+	if err := authz.Allow(DeviceFrom(ctx), act); err != nil {
 		return webdav.NewHTTPError(http.StatusForbidden, err)
 	}
 	return nil
 }
 
-func (b *CardDAV) bookByPath(ctx context.Context, path string) (*syncengine.Collection, error) {
-	_, bookName, file, err := b.parseCardPath(path)
-	if err != nil {
-		return nil, err
-	}
-	if file != "" || bookName == "" {
-		return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-	}
-	col, err := b.Engine.FindChildCollection(ctx, bookKind, "", bookName)
-	if err != nil {
-		if errors.Is(err, syncengine.ErrNotFound) {
-			return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-		}
-		return nil, err
-	}
-	return col, nil
-}
-
-func (b *CardDAV) objectByPath(ctx context.Context, path string) (*syncengine.Collection, *syncengine.Object, string, error) {
-	_, bookName, fileName, err := b.parseCardPath(path)
+func (b *CardDAV) resolve(ctx context.Context, path string) (*davUser, *homeCol, string, error) {
+	u, err := b.user(ctx)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	if fileName == "" {
+	seg, file, err := parseHomePath(b.Prefix, cardHomeSeg, path, u)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	hc, err := findHome(ctx, b.Engine, u, bookKind, seg)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if err := need(ctx, authz.CardDAVRead, hc.access); err != nil {
+		return nil, nil, "", err
+	}
+	return u, hc, file, nil
+}
+
+func (b *CardDAV) bookByPath(ctx context.Context, path string) (*davUser, *homeCol, error) {
+	u, hc, file, err := b.resolve(ctx, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if file != "" {
+		return nil, nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
+	}
+	return u, hc, nil
+}
+
+func (b *CardDAV) objectByPath(ctx context.Context, path string) (*homeCol, *syncengine.Object, string, error) {
+	u, hc, file, err := b.resolve(ctx, path)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if file == "" {
 		return nil, nil, "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 	}
-	col, err := b.Engine.FindChildCollection(ctx, bookKind, "", bookName)
+	obj, err := b.Engine.FindObjectByName(ctx, hc.col.ID, file)
 	if err != nil {
 		if errors.Is(err, syncengine.ErrNotFound) {
 			return nil, nil, "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 		}
 		return nil, nil, "", err
 	}
-	obj, err := b.Engine.FindObjectByName(ctx, col.ID, fileName)
-	if err != nil {
-		if errors.Is(err, syncengine.ErrNotFound) {
-			return nil, nil, "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-		}
-		return nil, nil, "", err
-	}
-	href := Join(b.Prefix, cardUserSeg, cardHomeSeg, col.Name, fileName)
-	return col, obj, href, nil
+	href := Join(homeBase(ctx, b.Prefix, u), cardHomeSeg, hc.seg, file)
+	return hc, obj, href, nil
 }
 
-func (b *CardDAV) parseCardPath(p string) (segs []string, bookName, fileName string, err error) {
-	n, err := Normalize(p)
-	if err != nil {
-		return nil, "", "", webdav.NewHTTPError(http.StatusBadRequest, err)
-	}
-	if n != b.Prefix && !HasPrefix(n, b.Prefix) {
-		return nil, "", "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-	}
-	rel := strings.TrimPrefix(n, b.Prefix)
-	segs, err = Split(rel)
-	if err != nil {
-		return nil, "", "", webdav.NewHTTPError(http.StatusBadRequest, err)
-	}
-	if len(segs) < 3 || segs[0] != cardUserSeg || segs[1] != cardHomeSeg {
-		return segs, "", "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-	}
-	if !ValidDisplayName(segs[2]) {
-		return segs, "", "", webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid address book name"))
-	}
-	bookName = segs[2]
-	if len(segs) == 3 {
-		return segs, bookName, "", nil
-	}
-	if len(segs) == 4 {
-		if !ValidDisplayName(segs[3]) {
-			return segs, "", "", webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid object name"))
-		}
-		return segs, bookName, segs[3], nil
-	}
-	return segs, "", "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-}
-
-func (b *CardDAV) bookInfo(c *syncengine.Collection) carddav.AddressBook {
+func (b *CardDAV) bookInfo(base string, hc *homeCol) carddav.AddressBook {
 	return carddav.AddressBook{
-		Path:            Join(b.Prefix, cardUserSeg, cardHomeSeg, c.Name),
-		Name:            c.Name,
+		Path:            Join(base, cardHomeSeg, hc.seg),
+		Name:            hc.displayName(),
 		MaxResourceSize: b.Store.MaxBlob,
 		SupportedAddressData: []carddav.AddressDataType{
 			{ContentType: vcard.MIMEType, Version: "3.0"},

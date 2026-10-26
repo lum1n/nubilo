@@ -84,7 +84,11 @@ func (s *Server) handlePairStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "role must be agent or client", http.StatusBadRequest)
 		return
 	}
-	code, sess, err := s.RT.IDs.StartPairing(r.Context(), role)
+	u := s.actingUser(w, r)
+	if u == nil {
+		return
+	}
+	code, sess, err := s.RT.IDs.StartPairing(r.Context(), u.ID, role)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -341,7 +345,11 @@ func (s *Server) handleDeviceEnroll(w http.ResponseWriter, r *http.Request) {
 	if role == "" {
 		role = identity.RoleClient
 	}
-	dev, err := s.RT.IDs.Enroll(r.Context(), req.Name, pub, role)
+	u := s.actingUser(w, r)
+	if u == nil {
+		return
+	}
+	dev, err := s.RT.IDs.Enroll(r.Context(), u.ID, req.Name, pub, role)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

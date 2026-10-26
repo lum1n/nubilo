@@ -6,16 +6,17 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("sync: not found")
-	ErrConflict      = errors.New("sync: conflict")
-	ErrAuthorization = errors.New("sync: unauthorized")
-	ErrStaleCursor   = errors.New("sync: stale cursor")
-	ErrFutureCursor  = errors.New("sync: cursor is ahead of server")
-	ErrBadBatch      = errors.New("sync: invalid batch")
-	ErrCollection    = errors.New("sync: invalid collection")
-	ErrObject        = errors.New("sync: invalid object")
-	ErrBlob          = errors.New("sync: blob missing or hash mismatch")
-	ErrIdempotency   = errors.New("sync: idempotency key reused with different payload")
+	ErrNotFound         = errors.New("sync: not found")
+	ErrConflict         = errors.New("sync: conflict")
+	ErrAuthorization    = errors.New("sync: unauthorized")
+	ErrStaleCursor      = errors.New("sync: stale cursor")
+	ErrFutureCursor     = errors.New("sync: cursor is ahead of server")
+	ErrBadBatch         = errors.New("sync: invalid batch")
+	ErrCollection       = errors.New("sync: invalid collection")
+	ErrCollectionExists = errors.New("sync: collection name exists")
+	ErrObject           = errors.New("sync: invalid object")
+	ErrBlob             = errors.New("sync: blob missing or hash mismatch")
+	ErrIdempotency      = errors.New("sync: idempotency key reused with different payload")
 )
 
 const (
@@ -35,6 +36,11 @@ type Collection struct {
 	CreatedAt    int64           `json:"created_at"`
 	UpdatedAt    int64           `json:"updated_at"`
 	DeletedAt    *int64          `json:"deleted_at,omitempty"`
+	OwnerUserID  string          `json:"owner_user_id,omitempty"`
+	OwnerName    string          `json:"owner,omitempty"`
+	RootID       string          `json:"root_id,omitempty"`
+	// Access is the caller's access ("owner", "rw", "ro"); set by scoped listings only.
+	Access string `json:"access,omitempty"`
 }
 
 type Object struct {
@@ -98,6 +104,9 @@ type HelloResult struct {
 	HeadSeq       int64  `json:"head_seq"`
 	NeedReconcile bool   `json:"need_reconcile"`
 	Reason        string `json:"reason,omitempty"`
+	// CollectionsRev changes when the caller's visible collections change;
+	// clients skip POST /sync/v1/collections while it is unchanged.
+	CollectionsRev string `json:"collections_rev,omitempty"`
 }
 
 type ChangesResult struct {

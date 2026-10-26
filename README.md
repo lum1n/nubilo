@@ -1,10 +1,10 @@
 # Nubilo
 
-Single-binary personal cloud for one operator: calendars, reminders, contacts, files, and photos.
+Single-binary private cloud for a family or small team: calendars, reminders, contacts, files, and photos, with per-user data and sharing.
 
-A Linux or macOS **server** holds encrypted blobs and metadata. A **macOS agent** syncs EventKit, Contacts, PhotoKit, and selected folders. The **iPhone** talks CalDAV / CardDAV / WebDAV with app passwords — no Nubilo iOS app.
+A Linux or macOS **server** holds encrypted blobs and metadata for several **users** (admins and members). Each user's devices see only that user's collections and what others shared with them (read-only or read-write). A **macOS agent** syncs EventKit, Contacts, PhotoKit, and selected folders. **iPhones** use native CalDAV / CardDAV accounts (installed by a configuration profile) and WebDAV, plus the Nubilo app (`apps/Nubilo`) for onboarding by QR code, photo backup, shared albums and family administration.
 
-Priorities: security, integrity, correct sync. Tailscale is transport only.
+Priorities: security, integrity, correct sync. Server-side encryption, not end-to-end (see SECURITY.md).
 
 ## Requirements
 
@@ -12,9 +12,9 @@ Priorities: security, integrity, correct sync. Tailscale is transport only.
 | --- | --- | --- |
 | Server | Linux or macOS | Encrypted volume recommended (LUKS / FileVault); `nubilo doctor` checks this |
 | Agent | macOS only | Separate `--data-dir` from the server |
-| Phone | iOS | Apple Calendar / Contacts / Files; TLS Apple trusts (Tailscale Serve or install `tls.crt`) |
+| Phone | iOS | Apple Calendar / Contacts / Files + the Nubilo app; TLS Apple trusts (public domain with Let's Encrypt via relay/direct, or Tailscale Serve / install `tls.crt` on LAN) |
 
-Reach the server over Tailscale (or LAN). Do not expose the listen port to the public internet without your own TLS terminator and threat model.
+Reach the server from anywhere through a small **VPS relay** (the home stays closed; TLS still terminates at home with Let's Encrypt), by hosting it **directly** on public ports, or over LAN / Tailscale only. See [docs/RELAY.md](docs/RELAY.md).
 
 ## Install
 
@@ -34,13 +34,29 @@ go install ./cmd/nubilo
 **Server**
 
 ```bash
-./nubilo setup --data-dir ~/.nubilo --yes
+./nubilo setup --data-dir ~/.nubilo        # asks relay / direct / lan, domain, installs the service
 ./nubilo doctor --data-dir ~/.nubilo
-./nubilo server install --data-dir ~/.nubilo   # optional always-on
-./nubilo pair --data-dir ~/.nubilo --role agent
 ```
 
-Save the pairing code. Enable auto-backup passphrase when setup prints it.
+Setup ends with an admin invite QR code: scan it with the Nubilo app to become the first admin. Save the auto-backup passphrase it prints.
+
+**Family members**
+
+```bash
+./nubilo users invite --role member        # QR code + https://<domain>/join#<code>
+./nubilo users list
+./nubilo users disable USERNAME            # revokes all their devices and app passwords
+```
+
+The same is available in the admin console (`nubilo ui`, Users tab) and in the app. Data commands take `--user USERNAME` (default: the owner admin), e.g. `nubilo --user anna calendars list`.
+
+**Pair the Mac agent**
+
+```bash
+./nubilo pair --data-dir ~/.nubilo --role agent [--user USERNAME]
+```
+
+Save the pairing code.
 
 **Mac agent** (separate data dir)
 
@@ -53,7 +69,7 @@ Save the pairing code. Enable auto-backup passphrase when setup prints it.
 
 Or configure sync in the loopback UI: `nubilo agent ui` (port 8788).
 
-**iPhone app passwords** (each scope is independent)
+**iPhone without the app** — app passwords (each scope is independent; log in with your username)
 
 ```bash
 ./nubilo devices password --data-dir ~/.nubilo --name "iPhone Calendar" --scope caldav

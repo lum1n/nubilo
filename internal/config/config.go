@@ -25,6 +25,58 @@ type Config struct {
 	HTTP    HTTPConfig   `json:"http"`
 	Photos  PhotosConfig `json:"photos"`
 	Backup  BackupConfig `json:"backup"`
+	Public  PublicConfig `json:"public"`
+}
+
+// PublicConfig describes how devices reach the server from outside the LAN:
+// a public domain with an ACME (Let's Encrypt) certificate, served either
+// through a wired relay on a VPS or directly on public ports.
+type PublicConfig struct {
+	// ServerName is shown to users (app, profiles). Defaults to "Nubilo".
+	ServerName string `json:"server_name,omitempty"`
+	// Domain is the public DNS name, e.g. cloud.example.com.
+	Domain string      `json:"domain,omitempty"`
+	ACME   ACMEConfig  `json:"acme"`
+	Relay  RelayConfig `json:"relay"`
+	// DirectListen is the public HTTPS address (e.g. ":443") when the host is
+	// reachable directly. DirectHTTPListen (default ":80") serves ACME HTTP-01
+	// and redirects to HTTPS.
+	DirectListen     string `json:"direct_listen,omitempty"`
+	DirectHTTPListen string `json:"direct_http_listen,omitempty"`
+}
+
+type ACMEConfig struct {
+	Enabled bool   `json:"enabled"`
+	Email   string `json:"email,omitempty"`
+	// Directory overrides the ACME directory URL (e.g. Let's Encrypt staging).
+	Directory string `json:"directory,omitempty"`
+}
+
+// RelayConfig joins a wired overlay whose relay forwards public 443/80 here.
+type RelayConfig struct {
+	Invite   string `json:"invite,omitempty"`
+	Name     string `json:"name,omitempty"`
+	StateDir string `json:"state_dir,omitempty"`
+}
+
+// LetsEncryptStaging is the staging ACME directory for dry runs.
+const LetsEncryptStaging = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+// Name returns the display name of this server.
+func (p PublicConfig) Name() string {
+	if strings.TrimSpace(p.ServerName) != "" {
+		return strings.TrimSpace(p.ServerName)
+	}
+	return "Nubilo"
+}
+
+// BaseURL returns the public https URL, or "" when no domain is set.
+func (p PublicConfig) BaseURL() string {
+	d := strings.TrimSpace(p.Domain)
+	if d == "" {
+		return ""
+	}
+	return "https://" + d
 }
 
 type PhotosConfig struct {
@@ -37,12 +89,12 @@ type PhotosConfig struct {
 // BackupConfig controls optional automatic encrypted backups (server process).
 // Passphrase is never stored in config; only a path to a passphrase file on disk.
 type BackupConfig struct {
-	Enabled            bool   `json:"enabled"`
-	IntervalHours      int    `json:"interval_hours"`
-	PassphraseFile     string `json:"passphrase_file"`
-	Keep               int    `json:"keep"`
-	LastBackupUnixMS   int64  `json:"last_backup_unix_ms,omitempty"`
-	LastBackupError    string `json:"last_backup_error,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	IntervalHours    int    `json:"interval_hours"`
+	PassphraseFile   string `json:"passphrase_file"`
+	Keep             int    `json:"keep"`
+	LastBackupUnixMS int64  `json:"last_backup_unix_ms,omitempty"`
+	LastBackupError  string `json:"last_backup_error,omitempty"`
 }
 
 type TLSConfig struct {
@@ -190,6 +242,19 @@ func (c Config) Validate() error {
 	if c.Sync.MaxBlobBytes <= 0 {
 		return fmt.Errorf("config: sync.max_blob_bytes must be positive")
 	}
+	if d := c.Public.Domain; d != "" {
+		if strings.ContainsAny(d, "/: ") || !strings.Contains(d, ".") {
+			return fmt.Errorf("config: public.domain %q must be a bare DNS name", d)
+		}
+	}
+	if c.Public.ACME.Enabled && c.Public.Domain == "" {
+		return fmt.Errorf("config: public.acme requires public.domain")
+	}
+	if c.Public.DirectListen != "" {
+		if _, _, err := net.SplitHostPort(c.Public.DirectListen); err != nil {
+			return fmt.Errorf("config: public.direct_listen: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -224,11 +289,14 @@ func Paths(dataDir string) PathsSet {
 		DeviceJSON: filepath.Join(dataDir, "device.json"),
 		AgentJSON:  filepath.Join(dataDir, "agent.json"),
 		AgentDB:    filepath.Join(dataDir, "agent.db"),
+		ACME:       filepath.Join(dataDir, "acme"),
+		Wired:      filepath.Join(dataDir, "wired"),
 	}
 }
 
 type PathsSet struct {
 	Dir, Config, MasterKey, ServerKey, AdminToken, DB, Blobs, Tmp, Logs, DeviceKey, DeviceJSON, AgentJSON, AgentDB string
+	ACME, Wired                                                                                                    string
 }
 
 func ParseListenOverride(s string) (string, error) {
@@ -246,4 +314,40 @@ func ParseListenOverride(s string) (string, error) {
 		return "", err
 	}
 	return s, nil
+}
+
+// DeviceBaseURL is the URL other devices should use: the public domain when
+// set, else the listen address with a wildcard host replaced by a LAN IP.
+func (c Config) DeviceBaseURL() string {
+	if u := c.Public.BaseURL(); u != "" {
+		return u
+	}
+	host, port, err := net.SplitHostPort(c.Listen)
+	if err != nil {
+		return "https://" + c.Listen
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = lanIP()
+	}
+	scheme := "https://"
+	if isLoopback(host) && c.TLS.Cert == "" {
+		scheme = "http://"
+	}
+	return scheme + net.JoinHostPort(host, port)
+}
+
+// lanIP returns the first private IPv4 address of this host, or 127.0.0.1.
+func lanIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok {
+			if ip := n.IP.To4(); ip != nil && ip.IsPrivate() {
+				return ip.String()
+			}
+		}
+	}
+	return "127.0.0.1"
 }

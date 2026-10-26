@@ -10,8 +10,10 @@ import (
 const (
 	LabelAgent  = "dev.nubilo.agent"
 	LabelServer = "dev.nubilo.server"
+	LabelRelay  = "dev.nubilo.relay"
 	UnitAgent   = "nubilo-agent.service"
 	UnitServer  = "nubilo-server.service"
+	UnitRelay   = "nubilo-relay.service"
 )
 
 // Kind selects which always-on process to manage.
@@ -20,32 +22,40 @@ type Kind int
 const (
 	KindAgent Kind = iota
 	KindServer
+	// KindRelay is the VPS relay (wired anchor forwarding public 443/80).
+	KindRelay
 )
 
 func (k Kind) Label() string {
-	if k == KindAgent {
+	switch k {
+	case KindAgent:
 		return LabelAgent
+	case KindRelay:
+		return LabelRelay
 	}
 	return LabelServer
 }
 
 func (k Kind) UnitName() string {
-	if k == KindAgent {
+	switch k {
+	case KindAgent:
 		return UnitAgent
+	case KindRelay:
+		return UnitRelay
 	}
 	return UnitServer
 }
 
 func (k Kind) LogFileName() string {
-	if k == KindAgent {
-		return "agent.log"
-	}
-	return "server.log"
+	return k.String() + ".log"
 }
 
 func (k Kind) String() string {
-	if k == KindAgent {
+	switch k {
+	case KindAgent:
 		return "agent"
+	case KindRelay:
+		return "relay"
 	}
 	return "server"
 }
@@ -92,6 +102,8 @@ func ProgramArgs(s Spec) []string {
 		}
 	case KindServer:
 		args = append(args, "server", "--data-dir", s.DataDir)
+	case KindRelay:
+		args = append(args, "--data-dir", s.DataDir, "relay", "run")
 	}
 	return args
 }

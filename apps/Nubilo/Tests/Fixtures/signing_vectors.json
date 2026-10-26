@@ -1,0 +1,54 @@
+[
+  {
+    "name": "empty-get",
+    "seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    "device_id": "01J0000000000000000000DEV1",
+    "ts": 1793000000000,
+    "nonce": "0123456789abcdef0123456789abcdef",
+    "method": "GET",
+    "path": "/api/v1/me",
+    "body": "",
+    "canonical": "nubilo-sig/v1\n01J0000000000000000000DEV1\n1793000000000\n0123456789abcdef0123456789abcdef\nGET\n/api/v1/me\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "signature": "1rlcfYONE6KxT3H4Srs2i4p921bYG5QXGkqpa8kB8lrSymDU9v7g5lzvMyBZvxqOB54/1nuzV92C0B7DFHQ+DQ",
+    "authorization": "Nubilo-Sig v1 device=01J0000000000000000000DEV1,ts=1793000000000,nonce=0123456789abcdef0123456789abcdef,sig=1rlcfYONE6KxT3H4Srs2i4p921bYG5QXGkqpa8kB8lrSymDU9v7g5lzvMyBZvxqOB54/1nuzV92C0B7DFHQ+DQ"
+  },
+  {
+    "name": "json-post",
+    "seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    "device_id": "01J0000000000000000000DEV1",
+    "ts": 1793000000000,
+    "nonce": "0123456789abcdef0123456789abcdef",
+    "method": "post",
+    "path": "/sync/v1/changes",
+    "body": "eyJzaW5jZV9zZXEiOjAsImxpbWl0IjoyMDB9",
+    "canonical": "nubilo-sig/v1\n01J0000000000000000000DEV1\n1793000000000\n0123456789abcdef0123456789abcdef\nPOST\n/sync/v1/changes\n37320c03326bc9295199de325ed766845cc974b685064de9ddf3317d18ab16b3",
+    "signature": "iXD3Rto3Mc/3SkukJHewn/PwK7hR81KQdab2wu1TZD4C9YxAnUHDCpf4EUiySWn2COY9n1uMaQZ5YRHUYa0HDA",
+    "authorization": "Nubilo-Sig v1 device=01J0000000000000000000DEV1,ts=1793000000000,nonce=0123456789abcdef0123456789abcdef,sig=iXD3Rto3Mc/3SkukJHewn/PwK7hR81KQdab2wu1TZD4C9YxAnUHDCpf4EUiySWn2COY9n1uMaQZ5YRHUYa0HDA"
+  },
+  {
+    "name": "query",
+    "seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    "device_id": "01J0000000000000000000DEV1",
+    "ts": 1793000000000,
+    "nonce": "0123456789abcdef0123456789abcdef",
+    "method": "GET",
+    "path": "/api/v1/photos?after=01J00000000000000000000000\u0026limit=100",
+    "body": "",
+    "canonical": "nubilo-sig/v1\n01J0000000000000000000DEV1\n1793000000000\n0123456789abcdef0123456789abcdef\nGET\n/api/v1/photos?after=01J00000000000000000000000\u0026limit=100\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "signature": "cBOQqDM972X56/a7diuT/ts5EiZG8mN9Lr+zTc1NwMXvNHFCC2CaB2zapwkTY3xO76DM1M1Mwg55LiFagkaFDw",
+    "authorization": "Nubilo-Sig v1 device=01J0000000000000000000DEV1,ts=1793000000000,nonce=0123456789abcdef0123456789abcdef,sig=cBOQqDM972X56/a7diuT/ts5EiZG8mN9Lr+zTc1NwMXvNHFCC2CaB2zapwkTY3xO76DM1M1Mwg55LiFagkaFDw"
+  },
+  {
+    "name": "utf8-body",
+    "seed": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    "device_id": "01J0000000000000000000DEV1",
+    "ts": 1793000000000,
+    "nonce": "0123456789abcdef0123456789abcdef",
+    "method": "PUT",
+    "path": "/api/v1/collections/01J00000000000000000000000/shares",
+    "body": "eyJ1c2VybmFtZSI6IsOlc2UiLCJhY2Nlc3MiOiJybyJ9",
+    "canonical": "nubilo-sig/v1\n01J0000000000000000000DEV1\n1793000000000\n0123456789abcdef0123456789abcdef\nPUT\n/api/v1/collections/01J00000000000000000000000/shares\nb70b8866e7309af57e4bb0477b885a6c538f9cb3fff7c27c85ce5417953a50d6",
+    "signature": "tqsbEwOl9m6P/4h0hFBD1WVJpQf0QmMoUc1GCjTVfZEko/dF3hOruVtWIuVMSjqEHPXog4JLQ4lyl/DpsX5+Bg",
+    "authorization": "Nubilo-Sig v1 device=01J0000000000000000000DEV1,ts=1793000000000,nonce=0123456789abcdef0123456789abcdef,sig=tqsbEwOl9m6P/4h0hFBD1WVJpQf0QmMoUc1GCjTVfZEko/dF3hOruVtWIuVMSjqEHPXog4JLQ4lyl/DpsX5+Bg"
+  }
+]

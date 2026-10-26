@@ -7,9 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"nubilo/internal/agent"
 	"nubilo/internal/app"
@@ -64,9 +67,18 @@ func isAgentDataDir(dir string) bool {
 
 func runSetup(g global, args []string) int {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
-	listen := fs.String("listen", "0.0.0.0:8443", "listen address for new installs")
-	yes := fs.Bool("yes", false, "non-interactive defaults")
+	listen := fs.String("listen", "0.0.0.0:8443", "LAN listen address for new installs")
+	yes := fs.Bool("yes", false, "non-interactive: use flags and defaults")
 	noService := fs.Bool("no-service", false, "skip always-on service install")
+	noBackup := fs.Bool("no-backup", false, "skip enabling encrypted auto-backup")
+	mode := fs.String("mode", "", "how devices reach the server: relay, direct or lan")
+	domain := fs.String("domain", "", "public DNS name (relay and direct modes)")
+	email := fs.String("email", "", "Let's Encrypt account email (optional)")
+	invite := fs.String("relay-invite", "", "invite printed by `nubilo relay init` on the VPS")
+	staging := fs.Bool("acme-staging", false, "use the Let's Encrypt staging CA (dry run)")
+	jsonOut := fs.Bool("json", false, "print one JSON object per step (for the Mac app)")
+	step := fs.Int("step", 0, "run only this step (1 init, 2 reachability, 3 service, 4 verify, 5 invite)")
+	timeout := fs.Duration("verify-timeout", 2*time.Minute, "how long to wait for the server to answer")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -74,59 +86,143 @@ func runSetup(g global, args []string) int {
 	if err != nil {
 		return fatal(err)
 	}
-	fmt.Printf("nubilo setup — server data dir %s\n", dir)
+	asJSON := *jsonOut || g.jsonOut
+	interactive := !*yes && !asJSON && *step == 0
+	w := &setup.Wizard{DataDir: dir, Listen: *listen, Mode: *mode, Domain: *domain, Email: *email,
+		RelayInvite: *invite, Staging: *staging, VerifyTimeout: *timeout}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	created, err := setup.EnsureServerInitialized(dir, *listen)
-	if err != nil {
-		return fatal(err)
+	report := func(r setup.StepResult) bool {
+		if asJSON {
+			_ = json.NewEncoder(os.Stdout).Encode(r)
+			return r.OK
+		}
+		if !r.OK {
+			fmt.Fprintf(os.Stderr, "✗ %d/%d %s: %s\n", r.Step, len(setup.StepNames), r.Name, r.Error)
+			return false
+		}
+		fmt.Printf("✓ %d/%d %s: %s\n", r.Step, len(setup.StepNames), r.Name, r.Message)
+		return true
 	}
-	if created {
-		fmt.Printf("initialized (listen %s)\n", *listen)
-	} else {
-		fmt.Println("already initialized")
+	run := func(n int) setup.StepResult {
+		switch n {
+		case 1:
+			return w.StepInit()
+		case 2:
+			return w.StepReachability(ctx)
+		case 3:
+			return w.StepService()
+		case 4:
+			return w.StepVerify(ctx)
+		default:
+			return w.StepInvite()
+		}
+	}
+	if *step != 0 {
+		if *step < 1 || *step > len(setup.StepNames) {
+			return fatal(fmt.Errorf("--step must be 1-%d", len(setup.StepNames)))
+		}
+		if !report(run(*step)) {
+			return 1
+		}
+		return 0
+	}
+	if !asJSON {
+		fmt.Printf("nubilo setup — server data dir %s\n\n", dir)
+	}
+	if !report(run(1)) {
+		return 1
 	}
 
-	if !*yes {
-		fmt.Print("enable encrypted auto-backup? [Y/n] ")
-		if !readYesDefaultYes() {
-			fmt.Println("skipped auto-backup — run setup again or enable config.backup manually")
-		} else {
+	if interactive && w.Mode == "" {
+		fmt.Println("\nHow will phones reach this server from outside your home?")
+		fmt.Println("  1) relay   — a small VPS runs `nubilo relay`; nothing opens on your router (recommended)")
+		fmt.Println("  2) direct  — this host is reachable on ports 443/80 (port forward or VPS)")
+		fmt.Println("  3) lan     — home network / Tailscale only, self-signed certificate")
+		switch prompt("choice [1]: ") {
+		case "2", "direct":
+			w.Mode = setup.ModeDirect
+		case "3", "lan":
+			w.Mode = setup.ModeLAN
+		default:
+			w.Mode = setup.ModeRelay
+		}
+	}
+	if w.Mode == "" {
+		w.Mode = setup.ModeLAN
+	}
+	if interactive && w.Mode != setup.ModeLAN {
+		if w.Domain == "" {
+			w.Domain = prompt("public domain (DNS A record → the relay VPS or this host): ")
+		}
+		if w.Email == "" {
+			w.Email = prompt("email for Let's Encrypt expiry notices (optional): ")
+		}
+		if w.Mode == setup.ModeRelay && w.RelayInvite == "" {
+			w.RelayInvite = prompt("relay invite (from `nubilo relay init` on the VPS): ")
+		}
+	}
+	if !report(run(2)) {
+		return 1
+	}
+
+	if !*noBackup && !asJSON {
+		do := *yes
+		if interactive {
+			fmt.Print("enable encrypted auto-backup? [Y/n] ")
+			do = readYesDefaultYes()
+		}
+		if do {
 			if err := enableBackupPrint(dir); err != nil {
 				return fatal(err)
 			}
 		}
-	} else {
-		if err := enableBackupPrint(dir); err != nil {
-			return fatal(err)
-		}
 	}
-
 	if !*noService {
-		doInstall := *yes
-		if !*yes {
+		do := true
+		if interactive {
 			fmt.Print("install always-on server service? [Y/n] ")
-			doInstall = readYesDefaultYes()
+			do = readYesDefaultYes()
 		}
-		if doInstall {
-			path, err := setup.InstallServerService(dir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "service install: %v\n", err)
-			} else {
-				fmt.Printf("service installed: %s\n", path)
-				if runtime.GOOS == "linux" {
-					fmt.Fprintln(os.Stderr, "note: loginctl enable-linger $USER so the service survives logout")
-				}
+		if do {
+			if !report(run(3)) {
+				return 1
 			}
+			if runtime.GOOS == "linux" && !asJSON {
+				fmt.Fprintln(os.Stderr, "note: loginctl enable-linger $USER so the service survives logout")
+			}
+			if !asJSON {
+				fmt.Println("waiting for the server to answer (the first certificate can take a minute)…")
+			}
+			report(run(4))
 		}
 	}
 
-	fmt.Print(setup.NextStepsServer(dir))
-	fmt.Println()
-	rep, err := doctor.Server(context.Background(), dir, doctor.Options{})
-	if err == nil {
-		fmt.Print(doctor.FormatHuman(rep))
+	r := run(5)
+	if !report(r) {
+		return 1
+	}
+	if !asJSON {
+		if t, _ := r.Data["qr_text"].(string); t != "" {
+			fmt.Print("\n" + t)
+		}
+		fmt.Printf("Open the Nubilo app and scan the code, or open %v on the phone.\n", r.Data["url"])
+		fmt.Printf("This admin invite works once and expires in 24 hours. More invites: nubilo users invite\n\n")
+		rep, err := doctor.Server(context.Background(), dir, doctor.Options{})
+		if err == nil {
+			fmt.Print(doctor.FormatHuman(rep))
+		}
 	}
 	return 0
+}
+
+var stdin = bufio.NewReader(os.Stdin)
+
+func prompt(label string) string {
+	fmt.Print(label)
+	line, _ := stdin.ReadString('\n')
+	return strings.TrimSpace(line)
 }
 
 func enableBackupPrint(dir string) error {
@@ -182,7 +278,7 @@ func runAgentSetup(g global, insecure bool, args []string) int {
 				fmt.Fprintln(os.Stderr, "pairing required: pass --server --code --name (or run interactively)")
 				return 2
 			}
-			r := bufio.NewReader(os.Stdin)
+			r := stdin
 			if srv == "" {
 				fmt.Print("server URL: ")
 				srv, _ = r.ReadString('\n')
@@ -248,15 +344,13 @@ func runAgentSetup(g global, insecure bool, args []string) int {
 }
 
 func readYesDefaultYes() bool {
-	r := bufio.NewReader(os.Stdin)
-	line, _ := r.ReadString('\n')
+	line, _ := stdin.ReadString('\n')
 	line = strings.TrimSpace(strings.ToLower(line))
 	return line == "" || line == "y" || line == "yes"
 }
 
 func readYesDefaultNo() bool {
-	r := bufio.NewReader(os.Stdin)
-	line, _ := r.ReadString('\n')
+	line, _ := stdin.ReadString('\n')
 	line = strings.TrimSpace(strings.ToLower(line))
 	return line == "y" || line == "yes"
 }

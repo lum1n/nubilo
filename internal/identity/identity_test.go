@@ -32,7 +32,7 @@ func setup(t *testing.T) (*identity.Service, context.Context) {
 
 func TestPairingHappyPath(t *testing.T) {
 	s, ctx := setup(t)
-	code, _, err := s.StartPairing(ctx, identity.RoleAgent)
+	code, _, err := s.StartPairing(ctx, "", identity.RoleAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestPairingHappyPath(t *testing.T) {
 
 func TestPairingWrongCode(t *testing.T) {
 	s, ctx := setup(t)
-	_, _, err := s.StartPairing(ctx, identity.RoleClient)
+	_, _, err := s.StartPairing(ctx, "", identity.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestPairingWrongCode(t *testing.T) {
 
 func TestPairingBadSignature(t *testing.T) {
 	s, ctx := setup(t)
-	code, _, _ := s.StartPairing(ctx, identity.RoleClient)
+	code, _, _ := s.StartPairing(ctx, "", identity.RoleClient)
 	pub, _, _ := ncrypto.GenerateEd25519()
 	_, priv2, _ := ncrypto.GenerateEd25519()
 	br, err := s.Begin(ctx, identity.BeginRequest{Code: code, Name: "phone", PublicKey: pub})
@@ -89,7 +89,7 @@ func TestPairingBadSignature(t *testing.T) {
 func TestRevoke(t *testing.T) {
 	s, ctx := setup(t)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, err := s.Enroll(ctx, "laptop", pub, identity.RoleClient)
+	dev, err := s.Enroll(ctx, "", "laptop", pub, identity.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestRevoke(t *testing.T) {
 		t.Fatal("expected revoked")
 	}
 	other, _, _ := ncrypto.GenerateEd25519()
-	dev2, err := s.Enroll(ctx, "other", other, identity.RoleClient)
+	dev2, err := s.Enroll(ctx, "", "other", other, identity.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +116,10 @@ func TestRevoke(t *testing.T) {
 func TestTooManyActive(t *testing.T) {
 	s, ctx := setup(t)
 	s.MaxActive = 1
-	if _, _, err := s.StartPairing(ctx, identity.RoleClient); err != nil {
+	if _, _, err := s.StartPairing(ctx, "", identity.RoleClient); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.StartPairing(ctx, identity.RoleClient); err == nil {
+	if _, _, err := s.StartPairing(ctx, "", identity.RoleClient); err == nil {
 		t.Fatal("expected too many active")
 	}
 }
@@ -127,7 +127,7 @@ func TestTooManyActive(t *testing.T) {
 func TestMaxAttemptsBegin(t *testing.T) {
 	s, ctx := setup(t)
 	s.MaxAttempts = 2
-	code, _, _ := s.StartPairing(ctx, identity.RoleClient)
+	code, _, _ := s.StartPairing(ctx, "", identity.RoleClient)
 	pub, _, _ := ncrypto.GenerateEd25519()
 	for i := 0; i < 2; i++ {
 		if _, err := s.Begin(ctx, identity.BeginRequest{Code: code, Name: "n", PublicKey: pub}); err != nil {
@@ -142,7 +142,7 @@ func TestMaxAttemptsBegin(t *testing.T) {
 func TestExpiredPairing(t *testing.T) {
 	s, ctx := setup(t)
 	s.TTL = time.Millisecond
-	code, _, _ := s.StartPairing(ctx, identity.RoleClient)
+	code, _, _ := s.StartPairing(ctx, "", identity.RoleClient)
 	time.Sleep(5 * time.Millisecond)
 	pub, _, _ := ncrypto.GenerateEd25519()
 	_, err := s.Begin(ctx, identity.BeginRequest{Code: code, Name: "n", PublicKey: pub})
@@ -154,7 +154,7 @@ func TestExpiredPairing(t *testing.T) {
 func TestRenameSanitize(t *testing.T) {
 	s, ctx := setup(t)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, _ := s.Enroll(ctx, "a", pub, identity.RoleClient)
+	dev, _ := s.Enroll(ctx, "", "a", pub, identity.RoleClient)
 	if err := s.Rename(ctx, dev.ID, "  "); err == nil {
 		t.Fatal("empty name")
 	}

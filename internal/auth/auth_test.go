@@ -31,7 +31,7 @@ func harness(t *testing.T) (*auth.Authenticator, *identity.Device, ed25519.Priva
 	t.Cleanup(func() { st.Close() })
 	ids := identity.NewService(st)
 	pub, priv, _ := ncrypto.GenerateEd25519()
-	dev, err := ids.Enroll(context.Background(), "dev", pub, identity.RoleClient)
+	dev, err := ids.Enroll(context.Background(), "", "dev", pub, identity.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}

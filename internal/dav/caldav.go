@@ -3,6 +3,7 @@ package dav
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -25,7 +26,6 @@ const CalDAVPrefix = "/caldav"
 const (
 	calKind    = "calendar"
 	eventKind  = "event"
-	calUserSeg = "user"
 	calHomeSeg = "calendars"
 )
 
@@ -39,101 +39,118 @@ func NewCalDAV(eng *syncengine.Engine, st *store.Store) *CalDAV {
 	return &CalDAV{Engine: eng, Store: st, Prefix: CalDAVPrefix}
 }
 
+func (b *CalDAV) user(ctx context.Context) (*davUser, error) {
+	if err := b.allow(ctx, false); err != nil {
+		return nil, err
+	}
+	return currentUser(ctx, b.Engine)
+}
+
 func (b *CalDAV) CurrentUserPrincipal(ctx context.Context) (string, error) {
-	if err := b.allow(ctx, false, ""); err != nil {
+	u, err := b.user(ctx)
+	if err != nil {
 		return "", err
 	}
-	return b.Prefix + "/user/", nil
+	return homeBase(ctx, b.Prefix, u) + "/", nil
 }
 
 func (b *CalDAV) CalendarHomeSetPath(ctx context.Context) (string, error) {
-	if err := b.allow(ctx, false, ""); err != nil {
+	u, err := b.user(ctx)
+	if err != nil {
 		return "", err
 	}
-	return b.Prefix + "/user/calendars/", nil
+	return homeBase(ctx, b.Prefix, u) + "/" + calHomeSeg + "/", nil
 }
 
+// CreateCalendar creates a calendar owned by the caller. When the path
+// segment is not a collection ID (Apple picks a UUID), it is kept as the
+// calendar's slug so the client finds the calendar where it created it.
 func (b *CalDAV) CreateCalendar(ctx context.Context, calendar *caldav.Calendar) error {
-	if err := b.allow(ctx, true, ""); err != nil {
+	if err := b.allow(ctx, true); err != nil {
 		return err
+	}
+	u, err := currentUser(ctx, b.Engine)
+	if err != nil {
+		return err
+	}
+	seg, file, err := parseHomePath(b.Prefix, calHomeSeg, calendar.Path, u)
+	if err != nil {
+		return err
+	}
+	if file != "" {
+		return webdav.NewHTTPError(http.StatusForbidden, errors.New("calendar creation not allowed here"))
 	}
 	name := strings.TrimSpace(calendar.Name)
 	if name == "" {
-		_, calName, file, err := b.parseCalPath(calendar.Path)
-		if err != nil {
-			return err
-		}
-		if file != "" || calName == "" {
-			return webdav.NewHTTPError(http.StatusForbidden, errors.New("calendar creation not allowed here"))
-		}
-		name = calName
+		name = seg
 	}
 	if !ValidDisplayName(name) {
 		return webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid calendar name"))
 	}
-	if _, err := b.Engine.FindChildCollection(ctx, calKind, "", name); err == nil {
+	if _, err := findHome(ctx, b.Engine, u, calKind, seg); err == nil {
 		return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
 	}
-	_, err := b.Engine.CreateCollection(ctx, calKind, name, "", nil)
+	if _, err := b.Engine.FindChildCollection(ctx, u.id, calKind, "", name); err == nil {
+		return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
+	}
+	var meta json.RawMessage
+	if !ids.Valid(seg) && seg != name {
+		meta, _ = json.Marshal(colSlug{Slug: seg})
+	}
+	_, err = b.Engine.CreateCollection(ctx, u.id, calKind, name, "", meta)
+	if errors.Is(err, syncengine.ErrCollectionExists) {
+		return webdav.NewHTTPError(http.StatusMethodNotAllowed, os.ErrExist)
+	}
 	return err
 }
 
 func (b *CalDAV) ListCalendars(ctx context.Context) ([]caldav.Calendar, error) {
-	if err := b.allow(ctx, false, ""); err != nil {
-		return nil, err
-	}
-	cols, err := b.Engine.ChildCollections(ctx, calKind, "")
+	u, err := b.user(ctx)
 	if err != nil {
 		return nil, err
 	}
+	cols, err := listHome(ctx, b.Engine, u, calKind)
+	if err != nil {
+		return nil, err
+	}
+	base := homeBase(ctx, b.Prefix, u)
 	out := make([]caldav.Calendar, 0, len(cols))
 	for i := range cols {
-		if err := b.allow(ctx, false, cols[i].ID); err != nil {
-			continue
-		}
-		out = append(out, b.calInfo(&cols[i]))
+		out = append(out, b.calInfo(base, &cols[i]))
 	}
 	return out, nil
 }
 
 func (b *CalDAV) GetCalendar(ctx context.Context, path string) (*caldav.Calendar, error) {
-	col, err := b.calendarByPath(ctx, path)
+	u, hc, err := b.calendarByPath(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	if err := b.allow(ctx, false, col.ID); err != nil {
-		return nil, err
-	}
-	c := b.calInfo(col)
+	c := b.calInfo(homeBase(ctx, b.Prefix, u), hc)
 	return &c, nil
 }
 
 func (b *CalDAV) GetCalendarObject(ctx context.Context, path string, req *caldav.CalendarCompRequest) (*caldav.CalendarObject, error) {
-	col, obj, href, err := b.objectByPath(ctx, path)
+	_, obj, href, err := b.objectByPath(ctx, path)
 	if err != nil {
-		return nil, err
-	}
-	if err := b.allow(ctx, false, col.ID); err != nil {
 		return nil, err
 	}
 	return b.toCalendarObject(obj, href)
 }
 
 func (b *CalDAV) ListCalendarObjects(ctx context.Context, path string, req *caldav.CalendarCompRequest) ([]caldav.CalendarObject, error) {
-	col, err := b.calendarByPath(ctx, path)
+	u, hc, err := b.calendarByPath(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	if err := b.allow(ctx, false, col.ID); err != nil {
-		return nil, err
-	}
-	objs, err := b.Engine.ListObjects(ctx, col.ID)
+	objs, err := b.Engine.ListObjects(ctx, hc.col.ID)
 	if err != nil {
 		return nil, err
 	}
+	base := homeBase(ctx, b.Prefix, u)
 	out := make([]caldav.CalendarObject, 0, len(objs))
 	for i := range objs {
-		href := Join(b.Prefix, calUserSeg, calHomeSeg, col.Name, eventFileName(&objs[i]))
+		href := Join(base, calHomeSeg, hc.seg, eventFileName(&objs[i]))
 		co, err := b.toCalendarObject(&objs[i], href)
 		if err != nil {
 			continue
@@ -167,23 +184,28 @@ func (b *CalDAV) QueryCalendarObjects(ctx context.Context, path string, query *c
 }
 
 func (b *CalDAV) PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (*caldav.CalendarObject, error) {
-	_, calName, fileName, err := b.parseCalPath(path)
+	if err := b.allow(ctx, true); err != nil {
+		return nil, err
+	}
+	u, err := currentUser(ctx, b.Engine)
+	if err != nil {
+		return nil, err
+	}
+	seg, fileName, err := parseHomePath(b.Prefix, calHomeSeg, path, u)
 	if err != nil {
 		return nil, err
 	}
 	if fileName == "" || !ValidDisplayName(fileName) {
 		return nil, webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid calendar object path"))
 	}
-	col, err := b.Engine.FindChildCollection(ctx, calKind, "", calName)
+	hc, err := findHome(ctx, b.Engine, u, calKind, seg)
 	if err != nil {
-		if errors.Is(err, syncengine.ErrNotFound) {
-			return nil, webdav.NewHTTPError(http.StatusConflict, errors.New("calendar not found"))
-		}
+		return nil, webdav.NewHTTPError(http.StatusConflict, errors.New("calendar not found"))
+	}
+	if err := need(ctx, authz.CalDAVWrite, hc.access); err != nil {
 		return nil, err
 	}
-	if err := b.allow(ctx, true, col.ID); err != nil {
-		return nil, err
-	}
+	col := &hc.col
 	comp, uid, err := caldav.ValidateCalendarObject(calendar)
 	if err != nil || uid == "" {
 		return nil, caldav.NewPreconditionError(caldav.PreconditionValidCalendarObjectResource)
@@ -241,7 +263,7 @@ func (b *CalDAV) PutCalendarObject(ctx context.Context, path string, calendar *i
 	}
 
 	sum := ncrypto.SHA256Hex(payload)
-	blobID, size, err := b.Store.PutBlob(ctx, bytes.NewReader(payload), sum)
+	blobID, size, err := b.Store.PutUserBlob(ctx, u.id, bytes.NewReader(payload), sum)
 	if err != nil {
 		if errors.Is(err, io.ErrUnexpectedEOF) || int64(len(payload)) > b.Store.MaxBlob {
 			return nil, caldav.NewPreconditionError(caldav.PreconditionMaxResourceSize)
@@ -281,38 +303,33 @@ func (b *CalDAV) PutCalendarObject(ctx context.Context, path string, calendar *i
 	if err != nil {
 		return nil, err
 	}
-	href := Join(b.Prefix, calUserSeg, calHomeSeg, col.Name, fileName)
+	href := Join(homeBase(ctx, b.Prefix, u), calHomeSeg, hc.seg, fileName)
 	return b.toCalendarObject(obj, href)
 }
 
 func (b *CalDAV) DeleteCalendarObject(ctx context.Context, path string) error {
-	_, calName, fileName, err := b.parseCalPath(path)
+	u, hc, file, err := b.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
-	col, err := b.Engine.FindChildCollection(ctx, calKind, "", calName)
+	if file == "" {
+		if err := need(ctx, authz.CollectionAdmin, hc.access); err != nil {
+			return err
+		}
+		return b.deleteCalendar(ctx, &hc.col)
+	}
+	if err := need(ctx, authz.CalDAVWrite, hc.access); err != nil {
+		return err
+	}
+	obj, err := b.findEventByName(ctx, &hc.col, file)
 	if err != nil {
 		if errors.Is(err, syncengine.ErrNotFound) {
 			return webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 		}
 		return err
 	}
-	if err := b.allow(ctx, true, col.ID); err != nil {
-		return err
-	}
-	if fileName == "" {
-		return b.deleteCalendar(ctx, col)
-	}
-	obj, err := b.findEventByName(ctx, col, fileName)
-	if err != nil {
-		if errors.Is(err, syncengine.ErrNotFound) {
-			return webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-		}
-		return err
-	}
-	dev := DeviceFrom(ctx)
-	res, err := b.Engine.Push(ctx, dev, ids.New(), []syncengine.ChangeInput{{
-		ObjectID: obj.ID, CollectionID: col.ID, Op: syncengine.OpDelete,
+	res, err := b.Engine.Push(ctx, u.dev, ids.New(), []syncengine.ChangeInput{{
+		ObjectID: obj.ID, CollectionID: hc.col.ID, Op: syncengine.OpDelete,
 		BaseRevision: obj.Revision, Force: true,
 	}})
 	if err != nil {
@@ -345,34 +362,46 @@ func (b *CalDAV) deleteCalendar(ctx context.Context, col *syncengine.Collection)
 	return b.Engine.TombstoneCollection(ctx, col.ID)
 }
 
-func (b *CalDAV) allow(ctx context.Context, write bool, collectionID string) error {
-	dev := DeviceFrom(ctx)
+func (b *CalDAV) allow(ctx context.Context, write bool) error {
 	act := authz.CalDAVRead
 	if write {
 		act = authz.CalDAVWrite
 	}
-	if err := authz.Allow(dev, act, collectionID); err != nil {
+	if err := authz.Allow(DeviceFrom(ctx), act); err != nil {
 		return webdav.NewHTTPError(http.StatusForbidden, err)
 	}
 	return nil
 }
 
-func (b *CalDAV) calendarByPath(ctx context.Context, path string) (*syncengine.Collection, error) {
-	_, calName, file, err := b.parseCalPath(path)
+// resolve maps a path to its calendar (readable by the caller) and file name.
+func (b *CalDAV) resolve(ctx context.Context, path string) (*davUser, *homeCol, string, error) {
+	u, err := b.user(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
-	if file != "" || calName == "" {
-		return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-	}
-	col, err := b.Engine.FindChildCollection(ctx, calKind, "", calName)
+	seg, file, err := parseHomePath(b.Prefix, calHomeSeg, path, u)
 	if err != nil {
-		if errors.Is(err, syncengine.ErrNotFound) {
-			return nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-		}
-		return nil, err
+		return nil, nil, "", err
 	}
-	return col, nil
+	hc, err := findHome(ctx, b.Engine, u, calKind, seg)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if err := need(ctx, authz.CalDAVRead, hc.access); err != nil {
+		return nil, nil, "", err
+	}
+	return u, hc, file, nil
+}
+
+func (b *CalDAV) calendarByPath(ctx context.Context, path string) (*davUser, *homeCol, error) {
+	u, hc, file, err := b.resolve(ctx, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if file != "" {
+		return nil, nil, webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
+	}
+	return u, hc, nil
 }
 
 func (b *CalDAV) findEventByName(ctx context.Context, col *syncengine.Collection, fileName string) (*syncengine.Object, error) {
@@ -395,75 +424,36 @@ func (b *CalDAV) findEventByName(ctx context.Context, col *syncengine.Collection
 	return nil, syncengine.ErrNotFound
 }
 
-func (b *CalDAV) objectByPath(ctx context.Context, path string) (*syncengine.Collection, *syncengine.Object, string, error) {
-	_, calName, fileName, err := b.parseCalPath(path)
+func (b *CalDAV) objectByPath(ctx context.Context, path string) (*homeCol, *syncengine.Object, string, error) {
+	u, hc, file, err := b.resolve(ctx, path)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	if fileName == "" {
+	if file == "" {
 		return nil, nil, "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 	}
-	col, err := b.Engine.FindChildCollection(ctx, calKind, "", calName)
+	obj, err := b.findEventByName(ctx, &hc.col, file)
 	if err != nil {
 		if errors.Is(err, syncengine.ErrNotFound) {
 			return nil, nil, "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
 		}
 		return nil, nil, "", err
 	}
-	obj, err := b.findEventByName(ctx, col, fileName)
-	if err != nil {
-		if errors.Is(err, syncengine.ErrNotFound) {
-			return nil, nil, "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-		}
-		return nil, nil, "", err
-	}
-	href := Join(b.Prefix, calUserSeg, calHomeSeg, col.Name, fileName)
-	return col, obj, href, nil
+	href := Join(homeBase(ctx, b.Prefix, u), calHomeSeg, hc.seg, file)
+	return hc, obj, href, nil
 }
 
-func (b *CalDAV) parseCalPath(p string) (segs []string, calName, fileName string, err error) {
-	n, err := Normalize(p)
-	if err != nil {
-		return nil, "", "", webdav.NewHTTPError(http.StatusBadRequest, err)
-	}
-	if n != b.Prefix && !HasPrefix(n, b.Prefix) {
-		return nil, "", "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-	}
-	rel := strings.TrimPrefix(n, b.Prefix)
-	segs, err = Split(rel)
-	if err != nil {
-		return nil, "", "", webdav.NewHTTPError(http.StatusBadRequest, err)
-	}
-	if len(segs) < 3 || segs[0] != calUserSeg || segs[1] != calHomeSeg {
-		return segs, "", "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-	}
-	if !ValidDisplayName(segs[2]) {
-		return segs, "", "", webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid calendar name"))
-	}
-	calName = segs[2]
-	if len(segs) == 3 {
-		return segs, calName, "", nil
-	}
-	if len(segs) == 4 {
-		if !ValidDisplayName(segs[3]) {
-			return segs, "", "", webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid object name"))
-		}
-		return segs, calName, segs[3], nil
-	}
-	return segs, "", "", webdav.NewHTTPError(http.StatusNotFound, os.ErrNotExist)
-}
-
-func (b *CalDAV) calInfo(c *syncengine.Collection) caldav.Calendar {
+func (b *CalDAV) calInfo(base string, hc *homeCol) caldav.Calendar {
 	comps := []string{ical.CompEvent, ical.CompToDo}
-	switch ParseCalendarColMeta(c.Metadata).Comp {
+	switch ParseCalendarColMeta(hc.col.Metadata).Comp {
 	case ical.CompEvent:
 		comps = []string{ical.CompEvent}
 	case ical.CompToDo:
 		comps = []string{ical.CompToDo}
 	}
 	return caldav.Calendar{
-		Path:                  Join(b.Prefix, calUserSeg, calHomeSeg, c.Name),
-		Name:                  c.Name,
+		Path:                  Join(base, calHomeSeg, hc.seg),
+		Name:                  hc.displayName(),
 		MaxResourceSize:       b.Store.MaxBlob,
 		SupportedComponentSet: comps,
 	}

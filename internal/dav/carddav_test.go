@@ -41,18 +41,13 @@ func cardServer(t *testing.T) (*httptest.Server, *identity.Device, string, *iden
 	}
 	t.Cleanup(func() { st.Close() })
 	eng := syncengine.New(st)
-	if _, err := eng.EnsureNamedCollection(context.Background(), "files", "Files"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := eng.EnsureNamedCollection(context.Background(), "addressbook", "Contacts"); err != nil {
-		t.Fatal(err)
-	}
 	idsvc := identity.NewService(st)
-	cardDev, cardPass, err := idsvc.CreateDAVDevice(context.Background(), "iphone-card", "carddav")
+	idsvc.OnUserCreated = func(ctx context.Context, u *identity.User) error { return eng.EnsureUserDefaults(ctx, u.ID) }
+	cardDev, cardPass, err := idsvc.CreateAppPassword(context.Background(), "", "iphone-card", "carddav")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileDev, filePass, err := idsvc.CreateDAVDevice(context.Background(), "iphone-files", "webdav")
+	fileDev, filePass, err := idsvc.CreateAppPassword(context.Background(), "", "iphone-files", "webdav")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +59,9 @@ func cardServer(t *testing.T) (*httptest.Server, *identity.Device, string, *iden
 	mux.Handle("/dav", davH)
 	mux.Handle("/carddav/", cardH)
 	mux.Handle("/carddav", cardH)
-	mux.Handle("/.well-known/carddav", dav.WellKnown(dav.CardDAVPrefix+"/user/", cardH))
-	mux.Handle("/.well-known/carddav/", dav.WellKnown(dav.CardDAVPrefix+"/user/", cardH))
+	wk := auth.Middleware(dav.WellKnown(dav.CardDAVPrefix, eng, cardH))
+	mux.Handle("/.well-known/carddav", wk)
+	mux.Handle("/.well-known/carddav/", wk)
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts, cardDev, cardPass, fileDev, filePass, eng
@@ -108,13 +104,15 @@ func TestUnauthenticatedCardDAV(t *testing.T) {
 }
 
 func TestWellKnownCardDAV(t *testing.T) {
-	ts, _, _, _, _, _ := cardServer(t)
+	ts, dev, pass, _, _, _ := cardServer(t)
 	c := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	resp, err := c.Get(ts.URL + "/.well-known/carddav")
+	r, _ := http.NewRequest(http.MethodGet, ts.URL+"/.well-known/carddav", nil)
+	r.SetBasicAuth(dev.ID, pass)
+	resp, err := c.Do(r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +120,7 @@ func TestWellKnownCardDAV(t *testing.T) {
 	if resp.StatusCode != http.StatusMovedPermanently {
 		t.Fatalf("%d", resp.StatusCode)
 	}
-	if loc := resp.Header.Get("Location"); loc != "/carddav/user/" {
+	if loc := resp.Header.Get("Location"); loc != "/carddav/u/owner/" {
 		t.Fatalf("location %q", loc)
 	}
 }
@@ -305,7 +303,7 @@ func TestCardDAVObjectIDNotInHref(t *testing.T) {
 	if resp.StatusCode >= 300 {
 		t.Fatalf("put %d", resp.StatusCode)
 	}
-	cols, _ := eng.ChildCollections(context.Background(), "addressbook", "")
+	cols, _ := eng.ChildCollections(context.Background(), "", "addressbook", "")
 	if len(cols) != 1 {
 		t.Fatalf("books %d", len(cols))
 	}
@@ -342,7 +340,7 @@ END:VCARD
 	if resp.StatusCode >= 300 {
 		t.Fatalf("put %d %s", resp.StatusCode, body)
 	}
-	cols, _ := eng.ChildCollections(context.Background(), "addressbook", "")
+	cols, _ := eng.ChildCollections(context.Background(), "", "addressbook", "")
 	objs, err := eng.ListObjects(context.Background(), cols[0].ID)
 	if err != nil || len(objs) != 1 {
 		t.Fatalf("objects %v %v", objs, err)
@@ -382,12 +380,16 @@ func cardPropfindGetctag(t *testing.T, ts *httptest.Server, path, user, pass str
 }
 
 func TestCardDAVGetctagChangesOnPush(t *testing.T) {
-	ts, dev, pass, _, _, _ := cardServer(t)
+	ts, dev, pass, _, _, eng := cardServer(t)
+	book, err := eng.FindChildCollection(context.Background(), dev.UserID, "addressbook", "", "Contacts")
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := cardPropfindGetctag(t, ts, "/carddav/user/addressbooks/", dev.ID, pass)
 	if !strings.Contains(strings.ToLower(before), "getctag") {
 		t.Fatalf("missing getctag %s", before)
 	}
-	i := strings.Index(before, "/carddav/user/addressbooks/Contacts")
+	i := strings.Index(before, "/carddav/user/addressbooks/"+book.ID)
 	if i < 0 {
 		t.Fatalf("missing contacts href %s", before)
 	}
@@ -408,7 +410,7 @@ func TestCardDAVGetctagChangesOnPush(t *testing.T) {
 		t.Fatalf("put %d", resp.StatusCode)
 	}
 	after := cardPropfindGetctag(t, ts, "/carddav/user/addressbooks/", dev.ID, pass)
-	i = strings.Index(after, "/carddav/user/addressbooks/Contacts")
+	i = strings.Index(after, "/carddav/user/addressbooks/"+book.ID)
 	chunk = after[i:]
 	lower = strings.ToLower(chunk)
 	start = strings.Index(lower, "getctag")
@@ -420,4 +422,3 @@ func TestCardDAVGetctagChangesOnPush(t *testing.T) {
 		t.Fatalf("ctag did not change: before=%q after=%q", ctagBefore, ctagAfter)
 	}
 }
-

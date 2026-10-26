@@ -39,7 +39,7 @@ func TestPhotosAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dev, err := idsvc.Enroll(context.Background(), "mac", pub, identity.RoleAgent)
+	dev, err := idsvc.Enroll(context.Background(), "", "mac", pub, identity.RoleAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestPhotosAPI(t *testing.T) {
 		t.Fatalf("unauth %d", unauth.StatusCode)
 	}
 
-	davDev, pass, err := idsvc.CreateDAVDevice(context.Background(), "files-only", "webdav")
+	davDev, pass, err := idsvc.CreateAppPassword(context.Background(), "", "files-only", "webdav")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestPhotosAPI(t *testing.T) {
 		t.Fatalf("webdav photos %d", resp.StatusCode)
 	}
 
-	photoDev, photoPass, err := idsvc.CreateDAVDevice(context.Background(), "gallery", "photos")
+	photoDev, photoPass, err := idsvc.CreateAppPassword(context.Background(), "", "gallery", "photos")
 	if err != nil {
 		t.Fatal(err)
 	}

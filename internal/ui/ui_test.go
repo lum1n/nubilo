@@ -280,7 +280,7 @@ func TestUICreateCollectionAndPair(t *testing.T) {
 		}
 	}
 
-	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/collections/"+id+"/rename", map[string]string{"name": "Personal"})
+	code, out = authedJSON(t, ts.URL, cookie, "POST", "/api/collections/"+id+"/rename", map[string]string{"name": "Personal 2"})
 	if code != 200 {
 		t.Fatalf("rename %d %v", code, out)
 	}

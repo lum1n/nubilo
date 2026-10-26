@@ -33,7 +33,7 @@ func gcEnv(t *testing.T) (*store.Store, *syncengine.Engine, *identity.Device) {
 	eng := syncengine.New(st)
 	idsvc := identity.NewService(st)
 	pub, _, _ := ncrypto.GenerateEd25519()
-	dev, err := idsvc.Enroll(context.Background(), "agent", pub, identity.RoleAgent)
+	dev, err := idsvc.Enroll(context.Background(), "", "agent", pub, identity.RoleAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestGCKeepsPhotoDerivatives(t *testing.T) {
 	}
 	orphan := []byte("not-a-photo-blob")
 	oh := ncrypto.SHA256Hex(orphan)
-	if _, _, err := st.PutBlob(context.Background(), bytes.NewReader(orphan), oh); err != nil {
+	if _, _, err := st.PutUserBlob(context.Background(), dev.UserID, bytes.NewReader(orphan), oh); err != nil {
 		t.Fatal(err)
 	}
 	issues, err := integrity.Check(context.Background(), st)
@@ -77,13 +77,13 @@ func TestGCKeepsPhotoDerivatives(t *testing.T) {
 
 func TestTombstoneCompactAfterAck(t *testing.T) {
 	st, eng, dev := gcEnv(t)
-	col, err := eng.CreateCollection(context.Background(), "files", "f", "", json.RawMessage(`{}`))
+	col, err := eng.CreateCollection(context.Background(), dev.UserID, "files", "f", "", json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	payload := []byte("gone")
 	sum := ncrypto.SHA256Hex(payload)
-	if _, _, err := st.PutBlob(context.Background(), bytes.NewReader(payload), sum); err != nil {
+	if _, _, err := st.PutUserBlob(context.Background(), dev.UserID, bytes.NewReader(payload), sum); err != nil {
 		t.Fatal(err)
 	}
 	oid := ids.New()
@@ -126,12 +126,12 @@ func TestTombstoneBlockedByLaggingDevice(t *testing.T) {
 	st, eng, dev := gcEnv(t)
 	idsvc := identity.NewService(st)
 	pub2, _, _ := ncrypto.GenerateEd25519()
-	if _, err := idsvc.Enroll(context.Background(), "other", pub2, identity.RoleClient); err != nil {
+	if _, err := idsvc.Enroll(context.Background(), "", "other", pub2, identity.RoleClient); err != nil {
 		t.Fatal(err)
 	}
-	col, _ := eng.CreateCollection(context.Background(), "files", "f", "", json.RawMessage(`{}`))
+	col, _ := eng.CreateCollection(context.Background(), dev.UserID, "files", "f", "", json.RawMessage(`{}`))
 	sum := ncrypto.SHA256Hex([]byte("x"))
-	_, _, _ = st.PutBlob(context.Background(), bytes.NewReader([]byte("x")), sum)
+	_, _, _ = st.PutUserBlob(context.Background(), dev.UserID, bytes.NewReader([]byte("x")), sum)
 	oid := ids.New()
 	eng.Push(context.Background(), dev, ids.New(), []syncengine.ChangeInput{{
 		ObjectID: oid, CollectionID: col.ID, Op: syncengine.OpCreate, ContentHash: sum, BlobID: sum, Size: 1, Metadata: json.RawMessage(`{}`),
@@ -152,10 +152,10 @@ func TestTombstoneBlockedByLaggingDevice(t *testing.T) {
 
 func TestStorageCorruptionDetected(t *testing.T) {
 	st, eng, dev := gcEnv(t)
-	col, _ := eng.CreateCollection(context.Background(), "files", "f", "", json.RawMessage(`{}`))
+	col, _ := eng.CreateCollection(context.Background(), dev.UserID, "files", "f", "", json.RawMessage(`{}`))
 	payload := []byte("payload")
 	sum := ncrypto.SHA256Hex(payload)
-	_, _, _ = st.PutBlob(context.Background(), bytes.NewReader(payload), sum)
+	_, _, _ = st.PutUserBlob(context.Background(), dev.UserID, bytes.NewReader(payload), sum)
 	eng.Push(context.Background(), dev, ids.New(), []syncengine.ChangeInput{{
 		ObjectID: ids.New(), CollectionID: col.ID, Op: syncengine.OpCreate, ContentHash: sum, BlobID: sum, Size: int64(len(payload)), Metadata: json.RawMessage(`{}`),
 	}})
@@ -201,9 +201,9 @@ func TestTruncatedBlobDetected(t *testing.T) {
 
 func TestRepairRefcounts(t *testing.T) {
 	st, eng, dev := gcEnv(t)
-	col, _ := eng.CreateCollection(context.Background(), "files", "f", "", json.RawMessage(`{}`))
+	col, _ := eng.CreateCollection(context.Background(), dev.UserID, "files", "f", "", json.RawMessage(`{}`))
 	sum := ncrypto.SHA256Hex([]byte("r"))
-	_, _, _ = st.PutBlob(context.Background(), bytes.NewReader([]byte("r")), sum)
+	_, _, _ = st.PutUserBlob(context.Background(), dev.UserID, bytes.NewReader([]byte("r")), sum)
 	eng.Push(context.Background(), dev, ids.New(), []syncengine.ChangeInput{{
 		ObjectID: ids.New(), CollectionID: col.ID, Op: syncengine.OpCreate, ContentHash: sum, BlobID: sum, Size: 1, Metadata: json.RawMessage(`{}`),
 	}})

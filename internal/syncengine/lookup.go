@@ -23,10 +23,7 @@ func (e *Engine) GetObject(ctx context.Context, id string) (*Object, error) {
 }
 
 func (e *Engine) GetCollection(ctx context.Context, id string) (*Collection, error) {
-	rows, err := e.Store.DB.QueryContext(ctx, `
-		SELECT id, kind, name, parent_id, revision, metadata, metadata_hash, created_at, updated_at, deleted_at
-		FROM collections WHERE id = ?
-	`, id)
+	rows, err := e.Store.DB.QueryContext(ctx, `SELECT `+collectionCols+collectionFrom+` WHERE c.id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -81,23 +78,24 @@ func (e *Engine) CountLiveObjects(ctx context.Context, collectionID string) (int
 	return n, err
 }
 
-func (e *Engine) ChildCollections(ctx context.Context, kind, parentID string) ([]Collection, error) {
+// ChildCollections lists live children of parentID, or, with parentID empty,
+// the live roots owned by ownerUserID ("" = roots of every owner; system use).
+func (e *Engine) ChildCollections(ctx context.Context, ownerUserID, kind, parentID string) ([]Collection, error) {
 	var rows *sql.Rows
 	var err error
-	if parentID == "" {
-		rows, err = e.Store.DB.QueryContext(ctx, `
-			SELECT id, kind, name, parent_id, revision, metadata, metadata_hash, created_at, updated_at, deleted_at
-			FROM collections
-			WHERE kind = ? AND deleted_at IS NULL AND parent_id IS NULL
-			ORDER BY name
-		`, kind)
-	} else {
-		rows, err = e.Store.DB.QueryContext(ctx, `
-			SELECT id, kind, name, parent_id, revision, metadata, metadata_hash, created_at, updated_at, deleted_at
-			FROM collections
-			WHERE kind = ? AND deleted_at IS NULL AND parent_id = ?
-			ORDER BY name
-		`, kind, parentID)
+	switch {
+	case parentID != "":
+		rows, err = e.Store.DB.QueryContext(ctx, `SELECT `+collectionCols+collectionFrom+`
+			WHERE c.kind = ? AND c.deleted_at IS NULL AND c.parent_id = ?
+			ORDER BY c.name`, kind, parentID)
+	case ownerUserID != "":
+		rows, err = e.Store.DB.QueryContext(ctx, `SELECT `+collectionCols+collectionFrom+`
+			WHERE c.kind = ? AND c.deleted_at IS NULL AND c.parent_id IS NULL AND c.owner_user_id = ?
+			ORDER BY c.name`, kind, ownerUserID)
+	default:
+		rows, err = e.Store.DB.QueryContext(ctx, `SELECT `+collectionCols+collectionFrom+`
+			WHERE c.kind = ? AND c.deleted_at IS NULL AND c.parent_id IS NULL
+			ORDER BY c.name`, kind)
 	}
 	if err != nil {
 		return nil, err
@@ -114,8 +112,26 @@ func (e *Engine) ChildCollections(ctx context.Context, kind, parentID string) ([
 	return out, rows.Err()
 }
 
-func (e *Engine) FindChildCollection(ctx context.Context, kind, parentID, name string) (*Collection, error) {
-	children, err := e.ChildCollections(ctx, kind, parentID)
+// SharedRoots lists live root collections of kind that other users shared
+// with userID, with Access set.
+func (e *Engine) SharedRoots(ctx context.Context, userID, kind string) ([]Collection, error) {
+	if userID == "" {
+		return nil, nil
+	}
+	rows, err := e.Store.DB.QueryContext(ctx, `SELECT `+collectionCols+`, CASE s.access WHEN 'rw' THEN 2 ELSE 1 END`+collectionFrom+`
+		JOIN shares s ON s.collection_id = c.id AND s.principal_type = 'user' AND s.principal_id = ?
+		WHERE c.kind = ? AND c.deleted_at IS NULL AND c.parent_id IS NULL AND COALESCE(c.owner_user_id, '') <> ?
+		  AND COALESCE(u.status, 'active') = 'active'
+		ORDER BY u.username, c.name`, userID, kind, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanCollectionsWithAccess(rows)
+}
+
+func (e *Engine) FindChildCollection(ctx context.Context, ownerUserID, kind, parentID, name string) (*Collection, error) {
+	children, err := e.ChildCollections(ctx, ownerUserID, kind, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -146,14 +162,15 @@ func (e *Engine) FindObjectByUID(ctx context.Context, collectionID, uid string) 
 
 // CollectionCTags returns an opaque change tag per live collection of kind.
 // Tags bump when objects change (journal) or when collection metadata is updated.
-func (e *Engine) CollectionCTags(ctx context.Context, kind string) (map[string]string, error) {
+func (e *Engine) CollectionCTags(ctx context.Context, sc Scope, kind string) (map[string]string, error) {
+	where, args := sc.filter()
 	rows, err := e.Store.DB.QueryContext(ctx, `
 		SELECT c.id, c.updated_at, COALESCE(MAX(j.seq), 0)
 		FROM collections c
 		LEFT JOIN journal j ON j.collection_id = c.id
-		WHERE c.kind = ? AND c.deleted_at IS NULL
+		WHERE c.kind = ? AND c.deleted_at IS NULL AND `+where+`
 		GROUP BY c.id
-	`, kind)
+	`, append([]any{kind}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +270,7 @@ func (e *Engine) RenameCollection(ctx context.Context, id, name string) error {
 		WHERE id = ? AND deleted_at IS NULL
 	`, name, now, id)
 	if err != nil {
-		return err
+		return mapCollectionErr(err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
@@ -262,40 +279,70 @@ func (e *Engine) RenameCollection(ctx context.Context, id, name string) error {
 	return nil
 }
 
+// SetCollectionParent moves a collection (and its subtree) under parentID, or
+// makes it a root. Moves across owners are rejected.
 func (e *Engine) SetCollectionParent(ctx context.Context, id, parentID string) error {
-	now := store.NowMS()
-	var parent any
-	if parentID != "" {
-		parent = parentID
-	}
-	res, err := e.Store.DB.ExecContext(ctx, `
-		UPDATE collections SET parent_id = ?, updated_at = ?, revision = revision + 1
-		WHERE id = ? AND deleted_at IS NULL
-	`, parent, now, id)
+	c, err := e.GetCollection(ctx, id)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if c.DeletedAt != nil {
 		return ErrNotFound
 	}
-	return nil
+	newRoot := id
+	var parent any
+	if parentID != "" {
+		p, err := e.GetCollection(ctx, parentID)
+		if err != nil {
+			return err
+		}
+		if p.OwnerUserID != c.OwnerUserID {
+			return ErrCollection
+		}
+		parent = parentID
+		newRoot = p.RootID
+	}
+	now := store.NowMS()
+	return e.Store.WithWrite(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`
+			UPDATE collections SET parent_id = ?, updated_at = ?, revision = revision + 1
+			WHERE id = ? AND deleted_at IS NULL
+		`, parent, now, id)
+		if err != nil {
+			return mapCollectionErr(err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		_, err = tx.Exec(`
+			WITH RECURSIVE sub(id) AS (
+				SELECT ? UNION ALL SELECT c.id FROM collections c JOIN sub ON c.parent_id = sub.id
+			)
+			UPDATE collections SET root_id = ? WHERE id IN (SELECT id FROM sub)
+		`, id, newRoot)
+		return err
+	})
 }
 
 func (e *Engine) TombstoneCollection(ctx context.Context, id string) error {
 	now := store.NowMS()
-	res, err := e.Store.DB.ExecContext(ctx, `
-		UPDATE collections SET deleted_at = ?, updated_at = ?, revision = revision + 1
-		WHERE id = ? AND deleted_at IS NULL
-	`, now, now, id)
-	if err != nil {
+	return e.Store.WithWrite(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`
+			UPDATE collections SET deleted_at = ?, updated_at = ?, revision = revision + 1
+			WHERE id = ? AND deleted_at IS NULL
+		`, now, now, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		if _, err := tx.Exec(`DELETE FROM shares WHERE collection_id = ?`, id); err != nil {
+			return err
+		}
+		_, err = tx.Exec(`DELETE FROM collection_prefs WHERE collection_id = ?`, id)
 		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	})
 }
 
 func scanObject(sc scanner) (*Object, error) {
@@ -327,4 +374,73 @@ func ModTime(ms int64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(ms).UTC()
+}
+
+// ListObjectsPage lists live objects of kind ("" = any) in a collection in id
+// order, starting after afterID.
+func (e *Engine) ListObjectsPage(ctx context.Context, collectionID, kind, afterID string, limit int) ([]Object, error) {
+	rows, err := e.Store.DB.QueryContext(ctx, objectSelect+`
+		WHERE collection_id = ? AND deleted_at IS NULL AND (? = '' OR kind = ?) AND id > ?
+		ORDER BY id LIMIT ?`, collectionID, kind, kind, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Object
+	for rows.Next() {
+		o, err := scanObject(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *o)
+	}
+	return out, rows.Err()
+}
+
+// FindLiveObjectByBlob returns a live object in a collection whose blob is hash.
+func (e *Engine) FindLiveObjectByBlob(ctx context.Context, collectionID, hash string) (*Object, error) {
+	row := e.Store.DB.QueryRowContext(ctx, objectSelect+`
+		WHERE collection_id = ? AND deleted_at IS NULL AND blob_id = ? LIMIT 1`, collectionID, hash)
+	return scanObject(row)
+}
+
+// Usage is the logical storage of one user (deduplicated blobs count once
+// per object that uses them).
+type Usage struct {
+	Objects int   `json:"objects"`
+	Bytes   int64 `json:"bytes"`
+}
+
+// UserUsage returns live object counts and bytes per owning user.
+func (e *Engine) UserUsage(ctx context.Context) (map[string]Usage, error) {
+	rows, err := e.Store.DB.QueryContext(ctx, `
+		SELECT COALESCE(c.owner_user_id, ''), COUNT(o.id), COALESCE(SUM(o.size), 0)
+		FROM objects o JOIN collections c ON c.id = o.collection_id
+		WHERE o.deleted_at IS NULL AND c.deleted_at IS NULL
+		GROUP BY c.owner_user_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Usage{}
+	for rows.Next() {
+		var id string
+		var u Usage
+		if err := rows.Scan(&id, &u.Objects, &u.Bytes); err != nil {
+			return nil, err
+		}
+		out[id] = u
+	}
+	return out, rows.Err()
+}
+
+// Username returns the username of userID.
+func (e *Engine) Username(ctx context.Context, userID string) (string, error) {
+	var name string
+	err := e.Store.DB.QueryRowContext(ctx, `SELECT username FROM users WHERE id = ?`, userID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return name, err
 }

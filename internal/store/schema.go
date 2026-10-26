@@ -129,13 +129,6 @@ CREATE TABLE IF NOT EXISTS push_idempotency (
     created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS blob_uploads (
-    blob_id TEXT NOT NULL,
-    device_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY (blob_id, device_id)
-);
-
 CREATE TABLE IF NOT EXISTS audit (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     ts INTEGER NOT NULL,

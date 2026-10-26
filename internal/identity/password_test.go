@@ -22,7 +22,7 @@ func TestDAVPassword(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	s := identity.NewService(st)
-	dev, pass, err := s.CreateDAVDevice(context.Background(), "Finder", "webdav")
+	dev, pass, err := s.CreateAppPassword(context.Background(), "", "Finder", "webdav")
 	if err != nil {
 		t.Fatal(err)
 	}

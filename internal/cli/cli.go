@@ -29,6 +29,7 @@ import (
 	"nubilo/internal/server"
 	"nubilo/internal/service"
 	"nubilo/internal/version"
+	"nubilo/internal/wiredx"
 )
 
 func Main(args []string) int {
@@ -48,7 +49,11 @@ func Main(args []string) int {
 		usage(os.Stdout)
 		return 0
 	case "version":
-		fmt.Println(version.String)
+		wired := "no"
+		if wiredx.Available() {
+			wired = "yes"
+		}
+		fmt.Printf("%s (wired: %s)\n", version.String, wired)
 		return 0
 	case "init":
 		return runInit(g, rest)
@@ -71,6 +76,10 @@ func Main(args []string) int {
 		return runTLS(g, rest)
 	case "devices":
 		return runDevices(g, rest)
+	case "users":
+		return runUsers(g, rest)
+	case "relay":
+		return runRelay(g, rest)
 	case "verify":
 		return runVerify(g, rest)
 	case "gc":
@@ -106,6 +115,7 @@ type global struct {
 	dataDir string
 	jsonOut bool
 	verbose bool
+	user    string // --user: act on this user's data (default: owner admin)
 }
 
 func parseGlobal(args []string) (global, []string) {
@@ -124,6 +134,11 @@ func parseGlobal(args []string) (global, []string) {
 			g.dataDir = strings.TrimPrefix(a, "--data-dir=")
 		case a == "--json":
 			g.jsonOut = true
+		case a == "--user" && i+1 < len(args):
+			g.user = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--user="):
+			g.user = strings.TrimPrefix(a, "--user=")
 		case a == "--verbose" || a == "-v":
 			g.verbose = true
 		default:
@@ -171,7 +186,15 @@ Usage:
   nubilo agent files add PATH [NAME]
   nubilo agent files remove PATH
   nubilo status [--json]
-  nubilo pair [--wait] [--role agent|client]
+  nubilo relay init --public-host HOST [--home NAME]   # on the VPS
+  nubilo relay run|install|uninstall
+  nubilo relay invite [--rotate] | members | revoke NAME
+  nubilo users [list]
+  nubilo users add USERNAME [--name "Display Name"] [--role admin|member]
+  nubilo users disable|enable USERNAME
+  nubilo users role USERNAME admin|member
+  nubilo users invite [--role admin|member] [--for USERNAME] [--ttl HOURS] [--uses N]
+  nubilo pair [--wait] [--role agent|client] [--user USERNAME]
   nubilo pair --server URL --code XXXXX-XXXXX --name NAME [--insecure]
   nubilo tls [--listen ADDR] [--hosts HOSTS]   # optional: regenerate auto cert
   nubilo devices [list]
@@ -179,7 +202,7 @@ Usage:
   nubilo devices rename <id> <name>
   nubilo devices enroll --name NAME --pubkey FILE [--role agent]
   nubilo devices rotate <id> --pubkey FILE
-  nubilo devices password --name NAME [--scope webdav|caldav|carddav|photos|all]
+  nubilo devices password --name NAME [--scope webdav|caldav|carddav|photos|all] [--user USERNAME]
   nubilo files [list]
   nubilo files mkdir NAME
   nubilo calendars [list]
@@ -192,7 +215,9 @@ Usage:
   nubilo backup --out FILE --passphrase-file FILE [--verify]
   nubilo restore --in FILE --dest DIR --passphrase-file FILE
 
-Global flags: --data-dir, --json, --verbose
+Global flags: --data-dir, --json, --verbose, --user USERNAME
+(--user selects whose data files/calendars/contacts/photos/pair/devices act on;
+ default is the owner admin)
 `)
 }
 
@@ -295,7 +320,7 @@ func runServer(g global, args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
+	go func() { errCh <- srv.Run(ctx) }()
 	select {
 	case <-ctx.Done():
 		shctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -922,11 +947,15 @@ func runPair(g global, args []string) int {
 	}
 	defer rt.Close()
 	r := identity.Role(*role)
-	raw, sess, err := rt.IDs.StartPairing(context.Background(), r)
+	u, err := cliUser(rt, g)
 	if err != nil {
 		return fatal(err)
 	}
-	fmt.Printf("Pairing code: %s\nExpires: %s\nRole: %s\n", ncrypto.FormatPairingCode(raw), time.UnixMilli(sess.ExpiresAt).Format(time.RFC3339), r)
+	raw, sess, err := rt.IDs.StartPairing(context.Background(), u.ID, r)
+	if err != nil {
+		return fatal(err)
+	}
+	fmt.Printf("Pairing code: %s\nExpires: %s\nRole: %s\nUser: %s\n", ncrypto.FormatPairingCode(raw), time.UnixMilli(sess.ExpiresAt).Format(time.RFC3339), r, u.Username)
 	if !*wait {
 		return 0
 	}
@@ -988,15 +1017,26 @@ func runDevices(g global, args []string) int {
 		if err != nil {
 			return fatal(err)
 		}
+		if g.user != "" {
+			u, err := cliUser(rt, g)
+			if err != nil {
+				return fatal(err)
+			}
+			list, err = rt.IDs.ListUserDevices(ctx, u.ID)
+			if err != nil {
+				return fatal(err)
+			}
+		}
 		if g.jsonOut {
 			return dumpJSON(list)
 		}
+		names := userNames(rt)
 		for _, d := range list {
 			rev := ""
 			if d.Revoked() {
 				rev = " REVOKED"
 			}
-			fmt.Printf("%s  %s  %s%s\n", d.ID, d.Role, d.Name, rev)
+			fmt.Printf("%s  %-8s  %-12s  %s%s\n", d.ID, d.Role, names[d.UserID], d.Name, rev)
 		}
 		return 0
 	case "revoke":
@@ -1036,7 +1076,11 @@ func runDevices(g global, args []string) int {
 		if err != nil {
 			return fatal(err)
 		}
-		dev, err := rt.IDs.Enroll(ctx, *name, pub, identity.Role(*role))
+		u, err := cliUser(rt, g)
+		if err != nil {
+			return fatal(err)
+		}
+		dev, err := rt.IDs.Enroll(ctx, u.ID, *name, pub, identity.Role(*role))
 		if err != nil {
 			return fatal(err)
 		}
@@ -1074,24 +1118,24 @@ func runDevices(g global, args []string) int {
 		if *name == "" {
 			return fatal(fmt.Errorf("devices password requires --name"))
 		}
-		dev, pass, err := rt.IDs.CreateDAVDevice(ctx, *name, *scope)
+		u, err := cliUser(rt, g)
 		if err != nil {
 			return fatal(err)
 		}
-		scheme := "http://"
-		if !rt.Cfg.Loopback() {
-			scheme = "https://"
+		dev, pass, err := rt.IDs.CreateAppPassword(ctx, u.ID, *name, *scope)
+		if err != nil {
+			return fatal(err)
 		}
-		base := scheme + rt.Cfg.Listen
-		fmt.Printf("username: %s\npassword: %s\n", dev.ID, pass)
+		base := serverBaseURL(rt)
+		fmt.Printf("username: %s\npassword: %s\n", u.Username, pass)
 		if dev.Permissions.HasProtocol("webdav") {
 			fmt.Printf("webdav:   %s/dav/\n", base)
 		}
 		if dev.Permissions.HasProtocol("caldav") {
-			fmt.Printf("caldav:   %s/caldav/\n", base)
+			fmt.Printf("caldav:   %s/caldav/u/%s/\n", base, u.Username)
 		}
 		if dev.Permissions.HasProtocol("carddav") {
-			fmt.Printf("carddav:  %s/carddav/\n", base)
+			fmt.Printf("carddav:  %s/carddav/u/%s/\n", base, u.Username)
 		}
 		if dev.Permissions.HasProtocol("photos") {
 			fmt.Printf("photos:   %s/api/v1/photos\n", base)
@@ -1258,9 +1302,13 @@ func runFiles(g global, args []string) int {
 	}
 	defer rt.Close()
 	ctx := context.Background()
+	u, err := cliUser(rt, g)
+	if err != nil {
+		return fatal(err)
+	}
 	switch sub {
 	case "list":
-		cols, err := rt.Engine.ChildCollections(ctx, "files", "")
+		cols, err := rt.Engine.ChildCollections(ctx, u.ID, "files", "")
 		if err != nil {
 			return fatal(err)
 		}
@@ -1279,7 +1327,7 @@ func runFiles(g global, args []string) int {
 		if len(args) < 1 {
 			return fatal(fmt.Errorf("files mkdir NAME"))
 		}
-		c, err := rt.Engine.CreateCollection(ctx, "files", strings.Join(args, " "), "", nil)
+		c, err := rt.Engine.CreateCollection(ctx, u.ID, "files", strings.Join(args, " "), "", nil)
 		if err != nil {
 			return fatal(err)
 		}
@@ -1306,9 +1354,13 @@ func runCalendars(g global, args []string) int {
 	}
 	defer rt.Close()
 	ctx := context.Background()
+	u, err := cliUser(rt, g)
+	if err != nil {
+		return fatal(err)
+	}
 	switch sub {
 	case "list":
-		cols, err := rt.Engine.ChildCollections(ctx, "calendar", "")
+		cols, err := rt.Engine.ChildCollections(ctx, u.ID, "calendar", "")
 		if err != nil {
 			return fatal(err)
 		}
@@ -1327,7 +1379,7 @@ func runCalendars(g global, args []string) int {
 		if len(args) < 1 {
 			return fatal(fmt.Errorf("calendars create NAME"))
 		}
-		c, err := rt.Engine.CreateCollection(ctx, "calendar", strings.Join(args, " "), "", nil)
+		c, err := rt.Engine.CreateCollection(ctx, u.ID, "calendar", strings.Join(args, " "), "", nil)
 		if err != nil {
 			return fatal(err)
 		}
@@ -1354,9 +1406,13 @@ func runContacts(g global, args []string) int {
 	}
 	defer rt.Close()
 	ctx := context.Background()
+	u, err := cliUser(rt, g)
+	if err != nil {
+		return fatal(err)
+	}
 	switch sub {
 	case "list":
-		cols, err := rt.Engine.ChildCollections(ctx, "addressbook", "")
+		cols, err := rt.Engine.ChildCollections(ctx, u.ID, "addressbook", "")
 		if err != nil {
 			return fatal(err)
 		}
@@ -1375,7 +1431,7 @@ func runContacts(g global, args []string) int {
 		if len(args) < 1 {
 			return fatal(fmt.Errorf("contacts create NAME"))
 		}
-		c, err := rt.Engine.CreateCollection(ctx, "addressbook", strings.Join(args, " "), "", nil)
+		c, err := rt.Engine.CreateCollection(ctx, u.ID, "addressbook", strings.Join(args, " "), "", nil)
 		if err != nil {
 			return fatal(err)
 		}
@@ -1410,7 +1466,11 @@ func runPhotos(g global, args []string) int {
 			ThumbMaxPx:              rt.Cfg.Photos.ThumbMaxPx,
 			PreviewMaxPx:            rt.Cfg.Photos.PreviewMaxPx,
 		}}
-		objs, err := svc.List(ctx)
+		u, err := cliUser(rt, g)
+		if err != nil {
+			return fatal(err)
+		}
+		objs, _, err := svc.List(ctx, u.ID, "", 1000)
 		if err != nil {
 			return fatal(err)
 		}

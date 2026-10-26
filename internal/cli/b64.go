@@ -14,3 +14,7 @@ func b64in(s string) ([]byte, error) {
 	}
 	return base64.StdEncoding.DecodeString(s)
 }
+
+func b64url(b []byte) string {
+	return base64.RawURLEncoding.EncodeToString(b)
+}

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists/1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	No entitlements are required: the device key lives in the app's default
+	Keychain access group. To share it with a future extension (File Provider,
+	Phase D), add a group here and pass it as KeychainKeyStore(accessGroup:):
+
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)dev.nubilo.shared</string>
+	</array>
+	-->
+</dict>
+</plist>

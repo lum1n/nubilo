@@ -20,6 +20,7 @@ const (
 	BackupCreate  Action = "backup.create"
 	BackupRestore Action = "backup.restore"
 	PairStart     Action = "pair.start"
+	UserAdmin     Action = "user.admin"
 	DAVRead       Action = "dav.read"
 	DAVWrite      Action = "dav.write"
 	CalDAVRead    Action = "caldav.read"
@@ -28,111 +29,91 @@ const (
 	CardDAVWrite  Action = "carddav.write"
 	PhotosRead    Action = "photos.read"
 	PhotosWrite   Action = "photos.write"
+	// CollectionAdmin covers deleting, renaming and sharing a collection.
+	CollectionAdmin Action = "collection.admin"
 )
 
-func Allow(d *identity.Device, action Action, collectionID string) error {
+// Access is a user's level of access to one collection.
+type Access int
+
+const (
+	AccessNone Access = iota
+	AccessRead
+	AccessWrite
+	AccessOwner
+)
+
+func (a Access) String() string {
+	switch a {
+	case AccessRead:
+		return "ro"
+	case AccessWrite:
+		return "rw"
+	case AccessOwner:
+		return "owner"
+	default:
+		return "none"
+	}
+}
+
+// Allow checks protocol and role permissions of a device. Collection-level
+// access is checked separately with AllowCollection.
+func Allow(d *identity.Device, action Action) error {
 	if d == nil {
 		return ErrDenied
 	}
 	if d.Revoked() {
 		return ErrDenied
 	}
+	p := d.Permissions
 	switch action {
 	case SyncRead:
-		if !d.Permissions.HasProtocol("sync") {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
+		return need(p.HasProtocol("sync"))
 	case SyncWrite:
-		if !d.Permissions.HasProtocol("sync") {
-			return ErrDenied
-		}
-		if d.Role == identity.RoleDAV {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
-	case DeviceList:
-		return nil // any authenticated device may list (names/ids only)
-	case DAVRead:
-		if !d.Permissions.HasProtocol("webdav") {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
-	case DAVWrite:
-		if !d.Permissions.HasProtocol("webdav") {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
-	case CalDAVRead:
-		if !d.Permissions.HasProtocol("caldav") {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
-	case CalDAVWrite:
-		if !d.Permissions.HasProtocol("caldav") {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
-	case CardDAVRead:
-		if !d.Permissions.HasProtocol("carddav") {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
-	case CardDAVWrite:
-		if !d.Permissions.HasProtocol("carddav") {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
+		return need(p.HasProtocol("sync") && d.Role != identity.RoleDAV)
+	case DeviceList, CollectionAdmin:
+		return nil // devices: own user's only; collections: Owner checked by AllowCollection
+	case DAVRead, DAVWrite:
+		return need(p.HasProtocol("webdav"))
+	case CalDAVRead, CalDAVWrite:
+		return need(p.HasProtocol("caldav"))
+	case CardDAVRead, CardDAVWrite:
+		return need(p.HasProtocol("carddav"))
 	case PhotosRead:
-		if !d.Permissions.HasProtocol("photos") && !d.Permissions.HasProtocol("sync") {
-			return ErrDenied
-		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
+		return need(p.HasProtocol("photos") || p.HasProtocol("sync"))
 	case PhotosWrite:
 		if d.Role == identity.RoleDAV {
-			if !d.Permissions.HasProtocol("photos") {
-				return ErrDenied
-			}
-		} else if !d.Permissions.HasProtocol("photos") && !d.Permissions.HasProtocol("sync") {
-			return ErrDenied
+			return need(p.HasProtocol("photos"))
 		}
-		if collectionID != "" && !d.Permissions.CanCollection(collectionID) {
-			return ErrDenied
-		}
-		return nil
-	case DeviceRevoke, DeviceRename, MetricsRead, BackupCreate, BackupRestore, PairStart:
-		if d.Permissions.Admin || d.Role == identity.RoleAdmin || d.ID == "admin-local" {
-			return nil
-		}
-		return ErrDenied
+		return need(p.HasProtocol("photos") || p.HasProtocol("sync"))
+	case DeviceRevoke, DeviceRename, MetricsRead, BackupCreate, BackupRestore, PairStart, UserAdmin:
+		return need(d.IsAdmin())
 	default:
 		return ErrDenied
 	}
+}
+
+// AllowCollection checks action (after Allow) against the caller's access to
+// one collection: reads need Read, writes need Write, collection admin needs Owner.
+func AllowCollection(d *identity.Device, action Action, access Access) error {
+	if err := Allow(d, action); err != nil {
+		return err
+	}
+	var want Access
+	switch action {
+	case CollectionAdmin:
+		want = AccessOwner
+	case SyncWrite, DAVWrite, CalDAVWrite, CardDAVWrite, PhotosWrite:
+		want = AccessWrite
+	default:
+		want = AccessRead
+	}
+	return need(access >= want)
+}
+
+func need(ok bool) error {
+	if ok {
+		return nil
+	}
+	return ErrDenied
 }

@@ -291,7 +291,7 @@ func startHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dev, err := idsvc.Enroll(context.Background(), "studio-mac", devPub, identity.RoleAgent)
+	dev, err := idsvc.Enroll(context.Background(), "", "studio-mac", devPub, identity.RoleAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func testVCard(uid, fn string) []byte {
 
 func liveCount(t *testing.T, eng *syncengine.Engine, kind, name string) int {
 	t.Helper()
-	col, err := eng.FindChildCollection(context.Background(), kind, "", name)
+	col, err := eng.FindChildCollection(context.Background(), "", kind, "", name)
 	if err != nil {
 		if errors.Is(err, syncengine.ErrNotFound) {
 			return 0
@@ -341,7 +341,7 @@ func liveCount(t *testing.T, eng *syncengine.Engine, kind, name string) int {
 
 func collection(t *testing.T, eng *syncengine.Engine, kind, name string) *syncengine.Collection {
 	t.Helper()
-	col, err := eng.FindChildCollection(context.Background(), kind, "", name)
+	col, err := eng.FindChildCollection(context.Background(), "", kind, "", name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,10 +465,10 @@ func TestReminderNameCollision(t *testing.T) {
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.eng.FindChildCollection(context.Background(), "calendar", "", "Personal"); err != nil {
+	if _, err := h.eng.FindChildCollection(context.Background(), "", "calendar", "", "Personal"); err != nil {
 		t.Fatal(err)
 	}
-	col, err := h.eng.FindChildCollection(context.Background(), "calendar", "", "Personal Reminders")
+	col, err := h.eng.FindChildCollection(context.Background(), "", "calendar", "", "Personal Reminders")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +606,7 @@ func TestRemoteChangeApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := ncrypto.SHA256Hex(updated)
-	if _, _, err := h.st.PutBlob(context.Background(), strings.NewReader(string(updated)), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, strings.NewReader(string(updated)), hash); err != nil {
 		t.Fatal(err)
 	}
 	res, err := h.eng.Push(context.Background(), h.dev, ids.New(), []syncengine.ChangeInput{{
@@ -650,7 +650,7 @@ func TestApplyChangeRebindsEventKitID(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := ncrypto.SHA256Hex(updated)
-	if _, _, err := h.st.PutBlob(context.Background(), strings.NewReader(string(updated)), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, strings.NewReader(string(updated)), hash); err != nil {
 		t.Fatal(err)
 	}
 	res, err := h.eng.Push(context.Background(), h.dev, ids.New(), []syncengine.ChangeInput{{
@@ -714,7 +714,7 @@ func TestApplyChangeFailureDoesNotAck(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := ncrypto.SHA256Hex(updated)
-	if _, _, err := h.st.PutBlob(context.Background(), strings.NewReader(string(updated)), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, strings.NewReader(string(updated)), hash); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.eng.Push(context.Background(), h.dev, ids.New(), []syncengine.ChangeInput{{
@@ -767,7 +767,7 @@ func TestContactRoundTripPreservesExtras(t *testing.T) {
 	}
 	rich := []byte("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:contact-1\r\nFN:Ada Lovelace\r\nN:Lovelace;Ada;;;\r\nEMAIL:ada@example.com\r\nNOTE:from-iphone\r\nX-CUSTOM:keep\r\nPHOTO;ENCODING=b;TYPE=JPEG:/w==\r\nEND:VCARD\r\n")
 	hash := ncrypto.SHA256Hex(rich)
-	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(rich), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(rich), hash); err != nil {
 		t.Fatal(err)
 	}
 	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
@@ -1270,7 +1270,7 @@ func TestNestedFilesPush(t *testing.T) {
 	if len(rootObjs) != 1 {
 		t.Fatalf("root objects %d want 1 (top.txt only)", len(rootObjs))
 	}
-	docs, err := h.eng.FindChildCollection(context.Background(), "files", rootCol.ID, "docs")
+	docs, err := h.eng.FindChildCollection(context.Background(), "", "files", rootCol.ID, "docs")
 	if err != nil {
 		t.Fatalf("docs child: %v", err)
 	}
@@ -1281,7 +1281,7 @@ func TestNestedFilesPush(t *testing.T) {
 	if len(docsObjs) != 1 {
 		t.Fatalf("docs objects %d want 1", len(docsObjs))
 	}
-	nested, err := h.eng.FindChildCollection(context.Background(), "files", docs.ID, "nested")
+	nested, err := h.eng.FindChildCollection(context.Background(), "", "files", docs.ID, "nested")
 	if err != nil {
 		t.Fatalf("nested child: %v", err)
 	}
@@ -1300,13 +1300,13 @@ func TestContactPullNoEchoPreservesUID(t *testing.T) {
 	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
 	a := newAgent(h, sel, nil, book)
 
-	col, err := h.eng.EnsureNamedCollection(context.Background(), "addressbook", "Contacts")
+	col, err := h.eng.EnsureNamedCollection(context.Background(), h.dev.UserID, "addressbook", "Contacts")
 	if err != nil {
 		t.Fatal(err)
 	}
 	vcf := testVCard("iphone-1", "Ada Lovelace")
 	hash := ncrypto.SHA256Hex(vcf)
-	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(vcf), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(vcf), hash); err != nil {
 		t.Fatal(err)
 	}
 	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
@@ -1347,13 +1347,13 @@ func TestContactEditKeepsServerUID(t *testing.T) {
 	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
 	a := newAgent(h, sel, nil, book)
 
-	col, err := h.eng.EnsureNamedCollection(context.Background(), "addressbook", "Contacts")
+	col, err := h.eng.EnsureNamedCollection(context.Background(), h.dev.UserID, "addressbook", "Contacts")
 	if err != nil {
 		t.Fatal(err)
 	}
 	vcf := testVCard("iphone-1", "Ada Lovelace")
 	hash := ncrypto.SHA256Hex(vcf)
-	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(vcf), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(vcf), hash); err != nil {
 		t.Fatal(err)
 	}
 	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
@@ -1410,7 +1410,7 @@ func TestEventPullNoEchoPreservesUID(t *testing.T) {
 	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
 	a := newAgent(h, sel, cal, nil)
 
-	col, err := h.eng.EnsureNamedCollection(context.Background(), "calendar", "Work")
+	col, err := h.eng.EnsureNamedCollection(context.Background(), h.dev.UserID, "calendar", "Work")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1420,7 +1420,7 @@ func TestEventPullNoEchoPreservesUID(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := ncrypto.SHA256Hex(ics)
-	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(ics), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(ics), hash); err != nil {
 		t.Fatal(err)
 	}
 	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
@@ -1472,7 +1472,7 @@ func TestPushConflictServerWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := ncrypto.SHA256Hex(serverICS)
-	if _, _, err := h.st.PutBlob(context.Background(), bytes.NewReader(serverICS), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(serverICS), hash); err != nil {
 		t.Fatal(err)
 	}
 	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{

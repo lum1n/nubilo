@@ -22,8 +22,11 @@ func (l *Logger) Event(ctx context.Context, deviceID, event string, fields map[s
 		b = []byte(`{"error":"marshal"}`)
 	}
 	if l.Store != nil {
-		_, _ = l.Store.DB.ExecContext(ctx, `INSERT INTO audit(ts, device_id, event, fields) VALUES (?, ?, ?, ?)`,
-			store.NowMS(), deviceID, event, string(b))
+		// user_id is resolved from the device so every event is attributable to a user.
+		_, _ = l.Store.DB.ExecContext(ctx, `
+			INSERT INTO audit(ts, device_id, user_id, event, fields)
+			VALUES (?, ?, (SELECT user_id FROM devices WHERE id = ?), ?, ?)`,
+			store.NowMS(), deviceID, deviceID, event, string(b))
 	}
 	if l.Slog != nil {
 		l.Slog.Info("audit", "event", event, "device_id", deviceID)
