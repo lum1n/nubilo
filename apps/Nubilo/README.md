@@ -119,7 +119,9 @@ On the Mac the backup screen is hidden: the Mac agent backs up Photos.app.
 can disable or enable a member and change roles; create invites shown as a QR
 code with a share link, and revoke open ones; and see every device by owner
 with revoke. Everyone sees their own devices (remove), app passwords (revoke)
-and storage.
+and storage, and can add another device to their own account: My Devices →
+Add a Device shows a QR code and a `nubilo://` link (single use, one hour) to
+scan or AirDrop to the new iPhone or Mac.
 
 **Settings.** Server address, account, and Sign Out, which revokes this
 device on the server, deletes its key and forgets the server and the backup

@@ -145,6 +145,9 @@ public final class NubiloClient: Sendable {
 
     public func uploadToken() async throws -> UploadToken { try await call("POST", "/api/v1/me/upload-token") }
 
+    /// A single-use invite (1 hour) that adds another device to the signed-in user's account.
+    public func createDeviceInvite() async throws -> NewInvite { try await call("POST", "/api/v1/me/device-invite") }
+
     // MARK: Collections and shares
 
     public func collections() async throws -> [CollectionInfo] {

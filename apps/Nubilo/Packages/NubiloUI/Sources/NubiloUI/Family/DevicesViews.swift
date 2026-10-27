@@ -32,6 +32,7 @@ struct MyDevicesView: View {
     @Environment(AppModel.self) private var model
     @State private var devices: [DeviceInfo] = []
     @State private var confirm: DeviceInfo?
+    @State private var adding = false
     @State private var error: String?
 
     var body: some View {
@@ -52,6 +53,18 @@ struct MyDevicesView: View {
                 #endif
         }
         .navigationTitle("My Devices")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    adding = true
+                } label: {
+                    Label("Add a Device", systemImage: "plus")
+                }
+            }
+        }
+        .sheet(isPresented: $adding, onDismiss: { Task { await load() } }) {
+            AddDeviceView()
+        }
         .confirmationDialog("Remove \(confirm?.name ?? "device")?", isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }), presenting: confirm) { device in
             Button("Remove", role: .destructive) { Task { await revoke(device) } }
         } message: { _ in
@@ -159,6 +172,63 @@ struct AllDevicesView: View {
         do {
             try await client.adminRevokeDevice(device.id)
             await load()
+        } catch {
+            self.error = describe(error)
+        }
+    }
+}
+
+/// Adds another device to the signed-in user's account: a single-use invite
+/// bound to them, shown as a QR code and a `nubilo://` link (AirDrop it to a Mac).
+struct AddDeviceView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var invite: NewInvite?
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let invite {
+                    Section {
+                        QRCodeImage(text: invite.setupUrl)
+                            .frame(maxWidth: 260, maxHeight: 260)
+                            .padding()
+                            .background(.white, in: RoundedRectangle(cornerRadius: 12))
+                            .frame(maxWidth: .infinity)
+                    } footer: {
+                        Text("Scan with the Nubilo app on your other device, or send it the link. It signs in as you, works once and expires \(invite.expiresAt.msDate.relative).")
+                    }
+                    Section {
+                        if let url = URL(string: invite.setupUrl) {
+                            ShareLink(item: url) {
+                                Label("Send Link", systemImage: "square.and.arrow.up")
+                            }
+                        }
+                        CopyableRow(title: "Link", value: invite.setupUrl)
+                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Add a Device")
+            .inlineNavigationTitle()
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task { await create() }
+            .errorAlert($error)
+        }
+        .macSheetFrame()
+    }
+
+    private func create() async {
+        guard invite == nil, let client = model.client else { return }
+        do {
+            invite = try await client.createDeviceInvite()
         } catch {
             self.error = describe(error)
         }

@@ -423,3 +423,61 @@ func TestUploadTokenFlow(t *testing.T) {
 }
 
 func newULID() string { return ids.New() }
+
+func TestDeviceInviteAddsToOwnAccount(t *testing.T) {
+	f := startFamily(t)
+	inv := f.bob.json(http.MethodPost, "/api/v1/me/device-invite", nil, http.StatusCreated)
+	code := inv["code"].(string)
+	if !strings.HasPrefix(inv["setup_url"].(string), "nubilo://setup?") || inv["role"] != "member" {
+		t.Fatalf("invite %v", inv)
+	}
+	pub, priv, _ := ncrypto.GenerateEd25519()
+	redeem := func(pub ed25519.PublicKey) (int, map[string]any) {
+		raw, _ := json.Marshal(map[string]any{"code": code, "username": "ignored", "device_name": "bob-mac", "public_key": base64.RawStdEncoding.EncodeToString(pub)})
+		resp, err := http.Post(f.ts.URL+"/api/v1/invites/redeem", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		m := map[string]any{}
+		_ = json.NewDecoder(resp.Body).Decode(&m)
+		return resp.StatusCode, m
+	}
+	st, rr := redeem(pub)
+	if st != http.StatusOK {
+		t.Fatalf("redeem %d %v", st, rr)
+	}
+	chal, _ := base64.RawStdEncoding.DecodeString(rr["challenge"].(string))
+	comp, _ := json.Marshal(map[string]string{"pairing_id": rr["pairing_id"].(string), "signature": base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, chal))})
+	resp, err := http.Post(f.ts.URL+"/api/v1/pair/complete", "application/json", bytes.NewReader(comp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cr struct {
+		DeviceID string `json:"device_id"`
+		UserID   string `json:"user_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&cr)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || cr.UserID != f.bob.dev.UserID {
+		t.Fatalf("complete %d %+v, want user %s", resp.StatusCode, cr, f.bob.dev.UserID)
+	}
+	if _, err := f.ids.GetUserByName(context.Background(), "ignored"); err == nil {
+		t.Fatal("device invite created a new account")
+	}
+	pub2, _, _ := ncrypto.GenerateEd25519()
+	if st, _ := redeem(pub2); st != http.StatusUnauthorized {
+		t.Fatalf("second redeem %d", st)
+	}
+
+	// An app password (dav device) cannot mint one.
+	dpub, dpriv, _ := ncrypto.GenerateEd25519()
+	ddev, err := f.ids.Enroll(context.Background(), f.bob.dev.UserID, "bob-dav", dpub, identity.RoleDAV)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dav := &signer{t: t, ts: f.ts, dev: ddev, priv: dpriv}
+	if code, _ := dav.do(http.MethodPost, "/api/v1/me/device-invite", nil); code != http.StatusForbidden {
+		t.Fatalf("dav device invite: %d", code)
+	}
+}

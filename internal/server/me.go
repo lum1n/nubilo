@@ -308,6 +308,28 @@ func (s *Server) handleUploadToken(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"token": tok, "expires_at": exp})
 }
 
+// handleDeviceInvite lets a user add another device to their own account:
+// a single-use invite bound to them that expires in an hour. App passwords
+// (dav) cannot mint one, so a leaked CalDAV password does not become a
+// full device.
+func (s *Server) handleDeviceInvite(w http.ResponseWriter, r *http.Request) {
+	dev := userDevice(w, r)
+	if dev == nil {
+		return
+	}
+	if dev.Role == identity.RoleDAV {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	code, inv, err := s.IDs.CreateInvite(r.Context(), dev.UserID, "", dev.UserID, time.Hour, 1)
+	if err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	s.Audit.Event(r.Context(), dev.ID, "invite.create", map[string]any{"invite": inv.ID, "role": inv.Role, "for_user": inv.UserID, "self": true})
+	s.writeInvite(w, r, code, inv)
+}
+
 func (s *Server) handleUserDirectory(w http.ResponseWriter, r *http.Request) {
 	if dev := deviceFrom(r); dev == nil || dev.Revoked() {
 		http.Error(w, "forbidden", http.StatusForbidden)

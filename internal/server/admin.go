@@ -200,6 +200,10 @@ func (s *Server) handleAdminCreateInvite(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.Audit.Event(r.Context(), dev.ID, "invite.create", map[string]any{"invite": inv.ID, "role": inv.Role, "for_user": inv.UserID})
+	s.writeInvite(w, r, code, inv)
+}
+
+func (s *Server) writeInvite(w http.ResponseWriter, r *http.Request, code string, inv *identity.Invite) {
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"id":         inv.ID,
 		"code":       code,

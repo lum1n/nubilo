@@ -77,6 +77,7 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("DELETE /api/v1/me/passwords/{id}", s.authed(s.handleRevokePassword))
 	mux.HandleFunc("POST /api/v1/me/profile", s.authed(s.handleCreateProfile))
 	mux.HandleFunc("POST /api/v1/me/upload-token", s.authed(s.handleUploadToken))
+	mux.HandleFunc("POST /api/v1/me/device-invite", s.authed(s.handleDeviceInvite))
 	mux.HandleFunc("GET /api/v1/users", s.authed(s.handleUserDirectory))
 	mux.HandleFunc("GET /api/v1/collections", s.authed(s.handleCollectionList))
 	mux.HandleFunc("GET /api/v1/collections/{id}/shares", s.authed(s.handleSharesGet))
