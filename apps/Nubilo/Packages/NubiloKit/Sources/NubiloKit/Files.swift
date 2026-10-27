@@ -72,6 +72,8 @@ public enum FilesError: Error, LocalizedError, Equatable {
     /// Files must live in a folder; the top level holds folders only.
     case filesNeedAFolder
     case readOnly
+    /// The server predates the folder calls (`/sync/v1/objects` and friends).
+    case serverTooOld
 
     public var errorDescription: String? {
         switch self {
@@ -79,6 +81,7 @@ public enum FilesError: Error, LocalizedError, Equatable {
         case .notFound: return "This item is no longer on the server."
         case .filesNeedAFolder: return "Put files into a folder, such as Files."
         case .readOnly: return "This folder is shared with you read-only."
+        case .serverTooOld: return "The Nubilo server needs an update for the Files app."
         }
     }
 }
@@ -115,6 +118,20 @@ public struct FilesSession: Sendable {
     public init(client: NubiloClient) { self.client = client }
 
     /// Live "files" collections the device can see.
+    /// Lists objects, telling an outdated server apart from a missing folder.
+    private func objects(_ collectionID: String) async throws -> [SyncObject] {
+        do {
+            return try await client.objects(collectionID: collectionID)
+        } catch let e as NubiloError where e.status == 404 || e.status == 405 {
+            // An old server answers its router's plain "404 page not found";
+            // a missing folder is "not found".
+            if case let .http(_, message) = e, message.contains("page not found") || e.status == 405 {
+                throw FilesError.serverTooOld
+            }
+            throw FilesError.notFound
+        }
+    }
+
     public func folders() async throws -> [SyncCollection] {
         try await client.syncCollections().filter { $0.kind == "files" && $0.deletedAt == nil }
     }
@@ -127,7 +144,7 @@ public struct FilesSession: Sendable {
         guard let colID = parentID.hasPrefix("c:") ? String(parentID.dropFirst(2)) : nil,
               let col = cols.first(where: { $0.id == colID }) else { throw FilesError.notFound }
         let subfolders = cols.filter { $0.parentId == colID }.map(RemoteItem.folder)
-        let files = try await client.objects(collectionID: colID).filter { $0.kind == "file" }
+        let files = try await objects(colID).filter { $0.kind == "file" }
             .map { RemoteItem.file($0, writable: col.isWritable) }
         return subfolders + files
     }
@@ -137,7 +154,7 @@ public struct FilesSession: Sendable {
         let cols = try await folders()
         var out = cols.map(RemoteItem.folder)
         for col in cols {
-            out += try await client.objects(collectionID: col.id).filter { $0.kind == "file" }
+            out += try await objects(col.id).filter { $0.kind == "file" }
                 .map { RemoteItem.file($0, writable: col.isWritable) }
         }
         return out

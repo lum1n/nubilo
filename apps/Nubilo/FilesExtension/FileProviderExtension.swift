@@ -198,6 +198,8 @@ func fileProviderError(_ error: Error, _ identifier: NSFileProviderItemIdentifie
         return NSError.fileProviderErrorForNonExistentItem(withIdentifier: identifier)
     case FilesError.anchorExpired:
         return NSFileProviderError(.syncAnchorExpired)
+    case FilesError.serverTooOld:
+        return NSFileProviderError(.serverUnreachable)
     case FilesError.readOnly, FilesError.filesNeedAFolder:
         return NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError,
                        userInfo: [NSLocalizedDescriptionKey: error.localizedDescription])

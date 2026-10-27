@@ -119,8 +119,16 @@ struct FilesView: View {
             locationOK = false
             locationStatus = problem
         } else if await FilesIntegration.isRegistered() {
-            locationOK = true
-            locationStatus = "Nubilo is set up in the Files app."
+            // Try what the extension does: list every folder and file.
+            guard let client = model.client else { return }
+            do {
+                let items = try await FilesSession(client: client).allItems()
+                locationOK = true
+                locationStatus = "Nubilo is set up in the Files app (\(items.filter { $0.kind == .folder }.count) folders, \(items.filter { $0.kind == .file }.count) files)."
+            } catch {
+                locationOK = false
+                locationStatus = "The Files location is set up, but listing files fails: \(describe(error))"
+            }
         } else {
             locationOK = false
             locationStatus = FilesIntegration.extensionInstalled
