@@ -80,6 +80,8 @@ public struct BackupCounts: Equatable, Sendable {
     public var uploading = 0
     public var done = 0
     public var failed = 0
+
+    public init() {}
 }
 
 public struct BackupRun: Equatable, Sendable {
