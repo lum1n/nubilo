@@ -22,7 +22,7 @@ public struct RootView: View {
 }
 
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
-    case library, albums, backup, calendarContacts, files, family, settings
+    case library, albums, backup, calendarContacts, files, people, settings
 
     var id: String { rawValue }
 
@@ -33,7 +33,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .backup: "Backup"
         case .calendarContacts: "Calendar & Contacts"
         case .files: "Files"
-        case .family: "Family"
+        case .people: "People"
         case .settings: "Settings"
         }
     }
@@ -45,7 +45,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .backup: "arrow.up.circle"
         case .calendarContacts: "calendar"
         case .files: "folder"
-        case .family: "person.2"
+        case .people: "person.2"
         case .settings: "gear"
         }
     }
@@ -60,7 +60,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .backup: BackupStatusView()
         case .calendarContacts: CalendarContactsView()
         case .files: FilesView()
-        case .family: FamilyView()
+        case .people: PeopleView()
         case .settings: SettingsView()
         }
     }
@@ -78,8 +78,8 @@ struct MainView: View {
                 .tabItem { Label("Photos", systemImage: "photo.on.rectangle") }
             NavigationStack { AccountsView() }
                 .tabItem { Label("Accounts", systemImage: "calendar") }
-            NavigationStack { FamilyView() }
-                .tabItem { Label("Family", systemImage: "person.2") }
+            NavigationStack { PeopleView() }
+                .tabItem { Label("People", systemImage: "person.2") }
             NavigationStack { SettingsView() }
                 .tabItem { Label("Settings", systemImage: "gear") }
         }

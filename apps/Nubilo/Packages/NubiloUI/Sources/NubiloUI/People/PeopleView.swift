@@ -3,13 +3,13 @@ import NubiloKit
 
 /// Members and devices: admin tools for admins, the user's own devices,
 /// app passwords and storage for everyone.
-struct FamilyView: View {
+struct PeopleView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         List {
             if model.isAdmin {
-                Section("Family") {
+                Section("Everyone") {
                     NavigationLink { MembersView() } label: {
                         Label("Members", systemImage: "person.2")
                     }
@@ -35,7 +35,7 @@ struct FamilyView: View {
                 }
             }
         }
-        .navigationTitle("Family")
+        .navigationTitle("People")
         .refreshable { await model.refreshMe() }
     }
 }

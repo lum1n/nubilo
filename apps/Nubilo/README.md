@@ -1,9 +1,9 @@
 # Nubilo for iPhone, iPad and Mac
 
 One SwiftUI app target for iOS 17+ and macOS 14+ that replaces the CLI for
-family members: join a server by scanning an invite, add Calendar, Contacts
+everyone on the server, from a family to a small team: join a server by scanning an invite, add Calendar, Contacts
 and Reminders through a profile, back up the camera roll (on the Mac, the
-Photos library), browse and share photos, and manage family members and
+Photos library), browse and share photos, and manage people and
 devices. On the Mac it can also run the home server from the menu bar.
 
 ```
@@ -116,7 +116,7 @@ the guide points to a WebDAV-capable file app.
   plus a 500 MB URL cache) and a preview on tap. Select photos to add them to
   an album.
 - *Albums*: own albums and albums shared with the user (owner and access
-  shown), album grids, new albums, and sharing an album with family members as
+  shown), album grids, new albums, and sharing an album with other people on the server as
   view-only or can-add.
 
 Backup is one way: photos added on the server are not written into
@@ -133,7 +133,7 @@ event (`ICSWriter`), state is in Application Support
 UID instead of duplicating it. Needs Calendar full access
 (`NSCalendarsFullAccessUsageDescription`, calendars entitlement).
 
-**Family.** Admins see all members with role, status, devices and storage;
+**People.** Admins see all members with role, status, devices and storage;
 can disable or enable a member and change roles; create invites shown as a QR
 code with a share link, and revoke open ones; and see every device by owner
 with revoke. Everyone sees their own devices (remove), app passwords (revoke)

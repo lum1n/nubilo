@@ -2,7 +2,7 @@
 
 Single-binary private cloud for a family or small team: calendars, reminders, contacts, files, and photos, with per-user data and sharing.
 
-A Linux or macOS **server** holds encrypted blobs and metadata for several **users** (admins and members). Each user's devices see only that user's collections and what others shared with them (read-only or read-write). A **macOS agent** syncs selected folders; the Nubilo app backs up Photos.app on the Mac and the iPhone. iPhones and Macs use native CalDAV / CardDAV accounts for calendars, reminders and contacts (installed by a configuration profile) and WebDAV, plus the Nubilo app (`apps/Nubilo`) for onboarding by QR code, photo backup, shared albums and family administration.
+A Linux or macOS **server** holds encrypted blobs and metadata for several **users** (admins and members). Each user's devices see only that user's collections and what others shared with them (read-only or read-write). A **macOS agent** syncs selected folders; the Nubilo app backs up Photos.app on the Mac and the iPhone. iPhones and Macs use native CalDAV / CardDAV accounts for calendars, reminders and contacts (installed by a configuration profile) and WebDAV, plus the Nubilo app (`apps/Nubilo`) for onboarding by QR code, photo backup, shared albums and managing people and devices.
 
 Priorities: security, integrity, correct sync. Server-side encryption, not end-to-end (see SECURITY.md).
 
@@ -33,7 +33,7 @@ go build -o nubilo ./cmd/nubilo
 
 Setup ends with an admin invite QR code: scan it with the Nubilo app to become the first admin. Save the auto-backup passphrase it prints.
 
-**Family members**
+**Adding people**
 
 ```bash
 ./nubilo users invite --role member        # QR code + https://<domain>/join#<code>

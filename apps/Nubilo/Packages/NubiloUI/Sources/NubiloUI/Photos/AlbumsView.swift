@@ -32,7 +32,7 @@ struct AlbumsView: View {
         .overlay {
             if loaded && albums.isEmpty {
                 ContentUnavailableView("No albums", systemImage: "rectangle.stack",
-                                       description: Text("Create an album, or ask your family to share one with you."))
+                                       description: Text("Create an album, or ask someone on your server to share one with you."))
             }
         }
         .navigationTitle("Albums")

@@ -23,7 +23,7 @@ struct FilesView: View {
             Section {
                 if let created {
                     CopyableRow(title: "Password", value: created.password)
-                    Text("Copy it now: it is shown only once. Revoke it under Family → App passwords.")
+                    Text("Copy it now: it is shown only once. Revoke it under People → App Passwords.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -82,7 +82,7 @@ struct FilesView: View {
         do {
             created = try await client.createAppPassword(label: "Files on \(ThisDevice.defaultName)", scope: "webdav")
         } catch let NubiloError.http(status, _) where status == 409 {
-            error = "You already have 10 app passwords. Revoke one under Family → App passwords first."
+            error = "You already have 10 app passwords. Revoke one under People → App Passwords first."
         } catch {
             self.error = describe(error)
         }

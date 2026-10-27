@@ -39,7 +39,7 @@ struct ShareAlbumView: View {
                     ProgressView()
                 } else if users.isEmpty {
                     ContentUnavailableView("Nobody to share with", systemImage: "person.2",
-                                           description: Text("Invite family members under Family first."))
+                                           description: Text("Invite people under People first."))
                 }
             }
             .navigationTitle("Share “\(album.name)”")
