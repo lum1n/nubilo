@@ -75,7 +75,7 @@ public final class ServerController {
     /// Stops the server and removes its LaunchAgent; data stays in ~/.nubilo.
     public func stop() async { await perform(["server", "uninstall"]) }
 
-    /// Opens the agent's folder selection UI in the browser.
+    /// Opens the agent's folder and calendar-mirror settings in the browser.
     public func openAgentSettings() {
         guard let cli else { return }
         // The UI server binds a fixed loopback port; restart it so a fresh

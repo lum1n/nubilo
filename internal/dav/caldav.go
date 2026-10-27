@@ -297,6 +297,9 @@ func (b *CalDAV) PutCalendarObject(ctx context.Context, path string, calendar *i
 		if res[0].Status == "conflict" {
 			return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, errors.New("conflict"))
 		}
+		if res[0].Error == syncengine.ErrMirrorReadOnly {
+			return nil, webdav.NewHTTPError(http.StatusForbidden, errors.New(res[0].Error))
+		}
 		return nil, webdav.NewHTTPError(http.StatusConflict, errors.New(res[0].Error))
 	}
 	obj, err := b.Engine.GetObject(ctx, in.ObjectID)
@@ -336,6 +339,9 @@ func (b *CalDAV) DeleteCalendarObject(ctx context.Context, path string) error {
 		return err
 	}
 	if res[0].Status != "ok" {
+		if res[0].Error == syncengine.ErrMirrorReadOnly {
+			return webdav.NewHTTPError(http.StatusForbidden, errors.New(res[0].Error))
+		}
 		return webdav.NewHTTPError(http.StatusConflict, errors.New(res[0].Status))
 	}
 	return nil
@@ -343,6 +349,12 @@ func (b *CalDAV) DeleteCalendarObject(ctx context.Context, path string) error {
 
 func (b *CalDAV) deleteCalendar(ctx context.Context, col *syncengine.Collection) error {
 	dev := DeviceFrom(ctx)
+	if ParseCalendarColMeta(col.Metadata).Mirror {
+		// The owner may drop a whole mirrored calendar (checked by the
+		// caller); its events are read-only to this device, so the server
+		// deletes them. The Mac agent recreates it while it is still selected.
+		dev = syncengine.LocalOperator()
+	}
 	objs, err := b.Engine.ListObjects(ctx, col.ID)
 	if err != nil {
 		return err

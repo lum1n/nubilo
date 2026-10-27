@@ -11,6 +11,7 @@
   const routes = {
     home: { title: "overview", render: renderHome },
     files: { title: "files", render: renderFiles },
+    calendars: { title: "calendars", render: renderCalendars },
     setup: { title: "setup", render: renderSetup },
   };
 
@@ -95,6 +96,7 @@
         ${kvRow("device", p.paired ? esc(p.name || p.device_id) : "—")}
         ${kvRow("interval", esc(o.interval_seconds) + "s")}
         ${kvRow("files", o.files_enabled ? "on (" + o.counts.folders + " folders)" : "off")}
+        ${kvRow("mirrored calendars", esc(o.counts.calendars))}
       </table>
       <p class="muted">CLI: <code>nubilo agent setup</code> · <code>nubilo doctor --agent</code></p>
     `;
@@ -166,6 +168,47 @@
           toast(String(e.message || e));
         }
       };
+    });
+  }
+
+  async function renderCalendars() {
+    let data;
+    try {
+      data = await api("/calendars");
+    } catch (e) {
+      content.innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>
+        <p class="muted">Allow Calendar access in System Settings → Privacy &amp; Security → Calendars.</p>`;
+      return;
+    }
+    const rows = (data.calendars || [])
+      .map(
+        (c) => `<tr>
+          <td><input type="checkbox" data-id="${esc(c.id)}" ${c.mirrored ? "checked" : ""}></td>
+          <td><span style="color:${esc(c.color || "inherit")}">●</span> ${esc(c.title || c.id)}</td>
+        </tr>`
+      )
+      .join("");
+    content.innerHTML = `
+      <div class="section">
+        <p class="muted">Checked calendars are copied from this Mac to Nubilo and show up read-only on your other devices, for example an Exchange calendar that only this Mac can reach. Everything else syncs through the Calendar &amp; Contacts profile.</p>
+        <div class="block"><table class="data">
+          <thead><tr><th>mirror</th><th>calendar</th></tr></thead>
+          <tbody>${rows || "<tr><td colspan=2>no calendars</td></tr>"}</tbody>
+        </table></div>
+      </div>`;
+    content.querySelectorAll("input[type=checkbox][data-id]").forEach((cb) => {
+      cb.addEventListener("change", async () => {
+        try {
+          await api("/calendars/mirror", {
+            method: "POST",
+            body: JSON.stringify({ id: cb.dataset.id, mirror: cb.checked }),
+          });
+          toast(cb.checked ? "mirroring" : "stopped; the copy stays on the server until you delete it");
+        } catch (e) {
+          cb.checked = !cb.checked;
+          toast(String(e.message || e));
+        }
+      });
     });
   }
 

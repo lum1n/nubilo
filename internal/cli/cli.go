@@ -169,6 +169,9 @@ Usage:
   nubilo agent files list
   nubilo agent files add PATH [NAME]
   nubilo agent files remove PATH
+  nubilo agent calendars [list]        # macOS: copy Mac calendars (e.g. Exchange)
+  nubilo agent calendars add ID        #   to Nubilo, read-only on other devices
+  nubilo agent calendars remove ID
   nubilo status [--json]
   nubilo relay init --public-host HOST [--home NAME]   # on the VPS
   nubilo relay run|install|uninstall
@@ -405,6 +408,8 @@ func runAgent(g global, args []string) int {
 		return runAgentUI(g, rest)
 	case "files":
 		return agentFiles(paths.AgentJSON, sel, rest)
+	case "calendars":
+		return agentCalendars(paths.AgentJSON, sel, rest)
 	case "install":
 		return runServiceInstall(g, service.KindAgent, *insecure)
 	case "uninstall":
@@ -417,6 +422,66 @@ func runAgent(g global, args []string) int {
 		fmt.Fprintf(os.Stderr, "unknown agent command %q\n", sub)
 		return 2
 	}
+}
+
+// agentCalendars lists the Mac's calendars and picks which ones the agent
+// mirrors to the server.
+func agentCalendars(path string, sel agent.Selection, args []string) int {
+	sub := "list"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	if sub != "list" && len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: nubilo agent calendars [list] | add ID | remove ID")
+		return 2
+	}
+	switch sub {
+	case "remove":
+		sel.RemoveCalendar(args[1])
+		if err := agent.SaveSelection(path, sel); err != nil {
+			return fatal(err)
+		}
+		fmt.Printf("stopped mirroring %s; its copy stays on the server until you delete it there\n", args[1])
+		return 0
+	case "list", "add":
+	default:
+		fmt.Fprintf(os.Stderr, "unknown calendars command %q\n", sub)
+		return 2
+	}
+	cals, err := agent.PlatformCalendars()
+	if err != nil {
+		return fatal(err)
+	}
+	if sub == "add" {
+		for _, c := range cals {
+			if c.ID == args[1] {
+				sel.AddCalendar(c.ID, c.Title)
+				if err := agent.SaveSelection(path, sel); err != nil {
+					return fatal(err)
+				}
+				fmt.Printf("mirroring %s (%s); it appears read-only on your other devices after the next sync\n", c.Title, c.ID)
+				return 0
+			}
+		}
+		fmt.Fprintf(os.Stderr, "no calendar %q on this Mac (see nubilo agent calendars)\n", args[1])
+		return 2
+	}
+	chosen := map[string]bool{}
+	for _, c := range sel.Calendars {
+		chosen[c.LocalID] = true
+	}
+	if len(cals) == 0 {
+		fmt.Println("no calendars (allow Calendar access: System Settings → Privacy & Security → Calendars)")
+		return 0
+	}
+	for _, c := range cals {
+		mark := " "
+		if chosen[c.ID] {
+			mark = "*"
+		}
+		fmt.Printf("%s  %s  %s\n", mark, c.ID, c.Title)
+	}
+	return 0
 }
 
 func agentFiles(path string, sel agent.Selection, args []string) int {
@@ -522,9 +587,17 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 		Files:   agent.OpenFiles(),
 		Log:     slog.Default(),
 	}
+	if cal, err := agent.OpenCalendars(); err == nil {
+		a.Cal = cal
+	} else if len(sel.Calendars) > 0 {
+		fmt.Fprintln(os.Stderr, "warning: calendars are selected but cannot be mirrored here:", err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	fmt.Printf("agent running interval=%ds files=%v\n", sel.IntervalSeconds, sel.Files.Enabled)
+	fmt.Printf("agent running interval=%ds files=%v calendars=%d\n", sel.IntervalSeconds, sel.Files.Enabled, len(sel.Calendars))
+	for _, c := range sel.Calendars {
+		fmt.Printf("  calendar %s (%s)\n", c.Title, c.LocalID)
+	}
 	for _, f := range sel.Files.Folders {
 		name := f.Name
 		if name == "" {
@@ -532,7 +605,7 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 		}
 		fmt.Printf("  files %s (%s)\n", f.Path, name)
 	}
-	if !sel.Files.Enabled || len(sel.Files.Folders) == 0 {
+	if (!sel.Files.Enabled || len(sel.Files.Folders) == 0) && len(sel.Calendars) == 0 {
 		fmt.Fprintln(os.Stderr, "warning: nothing selected to sync")
 		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" files on")
 		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" files add PATH")

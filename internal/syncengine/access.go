@@ -320,3 +320,30 @@ func (e *Engine) BlobReadable(ctx context.Context, userID, hash string) (bool, e
 	`, hash, hash, userID, userID).Scan(&n)
 	return n > 0, err
 }
+
+// ErrMirrorReadOnly is the push error for a write to a mirrored collection.
+const ErrMirrorReadOnly = "read-only mirror"
+
+// mirrorReadOnlyQ reports whether dev may not write to collectionID because
+// it is a mirror: collection metadata "mirror": true, set by the Mac agent
+// that copies a calendar from the Mac (for example an Exchange account only
+// that Mac reaches). Only agent and system devices write to mirrors, so
+// phones see the copy but cannot change the original's events. This guards
+// against accidental edits; the owner can still clear the flag.
+func mirrorReadOnlyQ(q querier, dev *identity.Device, collectionID string) (bool, error) {
+	if dev == nil || dev.System() || dev.Role == identity.RoleAgent {
+		return false, nil
+	}
+	var mirror sql.NullBool
+	err := q.QueryRow(`
+		SELECT json_extract(metadata, '$.mirror') FROM collections
+		WHERE id = ? AND json_valid(metadata)
+	`, collectionID).Scan(&mirror)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return mirror.Valid && mirror.Bool, nil
+}

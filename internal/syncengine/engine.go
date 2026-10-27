@@ -360,6 +360,12 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 		res.Error = "unauthorized"
 		return res, nil
 	}
+	if ro, err := mirrorReadOnlyQ(tx, dev, in.CollectionID); err != nil {
+		return res, err
+	} else if ro {
+		res.Error = ErrMirrorReadOnly
+		return res, nil
+	}
 
 	obj, err := getObjectTx(tx, in.ObjectID)
 	if err == nil && (in.Op == OpUpdate || in.Op == OpDelete) && obj.CollectionID != in.CollectionID {
@@ -375,6 +381,12 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 		}
 		if access < authz.AccessWrite || srcOwner != colOwner {
 			res.Error = "unauthorized"
+			return res, nil
+		}
+		if ro, merr := mirrorReadOnlyQ(tx, dev, obj.CollectionID); merr != nil {
+			return res, merr
+		} else if ro {
+			res.Error = ErrMirrorReadOnly
 			return res, nil
 		}
 	}

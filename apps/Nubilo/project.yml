@@ -110,9 +110,10 @@ targets:
           IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:--}"
           TIMESTAMP="--timestamp"
           [ "${IDENTITY}" = "-" ] && TIMESTAMP="--timestamp=none"
-          # No entitlements: the CLI runs the server and folder sync only;
+          # Calendar entitlement for the agent's calendar mirror (EventKit);
           # Photos access belongs to the app.
           codesign --force --options runtime "${TIMESTAMP}" \
+            --entitlements "${SRCROOT}/../../cmd/nubilo/nubilo.entitlements" \
             --sign "${IDENTITY}" "${DEST}/nubilo"
 
 schemes:

@@ -14,7 +14,7 @@ Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 
 ## Calendars, reminders and contacts
 
-The Mac agent no longer syncs Calendar, Reminders or Contacts through EventKit. The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the profile from the app or the web UI), so Apple's own clients talk to the server directly and the server stores their ICS / vCard bodies unchanged.
+The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the profile from the app or the web UI), so Apple's own clients talk to the server directly and the server stores their ICS / vCard bodies unchanged. In addition, the Mac agent can mirror chosen Mac calendars that only that Mac reaches (e.g. Exchange) one way into read-only server calendars.
 
 | Area | Status | Notes |
 | --- | --- | --- |
@@ -22,6 +22,7 @@ The Mac agent no longer syncs Calendar, Reminders or Contacts through EventKit. 
 | Reminders (`VTODO`) | Done | VTODO-only calendar collections |
 | Calendar color (`calendar-color` PROPPATCH) | Done | Stored in collection metadata; returned on PROPFIND |
 | Sharing a calendar or address book with another user | Done | Read-only or read-write shares (SECURITY.md §5.1) |
+| Calendar mirror (Mac → server, read-only elsewhere) | Done | EventKit read path of the old agent: recurrence collapsing, timezones, alarms, attendees, URL, status. Window ±`window_days`. No reminders or contacts |
 | Inline binary attachments | Open | Would bloat blobs; URI ATTACH only |
 | Moving data out of iCloud | Manual | Export from iCloud (or drag the calendars into the Nubilo account on the Mac) |
 

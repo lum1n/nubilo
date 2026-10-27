@@ -23,6 +23,9 @@ type CalendarColMeta struct {
 	Color string `json:"color,omitempty"`
 	Order int    `json:"order,omitempty"`
 	Comp  string `json:"comp,omitempty"`
+	// Mirror marks a calendar the Mac agent copies from the Mac (for example
+	// an Exchange account). Only agents write to it (syncengine.ErrMirrorReadOnly).
+	Mirror bool `json:"mirror,omitempty"`
 }
 
 func ParseCalendarColMeta(raw json.RawMessage) CalendarColMeta {
@@ -55,6 +58,9 @@ func PatchCalendarColMeta(existing json.RawMessage, patch CalendarColMeta) json.
 	}
 	if c := strings.ToUpper(strings.TrimSpace(patch.Comp)); c != "" {
 		m.Comp = c
+	}
+	if patch.Mirror {
+		m.Mirror = true
 	}
 	return EncodeCalendarColMeta(m)
 }
@@ -300,6 +306,10 @@ func responseBounds(body string, hrefAt int) (start, end int, ok bool) {
 const readOnlyPrivileges = `<current-user-privilege-set xmlns="DAV:"><privilege><read/></privilege><privilege><read-current-user-privilege-set/></privilege></current-user-privilege-set>`
 
 func rewriteCalendarPropBlock(block string, m CalendarColMeta, ctag string, access authz.Access) string {
+	// DAV clients never write to mirrors, so show them locked like a read-only share.
+	if m.Mirror && access > authz.AccessRead {
+		access = authz.AccessRead
+	}
 	if access > authz.AccessNone && access < authz.AccessWrite && currentUserPrivilegeElemRe.MatchString(block) {
 		block = currentUserPrivilegeElemRe.ReplaceAllString(block, "")
 		block = injectIntoOKProp(block, readOnlyPrivileges)

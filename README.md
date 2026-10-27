@@ -128,17 +128,21 @@ Server host must be reachable (Tailscale IP or hostname), not `127.0.0.1`.
 
 ## macOS agent
 
-Folder sync only. Signing device over `/sync/v1` (Ed25519). Device key lives in Keychain when possible. `nubilo agent` runs on any OS in the foreground; `agent install` (LaunchAgent) is macOS-only. Corporate credentials never leave the Mac.
+Folder sync, plus an optional calendar mirror on macOS. Signing device over `/sync/v1` (Ed25519). Device key lives in Keychain when possible. `nubilo agent` runs on any OS in the foreground; `agent install` (LaunchAgent) is macOS-only. Corporate credentials never leave the Mac.
 
 ```bash
 nubilo agent --data-dir ~/.nubilo-agent files add ~/Documents/Nubilo
 nubilo agent --data-dir ~/.nubilo-agent files on
+nubilo agent --data-dir ~/.nubilo-agent calendars              # macOS: list Mac calendars
+nubilo agent --data-dir ~/.nubilo-agent calendars add <id>     # mirror one
 nubilo agent --data-dir ~/.nubilo-agent          # run once; prefer agent install
 ```
 
-Failed local listings never push mass deletes.
+Failed or empty local listings never push mass deletes.
 
-The agent does not sync Photos, Calendar, Reminders or Contacts. The Nubilo app backs up Photos.app on the Mac and the iPhone; for calendars and contacts install the Calendar & Contacts profile (Nubilo app → Calendar & Contacts). Older agents' `photos`, `calendars`, `reminders` and `sync_contacts` settings in `agent.json` are ignored.
+Calendars, reminders and contacts sync through the Calendar & Contacts profile (Nubilo app → Calendar & Contacts) on every device. The **calendar mirror** is for calendars only a particular Mac can reach, such as a work Exchange account: the agent copies the chosen calendars from that Mac's Calendar app to Nubilo one way, within ±`window_days` (default 730), and they show up read-only in the CalDAV account on your other devices. Edits there are refused (HTTP 403) and nothing is written back to the Mac. If one of your own calendars already has the same name, the copy is named "… (Mac)". Removing a calendar from the mirror leaves its copy on the server until you delete it (from any device). macOS asks once for Calendar access for `nubilo`. Check your employer's policy before copying work calendars to a personal server.
+
+The agent does not sync Photos, Reminders or Contacts. The Nubilo app backs up Photos.app on the Mac and the iPhone. Older agents' `photos`, `reminders` and `sync_contacts` settings in `agent.json` are ignored.
 
 ## Operations
 

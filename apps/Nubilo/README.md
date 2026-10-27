@@ -138,9 +138,10 @@ deletes its key and forgets the server and the backup state.
 `nubilo --json status` and `nubilo doctor --json`, with failing checks and
 their fixes; Start and Stop install and remove the server LaunchAgent
 (`nubilo server install` / `uninstall`). Agent health comes from
-`nubilo doctor --agent --json --data-dir ~/.nubilo-agent`; the agent now
-only syncs chosen folders. *Open Agent Settings* runs `nubilo agent ui`,
-which opens the agent's folder page in the browser. (The agent's loopback API needs the random session token that
+`nubilo doctor --agent --json --data-dir ~/.nubilo-agent`; the agent syncs
+chosen folders and can mirror Mac calendars (e.g. Exchange) read-only to
+Nubilo. *Open Agent Settings* runs `nubilo agent ui`, which opens the
+agent's folder and calendar pages in the browser. (The agent's loopback API needs the random session token that
 `agent ui` prints on start, so the app does not call it directly.) *Set Up
 Server* opens a wizard that runs `nubilo setup --json --step 1…5` with the
 chosen mode (relay, direct or LAN), domain, email and relay invite, shows
