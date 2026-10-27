@@ -43,6 +43,20 @@ type PublicConfig struct {
 	// and redirects to HTTPS.
 	DirectListen     string `json:"direct_listen,omitempty"`
 	DirectHTTPListen string `json:"direct_http_listen,omitempty"`
+	// Tailscale serves the tailnet's MagicDNS name with a certificate from
+	// `tailscale cert`. It is the device URL when Domain is empty.
+	Tailscale TailscaleConfig `json:"tailscale"`
+}
+
+// TailscaleConfig: devices on the tailnet reach the LAN listener by its
+// MagicDNS name, e.g. https://box.tail1234.ts.net:8443.
+type TailscaleConfig struct {
+	Enabled bool `json:"enabled"`
+	// Name is the MagicDNS name, without the trailing dot.
+	Name string `json:"name,omitempty"`
+	// Port in device URLs; 0 means the port of Listen. Set 443 when Tailscale
+	// Funnel forwards public TCP 443 to the listener.
+	Port int `json:"port,omitempty"`
 }
 
 type ACMEConfig struct {
@@ -254,6 +268,14 @@ func (c Config) Validate() error {
 	if c.Public.ACME.Enabled && c.Public.Domain == "" {
 		return fmt.Errorf("config: public.acme requires public.domain")
 	}
+	if ts := c.Public.Tailscale; ts.Enabled {
+		if ts.Name == "" || strings.ContainsAny(ts.Name, "/: ") || !strings.HasSuffix(ts.Name, ".ts.net") {
+			return fmt.Errorf("config: public.tailscale.name %q must be the MagicDNS name (….ts.net)", ts.Name)
+		}
+		if ts.Port < 0 || ts.Port > 65535 {
+			return fmt.Errorf("config: public.tailscale.port %d out of range", ts.Port)
+		}
+	}
 	if c.Public.DirectListen != "" {
 		if _, _, err := net.SplitHostPort(c.Public.DirectListen); err != nil {
 			return fmt.Errorf("config: public.direct_listen: %w", err)
@@ -295,12 +317,13 @@ func Paths(dataDir string) PathsSet {
 		AgentDB:    filepath.Join(dataDir, "agent.db"),
 		ACME:       filepath.Join(dataDir, "acme"),
 		Wired:      filepath.Join(dataDir, "wired"),
+		Tailscale:  filepath.Join(dataDir, "tailscale"),
 	}
 }
 
 type PathsSet struct {
 	Dir, Config, MasterKey, ServerKey, AdminToken, DB, Blobs, Tmp, Logs, DeviceKey, DeviceJSON, AgentJSON, AgentDB string
-	ACME, Wired                                                                                                    string
+	ACME, Wired, Tailscale                                                                                         string
 }
 
 func ParseListenOverride(s string) (string, error) {
@@ -320,10 +343,44 @@ func ParseListenOverride(s string) (string, error) {
 	return s, nil
 }
 
-// DeviceBaseURL is the URL other devices should use: the public domain when
-// set, else the listen address with a wildcard host replaced by a LAN IP.
+// PublicHostPort is the name and port devices use away from the LAN: the
+// public domain on 443, else the Tailscale name. ok is false when neither
+// is configured.
+func (c Config) PublicHostPort() (host string, port int, ok bool) {
+	if d := strings.TrimSpace(c.Public.Domain); d != "" {
+		return d, 443, true
+	}
+	ts := c.Public.Tailscale
+	if !ts.Enabled || ts.Name == "" {
+		return "", 0, false
+	}
+	port = ts.Port
+	if port == 0 {
+		_, p, err := net.SplitHostPort(c.Listen)
+		if err != nil {
+			return "", 0, false
+		}
+		port, _ = strconv.Atoi(p)
+	}
+	return ts.Name, port, true
+}
+
+// PublicURL is the https URL of PublicHostPort, or "" when there is none.
+func (c Config) PublicURL() string {
+	host, port, ok := c.PublicHostPort()
+	if !ok {
+		return ""
+	}
+	if port == 443 {
+		return "https://" + host
+	}
+	return "https://" + net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// DeviceBaseURL is the URL other devices should use: PublicURL when set,
+// else the listen address with a wildcard host replaced by a LAN IP.
 func (c Config) DeviceBaseURL() string {
-	if u := c.Public.BaseURL(); u != "" {
+	if u := c.PublicURL(); u != "" {
 		return u
 	}
 	host, port, err := net.SplitHostPort(c.Listen)

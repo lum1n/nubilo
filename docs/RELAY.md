@@ -1,13 +1,14 @@
 # Reaching Nubilo from anywhere
 
-Phones and laptops away from home need a public HTTPS address with a certificate Apple trusts (iOS Calendar and Contacts use plain CalDAV/CardDAV and cannot use an in-app tunnel). `nubilo setup` offers four ways:
+Phones and laptops away from home need a public HTTPS address with a certificate Apple trusts (iOS Calendar and Contacts use plain CalDAV/CardDAV and cannot use an in-app tunnel). `nubilo setup` offers five ways:
 
 | Mode | What runs where | Router changes |
 | --- | --- | --- |
 | **relay** (recommended) | Home server joins a [wired](https://github.com/lum1n/wired) overlay; a small VPS runs `nubilo relay`, which forwards public TCP 443/80 into it | none |
 | **proxy** | Like relay, but the relay runs behind a TLS-terminating proxy such as [exe.dev](https://exe.dev) (one HTTPS name, no public ports). The proxy holds the certificate and **can read the traffic** | none |
 | **direct** | The server itself listens on :443/:80 (a VPS, or a port forward at home) | forward 443 and 80 |
-| **lan** | LAN or Tailscale only, self-signed certificate | none |
+| **tailscale** | Devices on your tailnet use the server's MagicDNS name with a certificate from `tailscale cert`; TLS ends at home | none |
+| **lan** | Home network only, self-signed certificate | none |
 
 In relay and direct mode the home server obtains a Let's Encrypt certificate for your domain by itself (TLS-ALPN-01 on 443, HTTP-01 on 80 as fallback) and terminates TLS. The VPS only moves encrypted bytes: it holds no keys and no data, and can at worst stop traffic. See SECURITY.md §15a.
 
@@ -89,6 +90,34 @@ Hosts like exe.dev give a VM one HTTPS name (`<vm>.exe.xyz`) whose proxy termina
 3. **Check:** `curl -s -o /dev/null -w '%{http_code}' https://nubilo.exe.xyz/api/v1/status` prints `401`, and `nubilo doctor` shows `relay — connected` plus a `TLS termination` warning that names the proxy. Paired apps switch to the public address on their own (they read `public_url` from `/api/v1/me`). Install the Calendar & Contacts profile again from the app so the accounts use it.
 
 Without inbound UDP on the VM, traffic flows on wired's relay path (through the proxy's WebSocket) rather than a direct path; that is expected.
+
+## Tailscale
+
+Every device that should reach the server joins your tailnet (the Tailscale app on the iPhone and the Mac). The server keeps listening on its LAN port; Tailscale mode only changes the name and certificate devices use.
+
+1. In the Tailscale admin console, under **DNS**, turn on MagicDNS and **HTTPS Certificates**.
+2. If the server runs as a normal user, let it ask tailscaled for certificates once: `sudo tailscale set --operator=$USER`.
+3. Home server:
+
+   ```sh
+   nubilo setup --mode tailscale
+   ```
+
+   Setup reads the node's name (e.g. `box.tail1234.ts.net`) from `tailscale status`, fetches its certificate into `<data-dir>/tailscale/`, and makes `https://box.tail1234.ts.net:8443` the device URL. The server serves that certificate when a client asks for the name, asks tailscaled again every day (tailscaled renews it before it expires), and serves its self-signed certificate to every other name and while no certificate is available.
+
+4. **Check:** `nubilo doctor` shows `tailscale — box.tail1234.ts.net` and the MagicDNS URL answering with a trusted certificate. Paired apps move to the URL by themselves once it answers for them; install the Calendar & Contacts profile again from the app so the accounts use it.
+
+The certificate comes from Let's Encrypt, so the name appears in public Certificate Transparency logs. Nothing else about the tailnet is published.
+
+### Tailscale Funnel (optional)
+
+[Funnel](https://tailscale.com/kb/1223/funnel) can open the same name to the internet without a VPS. Forward raw TCP so TLS still ends at home, with the certificate above:
+
+```sh
+tailscale funnel --bg --tcp 443 tcp://127.0.0.1:8443
+```
+
+Then set `"port": 443` under `public.tailscale` in `config.json` and restart the server, so device URLs drop the `:8443`. Funnel forwards from tailscaled on the same host, so the server sees every public client as `127.0.0.1`: per-IP rate limits then apply to all of them together. Nubilo does not set Funnel up for you.
 
 ## Direct setup
 

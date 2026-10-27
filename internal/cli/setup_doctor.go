@@ -71,7 +71,7 @@ func runSetup(g global, args []string) int {
 	yes := fs.Bool("yes", false, "non-interactive: use flags and defaults")
 	noService := fs.Bool("no-service", false, "skip always-on service install")
 	noBackup := fs.Bool("no-backup", false, "skip enabling encrypted auto-backup")
-	mode := fs.String("mode", "", "how devices reach the server: relay, direct or lan")
+	mode := fs.String("mode", "", "how devices reach the server: relay, proxy, tailscale, direct or lan")
 	domain := fs.String("domain", "", "public DNS name (relay and direct modes)")
 	email := fs.String("email", "", "Let's Encrypt account email (optional)")
 	invite := fs.String("relay-invite", "", "invite printed by `nubilo relay init` on the VPS")
@@ -139,14 +139,17 @@ func runSetup(g global, args []string) int {
 		fmt.Println("\nHow will phones reach this server from outside your home?")
 		fmt.Println("  1) relay   — a small VPS runs `nubilo relay`; nothing opens on your router (recommended)")
 		fmt.Println("  2) proxy   — `nubilo relay --behind-proxy` on a host like exe.dev; its proxy holds the certificate and can read traffic")
-		fmt.Println("  3) direct  — this host is reachable on ports 443/80 (port forward or VPS)")
-		fmt.Println("  4) lan     — home network / Tailscale only, self-signed certificate")
+		fmt.Println("  3) tailscale — devices on your tailnet, with a certificate from `tailscale cert`")
+		fmt.Println("  4) direct  — this host is reachable on ports 443/80 (port forward or VPS)")
+		fmt.Println("  5) lan     — home network only, self-signed certificate")
 		switch prompt("choice [1]: ") {
 		case "2", "proxy":
 			w.Mode = setup.ModeProxy
-		case "3", "direct":
+		case "3", "tailscale":
+			w.Mode = setup.ModeTailscale
+		case "4", "direct":
 			w.Mode = setup.ModeDirect
-		case "4", "lan":
+		case "5", "lan":
 			w.Mode = setup.ModeLAN
 		default:
 			w.Mode = setup.ModeRelay
@@ -155,7 +158,7 @@ func runSetup(g global, args []string) int {
 	if w.Mode == "" {
 		w.Mode = setup.ModeLAN
 	}
-	if interactive && w.Mode != setup.ModeLAN {
+	if interactive && w.Mode != setup.ModeLAN && w.Mode != setup.ModeTailscale {
 		if w.Domain == "" {
 			if w.Mode == setup.ModeProxy {
 				w.Domain = prompt("public name the proxy serves (e.g. nubilo.exe.xyz): ")

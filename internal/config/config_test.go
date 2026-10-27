@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"nubilo/internal/config"
@@ -88,5 +89,30 @@ func TestLegacyMaxBlobBytesBumped(t *testing.T) {
 	}
 	if got.Sync.MaxBlobBytes != 128<<20 {
 		t.Fatalf("custom cap should stay %d", got.Sync.MaxBlobBytes)
+	}
+}
+
+func TestPublicURL(t *testing.T) {
+	c := config.Defaults(t.TempDir())
+	c.Listen = "0.0.0.0:8443"
+	if c.PublicURL() != "" {
+		t.Fatalf("no public URL expected, got %s", c.PublicURL())
+	}
+	c.Public.Tailscale = config.TailscaleConfig{Enabled: true, Name: "box.tail1234.ts.net"}
+	if got := c.PublicURL(); got != "https://box.tail1234.ts.net:8443" {
+		t.Fatalf("tailscale %s", got)
+	}
+	c.Public.Tailscale.Port = 443
+	if got := c.PublicURL(); got != "https://box.tail1234.ts.net" {
+		t.Fatalf("funnel %s", got)
+	}
+	c.Public.Domain = "cloud.example.com"
+	if got := c.PublicURL(); got != "https://cloud.example.com" {
+		t.Fatalf("domain wins: %s", got)
+	}
+	c.Public.Domain = ""
+	c.Public.Tailscale.Name = "box.example.com"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "tailscale") {
+		t.Fatalf("non-ts.net name: %v", err)
 	}
 }

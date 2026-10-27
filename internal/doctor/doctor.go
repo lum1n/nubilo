@@ -293,10 +293,11 @@ func checkTLS(r *Report, cfg config.Config) {
 	} else {
 		r.add(Check{ID: "tls", Title: "TLS certificate", Status: OK, Detail: detail})
 	}
-	if !cfg.Loopback() {
+	// With a public domain or Tailscale name, devices use that trusted URL.
+	if !cfg.Loopback() && cfg.PublicURL() == "" {
 		r.add(Check{ID: "apple_tls", Title: "iPhone CalDAV/CardDAV TLS", Status: Warn,
 			Detail: "Apple clients need a trusted cert (self-signed will fail)",
-			Fix:    "put Tailscale Serve (or Caddy) in front, or install tls.crt on the phone"})
+			Fix:    "nubilo setup --mode tailscale (or relay/proxy/direct), or install tls.crt on the phone"})
 	}
 }
 

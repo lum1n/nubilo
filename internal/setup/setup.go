@@ -118,8 +118,8 @@ func NextStepsServer(dataDir string) string {
 	var b strings.Builder
 	b.WriteString("Next steps:\n")
 	b.WriteString("  1. Keep the server running: nubilo server install\n")
-	b.WriteString("  2. On the Mac: nubilo agent setup --data-dir ~/.nubilo-agent\n")
-	b.WriteString("  3. For iPhone Calendar/Contacts: Tailscale Serve (or install tls.crt)\n")
+	b.WriteString("  2. For Photos.app and folder sync on a Mac: nubilo agent setup --data-dir ~/.nubilo-agent\n")
+	b.WriteString("  3. For a certificate iPhones trust: nubilo setup --mode tailscale (or relay/proxy/direct), or install tls.crt\n")
 	b.WriteString("  4. Issue DAV passwords: nubilo devices password --scope caldav|carddav|webdav\n")
 	b.WriteString("  5. Re-check: nubilo doctor --data-dir " + dataDir + "\n")
 	b.WriteString("Store the backup passphrase offline. Losing it means backups are unrecoverable.\n")

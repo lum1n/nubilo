@@ -417,7 +417,7 @@ Default logs may include: device_id, collection_id, object_id, sequence numbers,
 
 ## 15a. Public exposure (relay and direct)
 
-`nubilo setup` offers three modes: **relay** (a VPS runs `nubilo relay`, an anchor of a [wired](https://github.com/lum1n/wired) overlay that forwards public TCP 443/80 to the home server as raw bytes), **direct** (this host listens on :443/:80) and **lan** (self-signed, LAN/Tailscale only).
+`nubilo setup` offers these modes: **relay** (a VPS runs `nubilo relay`, an anchor of a [wired](https://github.com/lum1n/wired) overlay that forwards public TCP 443/80 to the home server as raw bytes), **direct** (this host listens on :443/:80), **proxy** (§15c), **tailscale** (§15d) and **lan** (self-signed, LAN only).
 
 - TLS terminates on the home server with a Let's Encrypt certificate obtained by built-in ACME (TLS-ALPN-01 on :443, HTTP-01 on :80). The VPS never holds the master key, the database, or the certificate key; it sees TLS ciphertext only. It **can** deny service (drop or delay traffic) and see connection metadata (timing, sizes, client IPs). It **cannot** read or modify requests.
 - The relay invite is a credential for joining the overlay; the home node only listens for the `https`/`http` services. `nubilo relay revoke NAME` removes a node and rotates the invite.
@@ -433,6 +433,13 @@ In **proxy** mode the relay runs on a host whose provider proxy (exe.dev) termin
 - The home server takes the client address from `X-Nubilo-Client-IP`, only on that overlay listener. The relay always overwrites the header with the last `X-Forwarded-For` entry its proxy appended, so clients cannot set it.
 - Blobs and payloads stay encrypted at rest at home, so data at rest is protected as in other modes. The exposure is data in transit.
 - `nubilo doctor` reports this as a `TLS termination` warning. Use the VPS relay (§15a) when TLS must end at home.
+
+## 15d. Tailscale mode
+
+- Devices reach the LAN listener over the tailnet by the node's MagicDNS name. The certificate comes from `tailscale cert` (Let's Encrypt, via tailscaled) and is stored with its key in `<data-dir>/tailscale/` (directory `0700`). TLS ends in the Nubilo process, as on the LAN.
+- The server runs the `tailscale` CLI: `status --json` at setup and in doctor, `cert` at start and daily. Letting a non-root user fetch certificates means making it the tailscaled operator (`tailscale set --operator`), which also lets that user change other tailscaled settings.
+- The name is published in Certificate Transparency logs when the certificate is issued.
+- With Funnel forwarding raw TCP (docs/RELAY.md), the internet reaches the listener with TLS still ending at home, but every public client appears as `127.0.0.1`, so per-IP rate limits and the audit log cannot tell clients apart.
 
 ## 15b. Invites, upload tokens and configuration profiles
 

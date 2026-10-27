@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"nubilo/internal/config"
+	"nubilo/internal/tailscale"
 	"nubilo/internal/wiredx"
 )
 
@@ -19,9 +20,13 @@ import (
 // certificate, an end-to-end request to https://<domain>, and direct ports.
 func checkPublic(ctx context.Context, r *Report, cfg config.Config) {
 	pub := cfg.Public
+	if pub.Domain == "" && pub.Tailscale.Enabled {
+		checkTailscale(ctx, r, cfg)
+		return
+	}
 	if pub.Domain == "" {
-		r.add(Check{ID: "public", Title: "public access", Status: Info, Detail: "LAN/Tailscale only (no public domain)",
-			Fix: "nubilo setup  → relay or direct, to reach the server from anywhere"})
+		r.add(Check{ID: "public", Title: "public access", Status: Info, Detail: "LAN only (no public domain or Tailscale name)",
+			Fix: "nubilo setup  → relay, proxy, tailscale or direct, to reach the server away from home"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -158,6 +163,53 @@ func checkPublicTLS(ctx context.Context, r *Report, pub config.PublicConfig) {
 	default:
 		r.add(Check{ID: "cert", Title: "public certificate", Status: OK, Detail: detail})
 	}
+}
+
+// checkTailscale covers tailscale mode: tailscaled's view of this node and an
+// end-to-end request to the MagicDNS URL that must pass system trust.
+func checkTailscale(ctx context.Context, r *Report, cfg config.Config) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	name := cfg.Public.Tailscale.Name
+	self, err := tailscale.Status(ctx)
+	switch {
+	case err != nil:
+		r.add(Check{ID: "tailscale", Title: "tailscale", Status: Fail, Detail: err.Error(),
+			Fix: "install Tailscale and run: sudo tailscale up"})
+		return
+	case !self.Online:
+		r.add(Check{ID: "tailscale", Title: "tailscale", Status: Fail, Detail: "tailscaled is not running or logged out",
+			Fix: "sudo tailscale up"})
+		return
+	case self.Name != name:
+		r.add(Check{ID: "tailscale", Title: "tailscale", Status: Warn,
+			Detail: fmt.Sprintf("config has %s but this node is %s", name, self.Name),
+			Fix:    "nubilo setup --mode tailscale"})
+	case !self.CertOK:
+		r.add(Check{ID: "tailscale", Title: "tailscale", Status: Warn, Detail: "HTTPS certificates are off for the tailnet",
+			Fix: "Tailscale admin console → DNS → enable MagicDNS and HTTPS Certificates"})
+	default:
+		r.add(Check{ID: "tailscale", Title: "tailscale", Status: OK, Detail: name})
+	}
+	url := cfg.PublicURL()
+	c := &http.Client{Timeout: 15 * time.Second}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url+"/api/v1/status", nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		fix := "check the server log for tailscale_cert; as a non-root user run: sudo tailscale set --operator=$USER, then restart the server"
+		r.add(Check{ID: "public_reach", Title: url, Status: Warn, Detail: err.Error() + " (devices fall back to the pinned self-signed certificate)", Fix: fix})
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusOK {
+		r.add(Check{ID: "public_reach", Title: url, Status: Fail, Detail: fmt.Sprintf("HTTP %d (another service answers?)", resp.StatusCode)})
+		return
+	}
+	detail := "answers with a trusted certificate"
+	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+		detail += ", expires " + resp.TLS.PeerCertificates[0].NotAfter.Format("2006-01-02")
+	}
+	r.add(Check{ID: "public_reach", Title: url, Status: OK, Detail: detail + " (tailnet devices only)"})
 }
 
 func orDefault(s, d string) string {

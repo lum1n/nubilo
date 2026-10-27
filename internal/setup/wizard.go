@@ -16,6 +16,7 @@ import (
 	"nubilo/internal/identity"
 	"nubilo/internal/qr"
 	"nubilo/internal/server"
+	"nubilo/internal/tailscale"
 	"nubilo/internal/wiredx"
 )
 
@@ -23,7 +24,10 @@ import (
 const (
 	ModeRelay  = "relay"  // a VPS runs `nubilo relay`; the home stays closed
 	ModeDirect = "direct" // this host is public (port forward or VPS)
-	ModeLAN    = "lan"    // LAN/Tailscale only, self-signed certificate
+	ModeLAN    = "lan"    // LAN only, self-signed certificate
+	// ModeTailscale: devices on the tailnet use the MagicDNS name with a
+	// certificate from `tailscale cert`; TLS ends at home.
+	ModeTailscale = "tailscale"
 	// ModeProxy: `nubilo relay --behind-proxy` runs on a host whose
 	// TLS-terminating proxy (exe.dev) owns the certificate; that proxy can
 	// read the traffic. The home stays closed, as in relay mode.
@@ -86,12 +90,34 @@ func (w *Wizard) StepReachability(ctx context.Context) StepResult {
 	cfg.DataDir = w.DataDir
 	w.Domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(w.Domain), "."))
 	data := map[string]any{"mode": w.Mode}
+	cfg.Public.Tailscale = config.TailscaleConfig{}
 	switch w.Mode {
 	case ModeLAN:
 		cfg.Public.Domain = ""
 		cfg.Public.ACME = config.ACMEConfig{}
 		cfg.Public.Relay = config.RelayConfig{}
 		cfg.Public.DirectListen = ""
+	case ModeTailscale:
+		if cfg.Loopback() {
+			return fail(2, fmt.Errorf("listen %s is loopback only; tailnet devices need e.g. --listen 0.0.0.0:8443", cfg.Listen))
+		}
+		self, err := tailscale.Status(ctx)
+		if err != nil {
+			return fail(2, err)
+		}
+		if !self.CertOK {
+			return fail(2, fmt.Errorf("the tailnet issues no certificate for %s: turn on MagicDNS and HTTPS Certificates in the Tailscale admin console (DNS page)", self.Name))
+		}
+		cfg.Public.Domain = ""
+		cfg.Public.ACME = config.ACMEConfig{}
+		cfg.Public.Relay = config.RelayConfig{}
+		cfg.Public.DirectListen = ""
+		cfg.Public.Tailscale = config.TailscaleConfig{Enabled: true, Name: self.Name}
+		data["name"] = self.Name
+		certs := &tailscale.Certs{Name: self.Name, Dir: p.Tailscale}
+		if err := certs.Refresh(ctx); err != nil {
+			data["cert_error"] = err.Error()
+		}
 	case ModeProxy:
 		if w.Domain == "" {
 			return fail(2, errors.New("a domain is required: the proxy's name, e.g. nubilo.exe.xyz"))
@@ -137,7 +163,7 @@ func (w *Wizard) StepReachability(ctx context.Context) StepResult {
 			cfg.Public.DirectListen = ":443"
 		}
 	default:
-		return fail(2, fmt.Errorf("unknown mode %q (relay, proxy, direct or lan)", w.Mode))
+		return fail(2, fmt.Errorf("unknown mode %q (relay, proxy, tailscale, direct or lan)", w.Mode))
 	}
 	if err := cfg.Validate(); err != nil {
 		return fail(2, err)
@@ -148,6 +174,11 @@ func (w *Wizard) StepReachability(ctx context.Context) StepResult {
 	msg := "LAN only (self-signed certificate)"
 	switch w.Mode {
 	case ModeLAN:
+	case ModeTailscale:
+		msg = fmt.Sprintf("tailnet devices use %s (certificate from tailscale cert)", cfg.PublicURL())
+		if e, ok := data["cert_error"]; ok {
+			msg = fmt.Sprintf("tailnet devices use %s; no certificate yet (%v), so the self-signed one is served. As a non-root user run: sudo tailscale set --operator=$USER", cfg.PublicURL(), e)
+		}
 	case ModeProxy:
 		msg = fmt.Sprintf("%s via a relay behind its TLS proxy (the proxy holds the certificate and can read traffic)", w.Domain)
 		if path, ok := data["relay_path"]; ok {
@@ -204,7 +235,7 @@ func (w *Wizard) StepVerify(ctx context.Context) StepResult {
 	if err != nil {
 		return fail(4, err)
 	}
-	url, insecure := cfg.Public.BaseURL(), cfg.Public.ACME.Directory != ""
+	url, insecure := cfg.PublicURL(), cfg.Public.ACME.Directory != ""
 	if url == "" {
 		host, port, _ := net.SplitHostPort(cfg.Listen)
 		if host == "" || host == "0.0.0.0" || host == "::" {

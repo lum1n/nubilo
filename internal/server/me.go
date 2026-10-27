@@ -50,10 +50,10 @@ func userDevice(w http.ResponseWriter, r *http.Request) *identity.Device {
 	return dev
 }
 
-// baseURL is the public URL when a domain is configured, else the URL the
-// client used to reach us.
+// baseURL is the public URL (domain or Tailscale name) when configured,
+// else the URL the client used to reach us.
 func (s *Server) baseURL(r *http.Request) string {
-	if u := s.Cfg.Public.BaseURL(); u != "" {
+	if u := s.Cfg.PublicURL(); u != "" {
 		return u
 	}
 	return "https://" + r.Host
@@ -86,7 +86,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 			"photos":  base + "/api/v1/photos",
 		},
 		// Apps paired on a LAN address move to this once it answers for them.
-		"public_url": s.Cfg.Public.BaseURL(),
+		"public_url": s.Cfg.PublicURL(),
 	})
 }
 
@@ -251,8 +251,8 @@ func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) publicHostPort(r *http.Request) (string, int) {
-	if d := s.Cfg.Public.Domain; d != "" {
-		return d, 443
+	if host, port, ok := s.Cfg.PublicHostPort(); ok {
+		return host, port
 	}
 	host, port, err := net.SplitHostPort(r.Host)
 	if err != nil {

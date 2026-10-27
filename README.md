@@ -12,9 +12,9 @@ Priorities: security, integrity, correct sync. Server-side encryption, not end-t
 | --- | --- | --- |
 | Server | Linux or macOS | Encrypted volume recommended (LUKS / FileVault); `nubilo doctor` checks this |
 | Agent | macOS only | Separate `--data-dir` from the server |
-| Phone | iOS | Apple Calendar / Contacts / Files + the Nubilo app; TLS Apple trusts (public domain with Let's Encrypt via relay/direct, or Tailscale Serve / install `tls.crt` on LAN) |
+| Phone | iOS | Apple Calendar / Contacts / Files + the Nubilo app; TLS Apple trusts (public domain with Let's Encrypt via relay/direct, the tailnet name in tailscale mode, or install `tls.crt` on LAN) |
 
-Reach the server from anywhere through a small **VPS relay** (the home stays closed; TLS still terminates at home with Let's Encrypt), by hosting it **directly** on public ports, or over LAN / Tailscale only. See [docs/RELAY.md](docs/RELAY.md).
+Reach the server from anywhere through a small **VPS relay** (the home stays closed; TLS still terminates at home with Let's Encrypt), by hosting it **directly** on public ports, over your **tailnet** with a certificate from `tailscale cert`, or on the LAN only. See [docs/RELAY.md](docs/RELAY.md).
 
 ## Install
 
@@ -108,7 +108,7 @@ Same Mac may run server and agent with **two** data dirs — never share one `--
 
 `init` / `setup` writes a self-signed cert (localhost + local IPs). The Mac agent **pins** it at pair (TOFU). Do not use `--insecure` in normal operation. `nubilo tls` regenerates the cert (new IPs / expiry).
 
-iPhone CalDAV/CardDAV need a cert Apple trusts: [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) in front of Nubilo, or install `~/.nubilo/tls.crt` on the phone.
+iPhone CalDAV/CardDAV need a cert Apple trusts: a public domain (relay, proxy or direct), `nubilo setup --mode tailscale` (the server serves its MagicDNS name with a certificate from `tailscale cert`), or install `~/.nubilo/tls.crt` on the phone.
 
 ## iPhone
 

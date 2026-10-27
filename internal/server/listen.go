@@ -14,6 +14,7 @@ import (
 
 	"nubilo/internal/acme"
 	"nubilo/internal/config"
+	"nubilo/internal/tailscale"
 	"nubilo/internal/wiredx"
 )
 
@@ -41,7 +42,11 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		self = &c
 	}
-	tlsCfg := TLSConfig(self, mgr, s.Cfg.Public.Domain)
+	var byName func(string) *tls.Certificate
+	if ts := s.tailscaleCerts(ctx); ts != nil {
+		byName = ts.Get
+	}
+	tlsCfg := TLSConfig(self, mgr, s.Cfg.Public.Domain, byName)
 	errCh := make(chan error, 6)
 	serve := func(name string, f func() error) {
 		go func() {
@@ -221,6 +226,29 @@ func hsts(next http.Handler) http.Handler {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// tailscaleCerts loads the certificate for the Tailscale name in the
+// background and keeps it fresh. Until one loads, the Tailscale name gets
+// the self-signed certificate like any LAN address.
+func (s *Server) tailscaleCerts(ctx context.Context) *tailscale.Certs {
+	ts := s.Cfg.Public.Tailscale
+	if !ts.Enabled || ts.Name == "" {
+		return nil
+	}
+	c := &tailscale.Certs{Name: ts.Name, Dir: config.Paths(s.Cfg.DataDir).Tailscale, Log: s.Log}
+	// The first certificate can take a while to issue; serve the
+	// self-signed one meanwhile.
+	go func() {
+		if err := c.Refresh(ctx); err != nil {
+			s.Log.Warn("tailscale_cert", "name", ts.Name, "err", err.Error(),
+				"hint", "turn on HTTPS certificates in the Tailscale admin console; as a non-root user run: sudo tailscale set --operator=$USER")
+		} else {
+			s.Log.Info("tailscale_cert", "name", ts.Name)
+		}
+		c.Keep(ctx, 24*time.Hour)
+	}()
+	return c
 }
 
 // plainServer answers ACME HTTP-01 challenges and redirects everything else to HTTPS.
