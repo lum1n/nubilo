@@ -38,7 +38,7 @@ CalDAV, CardDAV, WebDAV and the photo endpoints accept `Basic <username>:<app pa
 
 QR codes and links carry either
 
-- `nubilo://setup?url=<https base URL>&invite=<code>&fp=<server public key, base64url>` (from `nubilo setup`, `nubilo users invite`, the admin console), or
+- `nubilo://setup?url=<https base URL>&invite=<code>&fp=<server public key, base64url>[&user=<username>]` (from `nubilo setup`, `nubilo users invite`, the admin console, `POST /api/v1/me/device-invite`); `user` is present when the invite adds a device to that existing account, so the app asks only for a device name, or
 - `https://<domain>/join#<code>` (shared links; the code is in the fragment).
 
 Flow:

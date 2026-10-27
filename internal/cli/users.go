@@ -146,27 +146,27 @@ func runUsers(g global, args []string) int {
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		forID := ""
+		forID, forName := "", ""
 		if *forUser != "" {
 			u, err := byName(*forUser)
 			if err != nil {
 				return fatal(err)
 			}
-			forID = u.ID
+			forID, forName = u.ID, u.Username
 		}
 		code, inv, err := rt.IDs.CreateInvite(ctx, "admin-local", identity.UserRole(*role), forID, time.Duration(*ttl)*time.Hour, *uses)
 		if err != nil {
 			return fatal(err)
 		}
-		return printInvite(g, rt, code, inv)
+		return printInvite(g, rt, code, inv, forName)
 	default:
 		return fatal(fmt.Errorf("unknown users subcommand %s", sub))
 	}
 }
 
-func printInvite(g global, rt *app.Runtime, code string, inv *identity.Invite) int {
+func printInvite(g global, rt *app.Runtime, code string, inv *identity.Invite, username string) int {
 	base := serverBaseURL(rt)
-	setup := server.SetupURL(base, code, b64url(rt.ServerPub))
+	setup := server.SetupURL(base, code, b64url(rt.ServerPub), username)
 	if g.jsonOut {
 		return dumpJSON(map[string]any{
 			"id": inv.ID, "code": code, "url": server.InviteURL(base, code), "setup_url": setup,

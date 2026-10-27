@@ -82,7 +82,8 @@ against a real server when `scripts/swift-live-test.sh` sets it up.
 scanner) or paste the link. Both `nubilo://setup?url=…&invite=…&fp=…` and
 `https://<server>/join#<code>` work, and `nubilo://` links from Safari or
 Messages open the app directly. The user picks a username and display name
-(ignored when the invite is for an existing account) and a device name. The
+and a device name; when the link names an existing account (`&user=`, from
+Add a Device or `nubilo users invite --for`) only the device name is asked. The
 app creates an Ed25519 key in the Keychain (this device only, readable after
 first unlock), redeems the invite, signs the challenge, and checks the
 server's key against the `fp` in the QR code. A LAN server's self-signed

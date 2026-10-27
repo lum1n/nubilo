@@ -23,17 +23,25 @@ struct JoinFormView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Section {
-                TextField("Username", text: $username)
-                    .plainTextInput()
-                    .textContentType(.username)
-                TextField("Your name", text: $displayName)
-            } header: {
-                Text("Your account")
-            } footer: {
-                // The API cannot tell in advance whether an invite creates an
-                // account, so both fields are asked for and ignored when unused.
-                Text("Lowercase letters, digits, dot, dash and underscore. If the invite is for an account that already exists, these are ignored.")
+            if let account = link.account {
+                Section {
+                    LabeledContent("Account", value: "@\(account)")
+                } footer: {
+                    Text("This device signs in to your existing account.")
+                }
+            } else {
+                Section {
+                    TextField("Username", text: $username)
+                        .plainTextInput()
+                        .textContentType(.username)
+                    TextField("Your name", text: $displayName)
+                } header: {
+                    Text("Your account")
+                } footer: {
+                    // Links without `user` (older invites, https /join links) may
+                    // still be for an existing account; the server then ignores these.
+                    Text("Lowercase letters, digits, dot, dash and underscore. If the invite is for an account that already exists, these are ignored.")
+                }
             }
             Section("This device") {
                 TextField("Device name", text: $deviceName)
@@ -43,7 +51,7 @@ struct JoinFormView: View {
                     Task { await join() }
                 } label: {
                     HStack {
-                        Text(joining ? "Joining…" : "Join")
+                        Text(joining ? "Joining…" : (link.account == nil ? "Join" : "Add This Device"))
                         if joining { Spacer(); ProgressView() }
                     }
                 }

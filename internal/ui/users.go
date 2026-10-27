@@ -183,7 +183,13 @@ func (s *Server) handleInviteCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := s.publicBase()
-	setup := server.SetupURL(base, code, b64url(s.RT.ServerPub))
+	username := ""
+	if inv.UserID != "" {
+		if u, err := s.RT.IDs.GetUser(r.Context(), inv.UserID); err == nil {
+			username = u.Username
+		}
+	}
+	setup := server.SetupURL(base, code, b64url(s.RT.ServerPub), username)
 	png, _ := qr.PNGDataURL(setup, 320)
 	s.RT.Audit.Event(r.Context(), "admin-local", "invite.create", map[string]any{"invite": inv.ID, "role": inv.Role})
 	writeJSON(w, http.StatusOK, map[string]any{

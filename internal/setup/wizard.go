@@ -235,7 +235,7 @@ func (w *Wizard) StepInvite() StepResult {
 		return fail(5, err)
 	}
 	base := rt.Cfg.DeviceBaseURL()
-	setupURL := server.SetupURL(base, code, base64.RawURLEncoding.EncodeToString(rt.ServerPub))
+	setupURL := server.SetupURL(base, code, base64.RawURLEncoding.EncodeToString(rt.ServerPub), "")
 	text, _ := qr.Terminal(setupURL)
 	png, _ := qr.PNGDataURL(setupURL, 320)
 	return StepResult{Step: 5, Name: "invite", OK: true,

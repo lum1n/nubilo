@@ -204,11 +204,17 @@ func (s *Server) handleAdminCreateInvite(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) writeInvite(w http.ResponseWriter, r *http.Request, code string, inv *identity.Invite) {
+	username := ""
+	if inv.UserID != "" {
+		if u, err := s.IDs.GetUser(r.Context(), inv.UserID); err == nil {
+			username = u.Username
+		}
+	}
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"id":         inv.ID,
 		"code":       code,
 		"url":        InviteURL(s.baseURL(r), code),
-		"setup_url":  SetupURL(s.baseURL(r), code, b64url(s.ServerPub)),
+		"setup_url":  SetupURL(s.baseURL(r), code, b64url(s.ServerPub), username),
 		"expires_at": inv.ExpiresAt,
 		"role":       inv.Role,
 		"max_uses":   inv.MaxUses,
@@ -222,9 +228,14 @@ func InviteURL(base, code string) string {
 }
 
 // SetupURL is the app deep link with the server URL, invite and server key
-// fingerprint (for pinning on first contact).
-func SetupURL(base, code, serverKey string) string {
-	return "nubilo://setup?url=" + queryEscape(base) + "&invite=" + queryEscape(code) + "&fp=" + queryEscape(serverKey)
+// fingerprint (for pinning on first contact). username is set for invites
+// bound to an existing account, so the app only asks for a device name.
+func SetupURL(base, code, serverKey, username string) string {
+	u := "nubilo://setup?url=" + queryEscape(base) + "&invite=" + queryEscape(code) + "&fp=" + queryEscape(serverKey)
+	if username != "" {
+		u += "&user=" + queryEscape(username)
+	}
+	return u
 }
 
 func (s *Server) handleAdminRevokeInvite(w http.ResponseWriter, r *http.Request) {

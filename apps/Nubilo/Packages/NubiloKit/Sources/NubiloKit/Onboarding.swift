@@ -6,14 +6,18 @@ public struct SetupLink: Equatable, Sendable {
     public var invite: String
     /// Server Ed25519 public key (base64url) to pin, when the link has one.
     public var serverKey: String?
+    /// Username of the existing account the invite adds this device to; nil
+    /// when the invite creates a new account (or the link does not say).
+    public var account: String?
 
-    public init(server: URL, invite: String, serverKey: String? = nil) {
+    public init(server: URL, invite: String, serverKey: String? = nil, account: String? = nil) {
         self.server = server
         self.invite = invite
         self.serverKey = serverKey
+        self.account = account
     }
 
-    /// Parses `nubilo://setup?url=…&invite=…&fp=…` or `https://<host>/join#<code>`.
+    /// Parses `nubilo://setup?url=…&invite=…&fp=…[&user=…]` or `https://<host>/join#<code>`.
     public init(parsing text: String) throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let comps = URLComponents(string: trimmed), let scheme = comps.scheme?.lowercased() else {
@@ -26,7 +30,9 @@ public struct SetupLink: Equatable, Sendable {
                 throw NubiloError.invalidLink("missing https server URL")
             }
             guard let inv = q["invite"], !inv.isEmpty else { throw NubiloError.invalidLink("missing invite") }
-            self.init(server: server, invite: inv, serverKey: q["fp"].flatMap { $0.isEmpty ? nil : $0 })
+            self.init(server: server, invite: inv,
+                      serverKey: q["fp"].flatMap { $0.isEmpty ? nil : $0 },
+                      account: q["user"].flatMap { $0.isEmpty ? nil : $0 })
         case "https":
             guard comps.path == "/join", let code = comps.fragment, !code.isEmpty, let host = comps.host else {
                 throw NubiloError.invalidLink("expected https://<server>/join#<code>")

@@ -428,8 +428,11 @@ func TestDeviceInviteAddsToOwnAccount(t *testing.T) {
 	f := startFamily(t)
 	inv := f.bob.json(http.MethodPost, "/api/v1/me/device-invite", nil, http.StatusCreated)
 	code := inv["code"].(string)
-	if !strings.HasPrefix(inv["setup_url"].(string), "nubilo://setup?") || inv["role"] != "member" {
+	if !strings.HasPrefix(inv["setup_url"].(string), "nubilo://setup?") || !strings.HasSuffix(inv["setup_url"].(string), "&user=bob") || inv["role"] != "member" {
 		t.Fatalf("invite %v", inv)
+	}
+	if fresh := f.admin.json(http.MethodPost, "/api/v1/admin/invites", map[string]any{"role": "member"}, http.StatusCreated); strings.Contains(fresh["setup_url"].(string), "user=") {
+		t.Fatalf("new-account invite names a user: %v", fresh["setup_url"])
 	}
 	pub, priv, _ := ncrypto.GenerateEd25519()
 	redeem := func(pub ed25519.PublicKey) (int, map[string]any) {
