@@ -22,6 +22,8 @@ import (
 // fails:
 //
 //   - the LAN listener (cfg.Listen), always;
+//   - public.tailscale.funnel_listen, a loopback listener for Tailscale Funnel
+//     that reads the client address from a PROXY v1 header;
 //   - public.direct_listen (:443) plus :80 when the host is reachable directly;
 //   - the wired overlay services "https" and "http" when public.relay.invite is
 //     set; the VPS relay forwards public 443/80 to them as raw TCP. With
@@ -47,7 +49,7 @@ func (s *Server) Run(ctx context.Context) error {
 		byName = ts.Get
 	}
 	tlsCfg := TLSConfig(self, mgr, s.Cfg.Public.Domain, byName)
-	errCh := make(chan error, 6)
+	errCh := make(chan error, 7)
 	serve := func(name string, f func() error) {
 		go func() {
 			err := f()
@@ -77,6 +79,22 @@ func (s *Server) Run(ctx context.Context) error {
 		serve("lan", func() error { return s.http.Serve(ln) })
 	}
 	running++
+
+	if ts := s.Cfg.Public.Tailscale; ts.Enabled && ts.FunnelListen != "" {
+		fl, err := net.Listen("tcp", ts.FunnelListen)
+		if err != nil {
+			return fmt.Errorf("server: funnel listen %s: %w", ts.FunnelListen, err)
+		}
+		// tailscaled sends the public client's address in a PROXY header
+		// (tailscale funnel --proxy-protocol 1). Config keeps this listener
+		// on loopback, so only processes on this host can set it; conns
+		// without one are dropped rather than passing as local.
+		fl = wiredx.RequireProxyListener(fl)
+		h := s.publicServer(tlsCfg)
+		serve("funnel", func() error { return h.ServeTLS(fl, "", "") })
+		running++
+		s.Log.Info("listen_funnel", "addr", ts.FunnelListen, "name", ts.Name)
+	}
 
 	if addr := s.Cfg.Public.DirectListen; addr != "" {
 		hl, err := net.Listen("tcp", addr)
