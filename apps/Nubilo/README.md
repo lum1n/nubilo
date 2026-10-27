@@ -30,7 +30,8 @@ XcodeGen 2.39 or later is needed (multi-destination target). Re-run
 `xcodegen` after changing `project.yml` or adding files to `App/`; files in
 the packages are picked up by Xcode directly.
 
-**Signing.** Create an untracked `project.local.yml` next to `project.yml`:
+**Signing.** Before the first `xcodegen` run, create an untracked
+`project.local.yml` next to `project.yml` (xcodegen fails without it):
 
 ```yaml
 settings:
@@ -38,7 +39,8 @@ settings:
     DEVELOPMENT_TEAM: ABCDE12345
 ```
 
-and run `xcodegen` again. Signing is automatic. The bundle id is
+then run `xcodegen`. Use `settings: {}` to pick the team in Xcode instead
+(lost on the next `xcodegen`). Signing is automatic. The bundle id is
 `dev.nubilo.app`; change `PRODUCT_BUNDLE_IDENTIFIER` in `project.yml` if that
 id is not available to your team.
 

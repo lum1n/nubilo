@@ -3,12 +3,15 @@
 #
 #   brew install xcodegen && cd apps/Nubilo && xcodegen
 #
-# Signing team: put `settings: {base: {DEVELOPMENT_TEAM: ABCDE12345}}` in an
-# untracked project.local.yml next to this file (see README).
+# Signing team: create the untracked project.local.yml next to this file
+# before running xcodegen (it is required; see README):
+#
+#   settings: {base: {DEVELOPMENT_TEAM: ABCDE12345}}
+#
+# Use `settings: {}` to pick the team in Xcode instead.
 name: Nubilo
 include:
-  - path: project.local.yml
-    optional: true
+  - project.local.yml
 options:
   bundleIdPrefix: dev.nubilo
   deploymentTarget:
