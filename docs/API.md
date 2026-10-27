@@ -115,6 +115,18 @@ Backup loop for a phone: hash each asset → `photos/check` in batches → for e
 
 Unchanged from SYNC.md, with per-user scoping: `hello` returns `collections_rev`, which changes whenever the caller's visible collections (or their access) change; skip `POST /sync/v1/collections` while it is unchanged. `changes` only contains entries of collections the caller can read. Collections carry `owner_user_id`, `owner`, `root_id` and `access`.
 
+Folder calls (used by the iOS Files app integration; same rules as WebDAV: top-level folders need owner access to rename, move or delete, subfolders need write access, nothing moves between users):
+
+| Method | Path | Body |
+| --- | --- | --- |
+| `POST` | `/sync/v1/objects` | `{"collection_id", "after_id"?, "limit"?}` → `{"objects", "next_after_id"}` (live objects, by id) |
+| `POST` | `/sync/v1/object` | `{"id"}` → the object |
+| `POST` | `/sync/v1/collection` | `{"kind", "name", "parent_id"?, "metadata"?}` → find or create |
+| `POST` | `/sync/v1/collection/update` | `{"id", "name"?, "parent_id"?}` (`""` = top level) → rename and/or move |
+| `POST` | `/sync/v1/collection/delete` | `{"id"}` → deletes subfolders and objects (journaled), then the folder |
+
+A collection whose metadata has `"mirror": true` (the Mac calendar mirror) accepts object writes only from the device in `"mirror_device"`, which the server sets when a device turns `mirror` on.
+
 ## DAV
 
 | URL | |
