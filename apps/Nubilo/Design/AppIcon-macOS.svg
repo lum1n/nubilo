@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#5AB8FF"/>
+      <stop offset="1" stop-color="#1E5BD8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <clipPath id="body"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <g id="cloud">
+      <circle cx="352" cy="600" r="130"/>
+      <circle cx="532" cy="498" r="176"/>
+      <circle cx="692" cy="620" r="110"/>
+      <rect x="352" y="560" width="340" height="170"/>
+    </g>
+  </defs>
+  <!-- macOS grid: 824 pt body centered in 1024 with a soft drop shadow. -->
+  <rect x="100" y="112" width="824" height="824" rx="185" fill="#000" opacity="0.30" filter="url(#drop)"/>
+  <g clip-path="url(#body)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#sky)"/>
+    <g transform="translate(512 512) scale(0.86) translate(-512 -512)">
+      <use href="#cloud" fill="#0B2E7A" opacity="0.28" filter="url(#shadow)" transform="translate(0 30)"/>
+      <use href="#cloud" fill="#FFFFFF"/>
+    </g>
+  </g>
+</svg>

@@ -49,6 +49,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.nubilo.app
         PRODUCT_NAME: Nubilo
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: App/Nubilo-iOS.entitlements
         CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: App/Nubilo-iOS.entitlements
