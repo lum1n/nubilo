@@ -15,16 +15,13 @@ import (
 	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/dav"
 	"nubilo/internal/ids"
-	"nubilo/internal/photos"
 	"nubilo/internal/protocol"
 	"nubilo/internal/syncengine"
 )
 
 const (
-	kindPhoto  = "photo"
-	kindPhotos = "photos"
-	kindFile   = "file"
-	kindFiles  = "files"
+	kindFile  = "file"
+	kindFiles = "files"
 )
 
 type Agent struct {
@@ -32,7 +29,6 @@ type Agent struct {
 	Map     *Map
 	Sel     Selection
 	SelPath string // agent.json; reloaded at the start of each SyncOnce
-	Photos  PhotoSource
 	Files   FileSource
 	Log     *slog.Logger
 
@@ -103,7 +99,15 @@ func (a *Agent) pull(ctx context.Context, since int64) error {
 			if err := a.reconcile(ctx); err != nil {
 				return err
 			}
-			return a.pull(ctx, a.Map.Cursor())
+			// The cursor is past the server's journal (a restored server).
+			// Continue from its head; replaying older entries could write
+			// restored, older files over newer local ones.
+			a.Log.Warn("journal_reset", "cursor", since, "head", res.NextSeq)
+			if err := a.Map.SetCursor(res.NextSeq); err != nil {
+				return err
+			}
+			since = res.NextSeq
+			continue
 		}
 		failed := false
 		for i := range res.Changes {
@@ -141,14 +145,14 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 			if rt.kind == kindFile && a.Files != nil {
 				_ = a.Files.DeleteFile(existing.LocalID)
 			}
-			if rt.kind == kindPhoto {
-				// Do not delete from Photos.app on remote tombstone (safe default).
-			}
 			return a.Map.DeleteObject(ch.ObjectID)
 		}
 		return nil
 	}
 	if mapErr == nil && existing.Revision >= ch.Revision && existing.ContentHash == ch.ContentHash {
+		return nil
+	}
+	if rt.kind != kindFile || a.Files == nil || rt.rootPath == "" {
 		return nil
 	}
 	var payload []byte
@@ -159,129 +163,22 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 			return err
 		}
 	}
-	var localID string
-	var startMS int64
-	var modMS int64
-	switch rt.kind {
-	case kindFile:
-		if a.Files == nil || rt.rootPath == "" {
-			return nil
-		}
-		meta := dav.ParseFileMeta(ch.Metadata)
-		fname := meta.Name
-		if skipFileName(fname) {
-			return nil
-		}
-		abs := filepath.Join(rt.rootPath, filepath.FromSlash(rt.relDir), fname)
-		if err := a.Files.WriteFile(abs, payload); err != nil {
-			return err
-		}
-		localID = abs
-	case kindPhoto:
-		if a.Photos == nil {
-			return nil
-		}
-		if mapErr == nil {
-			// Already mapped locally; last-writer-wins only if content changed.
-			if existing.ContentHash == ch.ContentHash {
-				return a.Map.Put(Mapping{
-					LocalID: existing.LocalID, Kind: kindPhoto, ObjectID: ch.ObjectID, CollectionID: ch.CollectionID,
-					ContentHash: ch.ContentHash, Revision: ch.Revision, StartMS: existing.StartMS, ModMS: existing.ModMS,
-					UID: existing.UID, Name: existing.Name, LocalHash: existing.LocalHash,
-				})
-			}
-			// Content changed remotely: import a new asset (do not mutate existing Photos).
-		}
-		pm := photos.ParseMeta(ch.Metadata)
-		pname := pm.Name
-		if pname == "" {
-			pname = "photo.bin"
-		}
-		albumID := ""
-		if len(a.Sel.Photos.Albums) > 0 {
-			albumID = a.Sel.Photos.Albums[0]
-		}
-		id, err := a.Photos.ImportOriginal(payload, pname, albumID)
-		if err != nil {
-			return err
-		}
-		localID = id
-		startMS = pm.TakenAtMS
-		modMS = time.Now().UnixMilli()
-	default:
+	fname := dav.ParseFileMeta(ch.Metadata).Name
+	if skipFileName(fname) {
 		return nil
 	}
+	abs := filepath.Join(rt.rootPath, filepath.FromSlash(rt.relDir), fname)
+	if err := a.Files.WriteFile(abs, payload); err != nil {
+		return err
+	}
 	return a.Map.Put(Mapping{
-		LocalID: localID, Kind: rt.kind, ObjectID: ch.ObjectID, CollectionID: ch.CollectionID,
-		ContentHash: ch.ContentHash, Revision: ch.Revision, StartMS: startMS, ModMS: modMS,
+		LocalID: abs, Kind: rt.kind, ObjectID: ch.ObjectID, CollectionID: ch.CollectionID,
+		ContentHash: ch.ContentHash, Revision: ch.Revision,
 	})
 }
 
 func (a *Agent) pushLocal(ctx context.Context) error {
-	if err := a.pushPhotos(ctx); err != nil {
-		return err
-	}
 	return a.pushFiles(ctx)
-}
-
-func (a *Agent) pushPhotos(ctx context.Context) error {
-	if a.Photos == nil || !a.Sel.Photos.Enabled {
-		return nil
-	}
-	if st := PhotosAuthStatus(); st == "limited" {
-		a.Log.Warn("photos_limited_access",
-			"hint", "only TCC-selected photos sync; run: nubilo agent authorize → Allow Full Access")
-	}
-	col, err := a.ensureCollection(kindPhotos, photos.DefaultName)
-	if err != nil {
-		return err
-	}
-	list, err := a.Photos.ListPhotos(a.Sel.PhotoFilter())
-	if err != nil {
-		a.Log.Warn("list_photos_failed", "err", err.Error())
-		return nil
-	}
-	a.Log.Info("photos_list", "n", len(list), "source", a.Sel.Photos.Source)
-	seen := map[string]bool{}
-	ok, fail := 0, 0
-	for _, p := range list {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		seen[p.ID] = true
-		if err := a.pushPhoto(col.ID, p); err != nil {
-			fail++
-			a.Log.Warn("push_photo", "err", err.Error(), "local", p.ID, "kind", p.Kind, "filename", p.Filename)
-		} else {
-			ok++
-		}
-	}
-	a.Log.Info("photos_push", "ok", ok, "fail", fail)
-	mapped, err := a.Map.ForCollection(col.ID)
-	if err != nil {
-		return err
-	}
-	flt := a.Sel.PhotoFilter()
-	for _, row := range mapped {
-		if seen[row.LocalID] {
-			continue
-		}
-		if flt.Source == "dates" {
-			if row.StartMS == 0 {
-				continue
-			}
-			if flt.AfterMS > 0 && row.StartMS < flt.AfterMS {
-				continue
-			}
-			if flt.BeforeMS > 0 && row.StartMS > flt.BeforeMS {
-				continue
-			}
-		}
-		if err := a.pushDelete(row); err != nil {
-			a.Log.Warn("push_delete", "err", err.Error(), "object", row.ObjectID)
-		}
-	}
-	return nil
 }
 
 func (a *Agent) pushFiles(ctx context.Context) error {
@@ -459,110 +356,6 @@ func (a *Agent) putBlob(hash string, payload []byte) error {
 	return nil
 }
 
-func (a *Agent) pushPhoto(collectionID string, p LocalPhoto) error {
-	row, mapErr := a.Map.ByLocal(kindPhoto, p.ID)
-	if mapErr == nil {
-		// Skip re-export when mapped and PhotoKit modificationDate unchanged.
-		if p.ModMS > 0 && row.ModMS == p.ModMS {
-			return nil
-		}
-		if p.ModMS == 0 && len(p.Original) == 0 {
-			// No mod signal and no in-memory bytes: keep prior skip-if-mapped behavior.
-			return nil
-		}
-	}
-	orig := p.Original
-	if len(orig) == 0 {
-		var err error
-		orig, err = a.Photos.ReadOriginal(p.ID)
-		if err != nil {
-			return err
-		}
-	}
-	if mapErr == nil && len(orig) > 0 && row.ContentHash == ncrypto.SHA256Hex(orig) {
-		if p.ModMS > 0 && row.ModMS != p.ModMS {
-			row.ModMS = p.ModMS
-			return a.Map.Put(row)
-		}
-		return nil
-	}
-	kind := p.Kind
-	if kind == "" {
-		kind = "image"
-	}
-	prep, err := photos.PrepareKind(orig, p.Filename, kind, p.DurationMS, photos.DefaultOptions())
-	if err != nil {
-		return err
-	}
-	prep.Meta.Albums = p.Albums
-	if p.TakenAtMS != 0 && prep.Meta.TakenAtMS == 0 {
-		prep.Meta.TakenAtMS = p.TakenAtMS
-	}
-	if kind == "live" {
-		live := p.LiveMovie
-		if len(live) == 0 {
-			live, _ = a.Photos.ReadLiveMovie(p.ID)
-		}
-		if len(live) > 0 {
-			lh := ncrypto.SHA256Hex(live)
-			if err := a.putBlob(lh, live); err != nil {
-				return err
-			}
-			prep.Meta.LivePairHash = lh
-			prep.Meta.Kind = "live"
-		}
-	}
-	origHash := ncrypto.SHA256Hex(prep.Original)
-	prep.Meta.Checksum = origHash
-	if err := a.putBlob(origHash, prep.Original); err != nil {
-		return err
-	}
-	if len(prep.Preview) > 0 {
-		ph := ncrypto.SHA256Hex(prep.Preview)
-		if err := a.putBlob(ph, prep.Preview); err != nil {
-			return err
-		}
-		prep.Meta.PreviewHash = ph
-	}
-	if len(prep.Thumb) > 0 {
-		th := ncrypto.SHA256Hex(prep.Thumb)
-		if err := a.putBlob(th, prep.Thumb); err != nil {
-			return err
-		}
-		prep.Meta.ThumbHash = th
-	}
-	in := syncengine.ChangeInput{
-		CollectionID: collectionID,
-		Kind:         kindPhoto,
-		ContentHash:  origHash,
-		BlobID:       origHash,
-		Size:         int64(len(prep.Original)),
-		Metadata:     photos.EncodeMeta(prep.Meta),
-		Force:        true,
-	}
-	if errors.Is(mapErr, sql.ErrNoRows) {
-		in.ObjectID = ids.New()
-		in.Op = syncengine.OpCreate
-	} else if mapErr != nil {
-		return mapErr
-	} else {
-		in.ObjectID = row.ObjectID
-		in.Op = syncengine.OpUpdate
-		in.BaseRevision = row.Revision
-	}
-	res, err := a.Client.Push(ids.New(), []syncengine.ChangeInput{in})
-	if err != nil {
-		return err
-	}
-	if len(res) == 0 || res[0].Status != "ok" {
-		return errors.New("push photo rejected")
-	}
-	return a.Map.Put(Mapping{
-		LocalID: p.ID, Kind: kindPhoto, ObjectID: in.ObjectID, CollectionID: collectionID,
-		ContentHash: origHash, Revision: res[0].Revision, StartMS: prep.Meta.TakenAtMS, ModMS: p.ModMS,
-	})
-}
-
 func (a *Agent) pushDelete(row Mapping) error {
 	res, err := a.Client.Push(ids.New(), []syncengine.ChangeInput{{
 		ObjectID: row.ObjectID, CollectionID: row.CollectionID, Op: syncengine.OpDelete,
@@ -577,71 +370,15 @@ func (a *Agent) pushDelete(row Mapping) error {
 	return a.Map.DeleteObject(row.ObjectID)
 }
 
+// reconcile handles a server request to rebuild sync state. Folder sync has
+// never reconciled: each pushLocal rescans the selected folders and pushes
+// what changed, so there is nothing to do here.
 func (a *Agent) reconcile(ctx context.Context) error {
-	if a.Sel.Photos.Enabled {
-		col, err := a.ensureCollection(kindPhotos, photos.DefaultName)
-		if err != nil {
-			return err
-		}
-		return a.reconcileCollection(ctx, col.ID)
-	}
 	return nil
-}
-
-func (a *Agent) reconcileCollection(ctx context.Context, collectionID string) error {
-	inv, err := a.Map.Inventory(collectionID)
-	if err != nil {
-		return err
-	}
-	res, err := a.Client.Reconcile(collectionID, inv)
-	if err != nil {
-		return err
-	}
-	for _, id := range res.MissingOnServer {
-		row, err := a.Map.ByObject(id)
-		if err != nil {
-			continue
-		}
-		_ = row
-		// Local object not on server: next pushLocal will recreate it if still present in the source.
-	}
-	for _, id := range res.MissingOnClient {
-		_ = a.applyRemoteObject(ctx, collectionID, id)
-	}
-	for _, mm := range res.Mismatch {
-		_ = a.applyRemoteObject(ctx, collectionID, mm.ID)
-	}
-	return nil
-}
-
-func (a *Agent) applyRemoteObject(ctx context.Context, collectionID, objectID string) error {
-	cur := int64(0)
-	for {
-		batch, err := a.Client.Changes(cur, 200, collectionID)
-		if err != nil {
-			return err
-		}
-		for _, ch := range batch.Changes {
-			if ch.ObjectID == objectID {
-				return a.applyChange(ctx, ch)
-			}
-		}
-		if !batch.HasMore || batch.NextSeq <= cur {
-			return nil
-		}
-		cur = batch.NextSeq
-	}
 }
 
 func (a *Agent) bindRoutes() error {
 	a.routes = map[string]route{}
-	if a.Sel.Photos.Enabled {
-		col, err := a.ensureCollection(kindPhotos, photos.DefaultName)
-		if err != nil {
-			return err
-		}
-		a.routes[col.ID] = route{kind: kindPhoto}
-	}
 	if a.Sel.Files.Enabled && a.Files != nil {
 		for _, folder := range a.Sel.Files.Folders {
 			if err := a.bindFileFolder(folder); err != nil {
@@ -762,7 +499,7 @@ func (a *Agent) runSync(ctx context.Context) {
 		a.Log.Error("sync", "err", err.Error())
 		return
 	}
-	a.Log.Info("sync_ok", "photos", a.Sel.Photos.Enabled, "files", a.Sel.Files.Enabled)
+	a.Log.Info("sync_ok", "files", a.Sel.Files.Enabled)
 }
 
 func (a *Agent) Run(ctx context.Context) error {

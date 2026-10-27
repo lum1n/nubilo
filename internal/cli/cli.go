@@ -37,10 +37,6 @@ func Main(args []string) int {
 		usage(os.Stderr)
 		return 2
 	}
-	// Launched from Nubilo.app via `open … --args --authorize-photos`
-	if args[0] == "--authorize-photos" {
-		return runAuthorizePhotosPrompt()
-	}
 	g, rest := parseGlobal(args)
 	cmd := rest[0]
 	rest = rest[1:]
@@ -169,11 +165,6 @@ Usage:
   nubilo agent uninstall
   nubilo agent service
   nubilo agent ui [--listen ADDR] [--open]
-  nubilo agent photos on|off
-  nubilo agent photos source all|albums|dates
-  nubilo agent photos select ALBUM_ID
-  nubilo agent albums
-  nubilo agent authorize
   nubilo agent files on|off
   nubilo agent files list
   nubilo agent files add PATH [NAME]
@@ -340,13 +331,6 @@ func runServiceInstall(g global, kind service.Kind, insecure bool) int {
 	if err != nil {
 		return fatal(err)
 	}
-	if kind == service.KindAgent {
-		appPath, err := agent.InstallAppBundle()
-		if err != nil {
-			return fatal(err)
-		}
-		exe = filepath.Join(appPath, "Contents", "MacOS", "nubilo")
-	}
 	path, err := service.Install(service.Spec{
 		Kind:     kind,
 		Exe:      exe,
@@ -386,10 +370,6 @@ func runServiceStatus(kind service.Kind) int {
 }
 
 func runAgent(g global, args []string) int {
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, "nubilo agent requires macOS (PhotoKit)")
-		return 2
-	}
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	insecure := fs.Bool("insecure", false, "skip TLS certificate verification (self-signed)")
 	interval := fs.Int("interval", 0, "sync interval seconds (overrides agent.json for this run)")
@@ -421,12 +401,6 @@ func runAgent(g global, args []string) int {
 		sel.IntervalSeconds = *interval
 	}
 	switch sub {
-	case "photos":
-		return agentPhotos(paths.AgentJSON, sel, rest)
-	case "albums":
-		return agentListAlbums(sel)
-	case "authorize":
-		return agentAuthorize()
 	case "ui":
 		return runAgentUI(g, rest)
 	case "files":
@@ -441,147 +415,6 @@ func runAgent(g global, args []string) int {
 		return agentRun(dir, paths, sel, *insecure)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown agent command %q\n", sub)
-		return 2
-	}
-}
-
-func runAuthorizePhotosPrompt() int {
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, "authorize-photos requires macOS")
-		return 2
-	}
-	status, err := agent.RequestPhotosAccess()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "photos: %v (status=%s)\n", err, status)
-		_ = agent.OpenPhotosPrivacySettings()
-		return 1
-	}
-	fmt.Printf("photos access: %s\n", status)
-	if status == "limited" {
-		fmt.Println("Limited access only syncs the photos you selected in the system picker.")
-		fmt.Println("For a full album, choose Allow Full Access (System Settings → Privacy & Security → Photos → Nubilo).")
-		_ = agent.OpenPhotosPrivacySettings()
-		return 0
-	}
-	return 0
-}
-
-func agentAuthorize() int {
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, "nubilo agent authorize requires macOS")
-		return 2
-	}
-	fmt.Println("Installing ~/Applications/Nubilo.app and requesting Photos access…")
-	fmt.Println("In the dialog, choose Allow Full Access (not Limited / Selected Photos).")
-	status, err := agent.AuthorizePhotosViaApp()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "authorize via app failed (%v); trying in-process request…\n", err)
-		status, err = agent.RequestPhotosAccess()
-		if err != nil {
-			return fatal(err)
-		}
-	}
-	fmt.Printf("photos access: %s\n", status)
-	if status == "limited" {
-		fmt.Println("WARNING: Limited Photos access — album sync will only include the few photos you allowed.")
-		fmt.Println("Open System Settings → Privacy & Security → Photos → Nubilo → Full Access, then re-run the agent.")
-		_ = agent.OpenPhotosPrivacySettings()
-		return 0
-	}
-	if status != "authorized" {
-		fmt.Println("Still not authorized. Check System Settings → Privacy & Security → Photos.")
-		_ = agent.OpenPhotosPrivacySettings()
-		return 1
-	}
-	fmt.Println("Full Photos access granted. Re-run: nubilo agent --data-dir ~/.nubilo-agent")
-	return 0
-}
-
-func agentListAlbums(sel agent.Selection) int {
-	status := agent.PhotosAuthStatus()
-	if status == "limited" {
-		fmt.Fprintf(os.Stderr, "warning: Photos access is Limited — counts below are only the photos TCC allows (run: nubilo agent authorize)\n")
-	}
-	libraryCount, albums, err := agent.PlatformAlbumList()
-	if err != nil {
-		return fatal(err)
-	}
-	chosen := map[string]bool{}
-	for _, id := range sel.Photos.Albums {
-		chosen[id] = true
-	}
-	fmt.Printf("photos access: %s\n", status)
-	fmt.Printf("library assets: %d\n", libraryCount)
-	if len(albums) == 0 {
-		fmt.Println("no PhotoKit albums/people (run: nubilo agent authorize)")
-		return 0
-	}
-	fmt.Println("tip: People & Pets entries are kind=person|pet and use ids like person:… — select those for full pet/person sets")
-	for _, a := range albums {
-		mark := " "
-		if chosen[a.ID] {
-			mark = "*"
-		}
-		kind := a.Kind
-		if kind == "" {
-			kind = "user"
-		}
-		fmt.Printf("%s  %s  [%s]  %s  (%d)\n", mark, a.ID, kind, a.Title, a.Count)
-	}
-	return 0
-}
-
-func agentPhotos(path string, sel agent.Selection, args []string) int {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: nubilo agent photos on|off|source|select|unselect")
-		return 2
-	}
-	switch args[0] {
-	case "on", "off":
-		sel.Photos.Enabled = args[0] == "on"
-		if err := agent.SaveSelection(path, sel); err != nil {
-			return fatal(err)
-		}
-		fmt.Printf("photos sync %s\n", args[0])
-		return 0
-	case "source":
-		if len(args) < 2 || (args[1] != "all" && args[1] != "albums" && args[1] != "dates") {
-			fmt.Fprintln(os.Stderr, "usage: nubilo agent photos source all|albums|dates")
-			return 2
-		}
-		sel.Photos.Source = args[1]
-		if err := agent.SaveSelection(path, sel); err != nil {
-			return fatal(err)
-		}
-		fmt.Printf("photos source %s\n", args[1])
-		return 0
-	case "select":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: nubilo agent photos select ALBUM_ID")
-			fmt.Fprintln(os.Stderr, "  quote ids that contain / or start with person:")
-			fmt.Fprintln(os.Stderr, `  e.g. nubilo agent photos select 'person:XXXX'`)
-			return 2
-		}
-		sel.SelectAlbum(args[1])
-		sel.Photos.Source = "albums"
-		if err := agent.SaveSelection(path, sel); err != nil {
-			return fatal(err)
-		}
-		fmt.Printf("selected album %s\n", args[1])
-		return 0
-	case "unselect":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: nubilo agent photos unselect ALBUM_ID")
-			return 2
-		}
-		sel.UnselectAlbum(args[1])
-		if err := agent.SaveSelection(path, sel); err != nil {
-			return fatal(err)
-		}
-		fmt.Printf("unselected album %s\n", args[1])
-		return 0
-	default:
-		fmt.Fprintf(os.Stderr, "unknown photos command %q\n", args[0])
 		return 2
 	}
 }
@@ -681,23 +514,17 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 		return fatal(err)
 	}
 	defer mp.Close()
-	pics, err := agent.OpenPlatform()
-	if err != nil {
-		return fatal(err)
-	}
 	a := &agent.Agent{
 		Client:  client,
 		Map:     mp,
 		Sel:     sel,
 		SelPath: paths.AgentJSON,
-		Photos:  pics,
 		Files:   agent.OpenFiles(),
 		Log:     slog.Default(),
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	fmt.Printf("agent running interval=%ds photos=%v files=%v\n",
-		sel.IntervalSeconds, sel.Photos.Enabled, sel.Files.Enabled)
+	fmt.Printf("agent running interval=%ds files=%v\n", sel.IntervalSeconds, sel.Files.Enabled)
 	for _, f := range sel.Files.Folders {
 		name := f.Name
 		if name == "" {
@@ -705,9 +532,9 @@ func agentRun(dir string, paths config.PathsSet, sel agent.Selection, insecure b
 		}
 		fmt.Printf("  files %s (%s)\n", f.Path, name)
 	}
-	if !sel.Photos.Enabled && !sel.Files.Enabled {
+	if !sel.Files.Enabled || len(sel.Files.Folders) == 0 {
 		fmt.Fprintln(os.Stderr, "warning: nothing selected to sync")
-		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" photos on")
+		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" files on")
 		fmt.Fprintln(os.Stderr, "  nubilo agent --data-dir "+dir+" files add PATH")
 	}
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {

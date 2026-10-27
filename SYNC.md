@@ -315,7 +315,7 @@ Server returns:
 }
 ```
 
-`missing_on_server` is **not** treated as an implicit delete. The client must PUSH those objects. The server never deletes because a PhotoKit query temporarily returned empty (that rule lives in the agent adapter; the engine simply will not invent deletes).
+`missing_on_server` is **not** treated as an implicit delete. The client must PUSH those objects. The server never deletes because a photo library or folder listing temporarily returned empty (that rule lives in the client adapters; the engine simply will not invent deletes).
 
 ## Interrupted sync
 
@@ -373,10 +373,11 @@ Same as CalDAV with `addressbook` / `contact` / vCard.
 
 ### macOS agent
 
-- Local PhotoKit identifiers and file paths stored in a *client-side* map `local_id → object_id`
+- Folder sync only; the Nubilo app backs up Photos.app
+- Local file paths stored in a *client-side* map `local_id → object_id`
 - That map is not the server identity
-- A timer and the startup path trigger GET/PUSH and RECONCILE
-- A failed PhotoKit enumeration does not PUSH deletes
+- A timer and the startup path trigger GET and PUSH; each pass rescans the selected folders, so RECONCILE is a no-op
+- A failed folder listing does not PUSH deletes
 
 ### Photos
 

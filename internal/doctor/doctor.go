@@ -184,12 +184,12 @@ func Agent(dataDir string) (Report, error) {
 	if err != nil {
 		r.add(Check{ID: "selection", Title: "sync selection", Status: Warn, Detail: err.Error()})
 	} else {
-		if !sel.Photos.Enabled && !sel.Files.Enabled {
-			r.add(Check{ID: "selection", Title: "sync selection", Status: Warn, Detail: "nothing selected",
+		if !sel.Files.Enabled || len(sel.Files.Folders) == 0 {
+			r.add(Check{ID: "selection", Title: "sync selection", Status: Warn, Detail: "no folders selected",
 				Fix: "nubilo agent ui"})
 		} else {
 			r.add(Check{ID: "selection", Title: "sync selection", Status: OK,
-				Detail: fmt.Sprintf("photos=%v files=%v", sel.Photos.Enabled, sel.Files.Enabled)})
+				Detail: fmt.Sprintf("%d folders", len(sel.Files.Folders))})
 		}
 	}
 
@@ -203,21 +203,9 @@ func Agent(dataDir string) (Report, error) {
 		} else {
 			r.add(Check{ID: "service", Title: "LaunchAgent", Status: OK, Detail: st.Detail})
 		}
-		auth := agent.PhotosAuthStatus()
-		switch auth {
-		case "authorized", "full":
-			r.add(Check{ID: "photos_auth", Title: "Photos access", Status: OK, Detail: auth})
-		case "limited":
-			r.add(Check{ID: "photos_auth", Title: "Photos access", Status: Warn, Detail: "limited",
-				Fix: "nubilo agent authorize  (Allow Full Access)"})
-		case "denied", "notdetermined", "restricted":
-			r.add(Check{ID: "photos_auth", Title: "Photos access", Status: Warn, Detail: auth,
-				Fix: "nubilo agent authorize"})
-		default:
-			r.add(Check{ID: "photos_auth", Title: "Photos access", Status: Info, Detail: auth})
-		}
 	} else {
-		r.add(Check{ID: "platform", Title: "platform", Status: Fail, Detail: "agent requires macOS"})
+		r.add(Check{ID: "service", Title: "LaunchAgent", Status: Info,
+			Detail: "always-on install requires macOS; run nubilo agent in the foreground"})
 	}
 
 	return r, nil

@@ -47,12 +47,17 @@ func TestInitStatusVerify(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "tls.crt")); err != nil {
 		t.Fatal(err)
 	}
+	// Folder sync runs on any OS; only the LaunchAgent install is macOS-only.
+	agentDir := t.TempDir()
+	if code := cli.Main([]string{"agent", "--data-dir", agentDir}); code != 2 {
+		t.Fatalf("unpaired agent want 2 got %d", code)
+	}
+	if code := cli.Main([]string{"agent", "--data-dir", agentDir, "files", "add", dir, "Docs"}); code != 0 {
+		t.Fatalf("agent files add %d", code)
+	}
 	if runtime.GOOS != "darwin" {
-		if code := cli.Main([]string{"agent"}); code != 2 {
-			t.Fatalf("agent on linux want 2 got %d", code)
-		}
-		if code := cli.Main([]string{"agent", "ui", "--open=false"}); code != 2 {
-			t.Fatalf("agent ui on linux want 2 got %d", code)
+		if code := cli.Main([]string{"agent", "--data-dir", agentDir, "install"}); code == 0 {
+			t.Fatal("agent install off macOS should fail")
 		}
 	}
 }

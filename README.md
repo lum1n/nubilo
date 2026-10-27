@@ -2,7 +2,7 @@
 
 Single-binary private cloud for a family or small team: calendars, reminders, contacts, files, and photos, with per-user data and sharing.
 
-A Linux or macOS **server** holds encrypted blobs and metadata for several **users** (admins and members). Each user's devices see only that user's collections and what others shared with them (read-only or read-write). A **macOS agent** syncs Photos.app and selected folders. iPhones and Macs use native CalDAV / CardDAV accounts for calendars, reminders and contacts (installed by a configuration profile) and WebDAV, plus the Nubilo app (`apps/Nubilo`) for onboarding by QR code, photo backup, shared albums and family administration.
+A Linux or macOS **server** holds encrypted blobs and metadata for several **users** (admins and members). Each user's devices see only that user's collections and what others shared with them (read-only or read-write). A **macOS agent** syncs selected folders; the Nubilo app backs up Photos.app on the Mac and the iPhone. iPhones and Macs use native CalDAV / CardDAV accounts for calendars, reminders and contacts (installed by a configuration profile) and WebDAV, plus the Nubilo app (`apps/Nubilo`) for onboarding by QR code, photo backup, shared albums and family administration.
 
 Priorities: security, integrity, correct sync. Server-side encryption, not end-to-end (see SECURITY.md).
 
@@ -11,7 +11,7 @@ Priorities: security, integrity, correct sync. Server-side encryption, not end-t
 | Role | Where | Notes |
 | --- | --- | --- |
 | Server | Linux or macOS | Encrypted volume recommended (LUKS / FileVault); `nubilo doctor` checks this |
-| Agent | macOS only | Separate `--data-dir` from the server |
+| Agent | macOS (always-on install); runs anywhere in the foreground | Separate `--data-dir` from the server |
 | Phone | iOS | Apple Calendar / Contacts / Files + the Nubilo app; TLS Apple trusts (public domain with Let's Encrypt via relay/direct, the tailnet name in tailscale mode, or install `tls.crt` on LAN) |
 
 Reach the server from anywhere through a small **VPS relay** (the home stays closed; TLS still terminates at home with Let's Encrypt), by hosting it **directly** on public ports, over your **tailnet** with a certificate from `tailscale cert`, or on the LAN only. See [docs/RELAY.md](docs/RELAY.md).
@@ -20,13 +20,6 @@ Reach the server from anywhere through a small **VPS relay** (the home stays clo
 
 ```bash
 go build -o nubilo ./cmd/nubilo
-```
-
-On the Mac agent host, prefer a signed binary so Photos/Calendar prompts attribute to **Nubilo**:
-
-```bash
-go install ./cmd/nubilo
-./scripts/mac-sign.sh "$(go env GOPATH)/bin/nubilo"
 ```
 
 ## Quick start
@@ -64,7 +57,7 @@ Save the pairing code.
 ./nubilo agent setup --data-dir ~/.nubilo-agent \
   --server https://<host>:8443 --code XXXXX-XXXXX --name "Studio Mac"
 ./nubilo doctor --agent --data-dir ~/.nubilo-agent
-./nubilo agent install --data-dir ~/.nubilo-agent   # LaunchAgent + Nubilo.app for TCC
+./nubilo agent install --data-dir ~/.nubilo-agent   # LaunchAgent running this binary
 ```
 
 Or configure sync in the loopback UI: `nubilo agent ui` (port 8788).
@@ -86,7 +79,7 @@ Or configure sync in the loopback UI: `nubilo agent ui` (port 8788).
 | Calendars / reminders | CalDAV account on each device | Installed by the configuration profile; the server stores what Calendar and Reminders send |
 | Contacts | CardDAV account on each device | Installed by the configuration profile |
 | Files | Mac folders ↔ WebDAV `/dav/` | Nested folders; iOS Files / Finder |
-| Photos | Mac PhotoKit ↔ gallery API | Originals byte-for-byte; preview/thumb derived; Live/RAW/video |
+| Photos | Mac and iPhone apps → gallery API | The apps back up Photos.app; the agent syncs folders only. Originals byte-for-byte; preview/thumb derived; Live/RAW/video |
 
 Server UI (loopback): `nubilo ui` on port 8787, or the next free port if that one is taken — browse, upload photos, pairing, verify/gc, backup, devices, config.
 
@@ -129,32 +122,23 @@ Server host must be reachable (Tailscale IP or hostname), not `127.0.0.1`.
 
 **Photos (no app)** — pick one:
 
-1. WebDAV folder **Camera Upload** under `/dav/files/` — saves are also ingested as photos (agent can pull into Photos.app).
+1. WebDAV folder **Camera Upload** under `/dav/files/` — saves are also ingested as photos.
 2. Shortcuts: Basic auth with `--scope photos`, `POST https://<host>:8443/api/v1/photos?name=IMG.JPG` (raw body).
 3. `nubilo ui` upload on the server (or via SSH tunnel to loopback).
 
 ## macOS agent
 
-Signing device over `/sync/v1` (Ed25519). Device key lives in Keychain when possible. Linux `nubilo agent` refuses to start.
-
-Grant Photos (Full Access) to **Nubilo** (or Terminal if you run the unsigned CLI). Corporate credentials never leave the Mac.
+Folder sync only. Signing device over `/sync/v1` (Ed25519). Device key lives in Keychain when possible. `nubilo agent` runs on any OS in the foreground; `agent install` (LaunchAgent) is macOS-only. Corporate credentials never leave the Mac.
 
 ```bash
-nubilo agent authorize                          # Photos Full Access dialog
-nubilo agent --data-dir ~/.nubilo-agent photos on
-nubilo agent --data-dir ~/.nubilo-agent albums
-nubilo agent --data-dir ~/.nubilo-agent photos source albums
-nubilo agent --data-dir ~/.nubilo-agent photos select '<album-or-person-id>'
 nubilo agent --data-dir ~/.nubilo-agent files add ~/Documents/Nubilo
 nubilo agent --data-dir ~/.nubilo-agent files on
 nubilo agent --data-dir ~/.nubilo-agent          # run once; prefer agent install
 ```
 
-People & Pets are `person:…` rows from `albums`, not same-named user albums. Failed local listings never push mass deletes.
+Failed local listings never push mass deletes.
 
-The agent does not sync Calendar, Reminders or Contacts. On the Mac, install the same Calendar & Contacts profile as on the iPhone (Nubilo app → Calendar & Contacts); older agents' `calendars`, `reminders` and `sync_contacts` settings in `agent.json` are ignored.
-
-If Photos stays Limited: System Settings → Privacy & Security → Photos → Nubilo → Full Access. Reset with `tccutil reset Photos` if stuck.
+The agent does not sync Photos, Calendar, Reminders or Contacts. The Nubilo app backs up Photos.app on the Mac and the iPhone; for calendars and contacts install the Calendar & Contacts profile (Nubilo app → Calendar & Contacts). Older agents' `photos`, `calendars`, `reminders` and `sync_contacts` settings in `agent.json` are ignored.
 
 ## Operations
 
@@ -189,8 +173,8 @@ GPS stays in the encrypted original; it is not stored in SQLite. Derivatives str
 nubilo setup | doctor | init | server | ui | status
 nubilo server install|uninstall|service
 nubilo pair | devices | devices revoke|rename|password|enroll|rotate
-nubilo agent | agent setup|ui|install|uninstall|service|authorize
-nubilo agent photos on|off | photos source|select | albums | files add|on|off
+nubilo agent | agent setup|ui|install|uninstall|service
+nubilo agent files add|remove|list|on|off
 nubilo verify | gc | backup | restore | tls
 ```
 

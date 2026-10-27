@@ -17,7 +17,7 @@ This document is the threat model and security architecture. It is written *befo
 | Collection names, object sizes, timestamps | Medium | SQLite metadata |
 | Audit logs | Medium | Local log files; redacted |
 
-Corporate credentials are **not** an asset of this system. The macOS agent reads only Photos.app and the folders the user selected; calendars and contacts reach the server through the built-in CalDAV/CardDAV accounts. Those credentials never leave the Mac. A failed PhotoKit or folder enumeration must not be treated as “everything was deleted.”
+Corporate credentials are **not** an asset of this system. The macOS agent reads only the folders the user selected; photos are backed up by the Nubilo app, and calendars and contacts reach the server through the built-in CalDAV/CardDAV accounts. Those credentials never leave the Mac. A failed photo library or folder enumeration must not be treated as “everything was deleted.”
 
 ## 2. Trust boundaries
 
@@ -246,7 +246,7 @@ Tailscale does not replace this. If a TLS terminator exists in front (Tailscale 
 - Blobs: `nonce (12) || ciphertext || tag (16)` using ChaCha20-Poly1305. Nonce is random per write; key+nonce reuse is a fatal invariant checked in tests.
 - Content addressing uses SHA-256 of **plaintext**. Two identical photos collapse to one blob even if encrypted under different nonces (the store writes once per hash).
 - Private keys on clients: on macOS the agent signing key is stored in the **Keychain** (`dev.nubilo.agent`); a leftover `device.key` file is migrated on load and removed. Other platforms use a `0600` file under the client data dir.
-- macOS agent map (`agent.db`) is a local PhotoKit identifier / file path ↔ object_id table, not server identity. Object IDs remain ULIDs.
+- macOS agent map (`agent.db`) is a local file path ↔ object_id table, not server identity. Object IDs remain ULIDs.
 - Photo preview/thumb blobs are extra hashes in object metadata (`preview_hash`, `thumb_hash`). `verify` and `gc` count them as live references so derivatives are not deleted while the photo object exists.
 
 ### SQLite at rest (Phase 8 evaluation)
@@ -413,7 +413,6 @@ Default logs may include: device_id, collection_id, object_id, sequence numbers,
 9. Behind the wired relay, the relay prepends a PROXY protocol v1 header with the client address and the home server trusts it **only** on the overlay listener (overlay members are the operator's own nodes). A compromised overlay member could therefore spoof client IPs for rate limiting and logs; it still cannot authenticate.
 6. Availability is not a security guarantee. An attacker who can DoS the listen port can prevent sync. They should not be able to read or write data.
 7. Client private keys: macOS agent uses Keychain (file fallback); server `master.key` remains a `0600` file.
-8. PhotoKit in-place edits on already-mapped assets are detected via `mod_ms` on the agent idmap.
 
 ## 15a. Public exposure (relay and direct)
 

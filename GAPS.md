@@ -7,9 +7,9 @@ Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 ## Works today
 
 - CalDAV (calendars and reminders) and CardDAV (contacts) for every device, with app passwords and Apple-trusted TLS.
-- WebDAV files, PhotoKit **push + pull write-back**, photo HTTP API and `nubilo ui` gallery + upload.
+- WebDAV files, Mac agent folder sync, photo backup from the Mac and iPhone apps, photo HTTP API and `nubilo ui` gallery + upload.
 - Pairing, backup/restore (CLI + UI), enroll/rotate, TLS regen, verify, gc, optional server auto-backup.
-- Always-on user services: `nubilo server install` (Linux systemd `--user` or macOS LaunchAgent), `nubilo agent install` (macOS LaunchAgent via Nubilo.app).
+- Always-on user services: `nubilo server install` (Linux systemd `--user` or macOS LaunchAgent), `nubilo agent install` (macOS LaunchAgent running the current binary).
 - Guided setup + doctor: `nubilo setup`, `nubilo agent setup`, `nubilo doctor`, UI health panel; macOS agent keys in Keychain.
 
 ## Calendars, reminders and contacts
@@ -27,14 +27,10 @@ The Mac agent no longer syncs Calendar, Reminders or Contacts through EventKit. 
 
 ## Photos
 
-- Mac PhotoKit **push** and **pull write-back** (import into Photos library / optional album). Remote deletes do not remove Photos.app assets.
-- iCloud originals: export allows network access with a timed wait (`icloud_fetch` / `export_failed` in errors).
-- In-place edits: PhotoKit `modificationDate` stored in agent idmap; mod change re-exports and pushes.
+- The Mac and iPhone apps back up Photos.app. The Go agent no longer reads or writes Photos; there is no pull write-back into Photos.app.
 - Video, Live Photo (still + paired movie blob), and RAW originals are synced; gallery shows kind/size/taken-at, video playback when possible, Live movie download. No RAW develop pipeline.
 - `nubilo ui` gallery: **upload** (file / camera on supporting browsers), download original, delete, captions, video/Live/RAW affordances.
 - **No-app iPhone upload:** create WebDAV folder `Camera Upload` and save from Files.app — PUT also ingests as a photo object. Or `nubilo devices password --scope photos` + Shortcuts `POST /api/v1/photos`.
-- **People & Pets** in Photos.app are `PHPerson` entities, not albums. `nubilo agent albums` / agent UI lists them as `kind=person|pet` with ids `person:…`; select those for the full set (a same-named user album often only has ~key photos).
-- Mac agent configuration UI: `nubilo agent ui` (loopback, same look as `nubilo ui`) for sync selection and setup; CLI selection remains.
 - Still out: proprietary edit recipes beyond original resource bytes; native Photos.app share extension (no iOS app by design).
 - Identical plaintext bytes dedup to one blob. Default **256 MiB** cap (`sync.max_blob_bytes`; legacy 32/64 MiB configs are bumped on load so phone videos sync).
 - Blob PUT/GET use a 15m client timeout (JSON sync stays at 60s). Oversized bodies return 413; truncated uploads no longer trip the auth fail → 429 cascade.
@@ -43,6 +39,7 @@ The Mac agent no longer syncs Calendar, Reminders or Contacts through EventKit. 
 
 - iOS Files / Finder can mount `/dav/` (nested folders, file + collection COPY, MOVE across folders).
 - Mac agent can sync selected local folders: `nubilo agent files add PATH`, `files on`. Nested dirs become nested collections; pull writes back to disk.
+- Agent configuration UI: `nubilo agent ui` (loopback, same look as `nubilo ui`) for folder selection and setup; CLI selection remains.
 - `nubilo ui` can upload into a files collection; files browser drills into nested subfolders (agent syncs nested dirs as child collections).
 - LOCK/UNLOCK remain compatibility no-ops. `nubilo client` is still a stub (agent folder sync covers the common case).
 - Symlinks, dotfiles, `.git`, and files over `sync.max_blob_bytes` are skipped by the agent walker.
@@ -67,5 +64,5 @@ The Mac agent no longer syncs Calendar, Reminders or Contacts through EventKit. 
 ## Intentionally deferred
 
 - Hands-on phone/Finder restore drills remain operator actions; `nubilo doctor` surfaces the checklist in product.
-- Corporate credentials never leave the Mac. Linux `nubilo agent` stays refused. GPS never lands in SQLite. Originals are never mutated.
+- Corporate credentials never leave the Mac. `nubilo agent` runs in the foreground on any OS; only its always-on install is macOS-only. GPS never lands in SQLite. Originals are never mutated.
 - iOS/macOS app (`apps/Nubilo`): onboarding by QR, CalDAV/CardDAV profile install, best-effort photo backup, gallery and shared albums, family admin. No Android app. File Provider extension and signed profiles are later work.

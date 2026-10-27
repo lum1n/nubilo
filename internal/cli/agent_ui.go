@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -17,10 +16,6 @@ import (
 )
 
 func runAgentUI(g global, args []string) int {
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, "nubilo agent ui requires macOS")
-		return 2
-	}
 	fs := flag.NewFlagSet("agent ui", flag.ContinueOnError)
 	listen := fs.String("listen", ui.DefaultAgentListen, "loopback address for the agent UI")
 	open := fs.Bool("open", true, "open the UI in a browser")

@@ -70,9 +70,6 @@ func TestAgentUISelectionRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	sel.IntervalSeconds = 90
-	sel.Photos.Enabled = true
-	sel.Photos.Source = "albums"
-	sel.SelectAlbum("person:test-pet")
 	sel.Files.Enabled = true
 	folder := filepath.Join(dir, "docs")
 	if err := os.MkdirAll(folder, 0o700); err != nil {
@@ -99,9 +96,6 @@ func TestAgentUISelectionRoundTrip(t *testing.T) {
 	}
 	if got.IntervalSeconds != 90 {
 		t.Fatalf("selection %#v", got)
-	}
-	if !got.Photos.Enabled || got.Photos.Source != "albums" || len(got.Photos.Albums) != 1 || got.Photos.Albums[0] != "person:test-pet" {
-		t.Fatalf("photos %#v", got.Photos)
 	}
 	if !got.Files.Enabled || len(got.Files.Folders) != 1 {
 		t.Fatalf("files %#v", got.Files)
@@ -144,7 +138,7 @@ func TestAgentUIUnauthorized(t *testing.T) {
 	}
 }
 
-func TestAgentUIAlbumToggle(t *testing.T) {
+func TestAgentUIFilesAddRemove(t *testing.T) {
 	dir := t.TempDir()
 	srv, err := ui.NewAgent(dir, ui.DefaultAgentListen, nil)
 	if err != nil {
@@ -153,9 +147,13 @@ func TestAgentUIAlbumToggle(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	cookie := agentSessionCookie(t, srv, ts.URL)
+	folder := filepath.Join(dir, "docs")
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
-	body, _ := json.Marshal(map[string]string{"id": "person:abc"})
-	req, _ := http.NewRequest("POST", ts.URL+"/api/albums/select", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]string{"path": folder, "name": "Docs"})
+	req, _ := http.NewRequest("POST", ts.URL+"/api/files/add", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
 	resp, err := http.DefaultClient.Do(req)
@@ -164,17 +162,18 @@ func TestAgentUIAlbumToggle(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Fatalf("select %d", resp.StatusCode)
+		t.Fatalf("add %d", resp.StatusCode)
 	}
 	sel, err := agent.LoadSelection(filepath.Join(dir, "agent.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sel.Photos.Albums) != 1 || sel.Photos.Albums[0] != "person:abc" {
-		t.Fatalf("%#v", sel.Photos.Albums)
+	if len(sel.Files.Folders) != 1 || sel.Files.Folders[0].Name != "Docs" {
+		t.Fatalf("%#v", sel.Files.Folders)
 	}
 
-	req, _ = http.NewRequest("POST", ts.URL+"/api/albums/unselect", bytes.NewReader(body))
+	body, _ = json.Marshal(map[string]string{"path": sel.Files.Folders[0].Path})
+	req, _ = http.NewRequest("POST", ts.URL+"/api/files/remove", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
 	resp, err = http.DefaultClient.Do(req)
@@ -183,8 +182,8 @@ func TestAgentUIAlbumToggle(t *testing.T) {
 	}
 	resp.Body.Close()
 	sel, _ = agent.LoadSelection(filepath.Join(dir, "agent.json"))
-	if len(sel.Photos.Albums) != 0 {
-		t.Fatalf("still selected %#v", sel.Photos.Albums)
+	if len(sel.Files.Folders) != 0 {
+		t.Fatalf("still selected %#v", sel.Files.Folders)
 	}
 }
 

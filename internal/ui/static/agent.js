@@ -10,7 +10,6 @@
 
   const routes = {
     home: { title: "overview", render: renderHome },
-    photos: { title: "photos", render: renderPhotos },
     files: { title: "files", render: renderFiles },
     setup: { title: "setup", render: renderSetup },
   };
@@ -54,22 +53,6 @@
     return `<tr><td>${esc(label)}</td><td>${value}</td></tr>`;
   }
 
-  function msToDateInput(ms) {
-    if (!ms) return "";
-    const d = new Date(ms);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  }
-
-  function dateInputToMS(v, endOfDay) {
-    if (!v) return 0;
-    const d = new Date(v + (endOfDay ? "T23:59:59" : "T00:00:00"));
-    const t = d.getTime();
-    return Number.isFinite(t) ? t : 0;
-  }
-
   function route() {
     const hash = (location.hash || "#/").replace(/^#\/?/, "") || "home";
     const name = hash.split("/")[0] || "home";
@@ -110,104 +93,12 @@
         ${kvRow("paired", p.paired ? "yes" : "no")}
         ${kvRow("server", p.paired ? esc(p.server) : "—")}
         ${kvRow("device", p.paired ? esc(p.name || p.device_id) : "—")}
-        ${kvRow("photos access", esc(o.photos_auth))}
         ${kvRow("interval", esc(o.interval_seconds) + "s")}
-        ${kvRow("photos", o.photos_enabled ? "on (" + o.counts.albums + " albums)" : "off")}
         ${kvRow("files", o.files_enabled ? "on (" + o.counts.folders + " folders)" : "off")}
       </table>
       <p class="muted">CLI: <code>nubilo agent setup</code> · <code>nubilo doctor --agent</code></p>
     `;
     statusText.textContent = p.paired ? "paired" : "unpaired";
-  }
-
-  async function renderPhotos() {
-    const [sel, albums] = await Promise.all([api("/selection"), api("/albums")]);
-    const p = sel.photos || {};
-    const src = p.source || "all";
-    const albumRows = (albums.albums || [])
-      .map((a) => {
-        const kind = a.kind || "user";
-        const checked = a.selected ? "checked" : "";
-        return `<tr data-q="${esc((a.title + " " + kind + " " + a.id).toLowerCase())}">
-          <td><input type="checkbox" data-id="${esc(a.id)}" ${checked}></td>
-          <td>[${esc(kind)}]</td>
-          <td>${esc(a.title)}</td>
-          <td>${esc(a.count)}</td>
-        </tr>`;
-      })
-      .join("");
-    content.innerHTML = `
-      <div class="section">
-        <h3 class="section-title">sync</h3>
-        <label><input type="checkbox" id="photos-on" ${p.enabled ? "checked" : ""}> enable photos sync</label>
-        <div class="choice-row">
-          <label><input type="radio" name="src" value="all" ${src === "all" ? "checked" : ""}> all library</label>
-          <label><input type="radio" name="src" value="albums" ${src === "albums" ? "checked" : ""}> selected albums / people</label>
-          <label><input type="radio" name="src" value="dates" ${src === "dates" ? "checked" : ""}> date range</label>
-        </div>
-        <div id="dates-row" class="choice-row" style="${src === "dates" ? "" : "display:none"}">
-          <label class="inline">after <input type="date" id="after" value="${esc(msToDateInput(p.after_ms))}"></label>
-          <label class="inline">before <input type="date" id="before" value="${esc(msToDateInput(p.before_ms))}"></label>
-        </div>
-        <p style="margin-top:0.5rem">
-          <button type="button" class="btn primary" id="save-photos" style="width:auto">save</button>
-          <button type="button" class="btn" id="auth-photos" style="width:auto;margin-left:0.5rem">authorize photos</button>
-        </p>
-        <p class="muted">photos access: ${esc(albums.photos_auth)} · library assets: ${esc(albums.library_count)}</p>
-        <p class="muted">People &amp; Pets use kind=person|pet and ids person:… — select those for full sets.</p>
-      </div>
-      <div class="section">
-        <h3 class="section-title">albums / people</h3>
-        <input type="search" id="filter" placeholder="filter…" style="max-width:16rem;margin-bottom:0.4rem">
-        <div class="block"><table class="data">
-          <thead><tr><th></th><th>kind</th><th>title</th><th>count</th></tr></thead>
-          <tbody>${albumRows || '<tr><td colspan="4">no albums (authorize Photos)</td></tr>'}</tbody>
-        </table></div>
-      </div>`;
-    const syncDates = () => {
-      const v = content.querySelector('input[name=src]:checked')?.value;
-      $("#dates-row").style.display = v === "dates" ? "" : "none";
-    };
-    content.querySelectorAll('input[name=src]').forEach((el) => el.addEventListener("change", syncDates));
-    $("#filter")?.addEventListener("input", () => {
-      const v = $("#filter").value.trim().toLowerCase();
-      content.querySelectorAll("tbody tr[data-q]").forEach((tr) => {
-        tr.style.display = !v || tr.dataset.q.includes(v) ? "" : "none";
-      });
-    });
-    content.querySelectorAll("input[type=checkbox][data-id]").forEach((cb) => {
-      cb.addEventListener("change", async () => {
-        try {
-          await api(cb.checked ? "/albums/select" : "/albums/unselect", {
-            method: "POST",
-            body: JSON.stringify({ id: cb.dataset.id }),
-          });
-          toast(cb.checked ? "selected" : "unselected");
-        } catch (e) {
-          cb.checked = !cb.checked;
-          toast(String(e.message || e));
-        }
-      });
-    });
-    $("#save-photos").onclick = async () => {
-      const next = await api("/selection");
-      next.photos = next.photos || {};
-      next.photos.enabled = $("#photos-on").checked;
-      next.photos.source = content.querySelector('input[name=src]:checked')?.value || "all";
-      next.photos.after_ms = dateInputToMS($("#after")?.value, false);
-      next.photos.before_ms = dateInputToMS($("#before")?.value, true);
-      await api("/selection", { method: "PUT", body: JSON.stringify(next) });
-      toast("saved");
-    };
-    $("#auth-photos").onclick = async () => {
-      try {
-        const r = await api("/photos/authorize", { method: "POST", body: "{}" });
-        toast("photos access: " + r.status);
-        renderPhotos();
-      } catch (e) {
-        toast(String(e.message || e));
-      }
-    };
   }
 
   async function renderFiles() {

@@ -87,14 +87,11 @@ func InstallServerService(dataDir string) (unitPath string, err error) {
 	})
 }
 
-// InstallAgentService copies into Nubilo.app (darwin) and loads LaunchAgent.
+// InstallAgentService loads a LaunchAgent that runs the current executable.
 func InstallAgentService(dataDir string, insecure bool) (unitPath string, err error) {
 	exe, err := service.ResolveExe()
 	if err != nil {
 		return "", err
-	}
-	if appPath, err := agentAppBundle(); err == nil && appPath != "" {
-		exe = appPath
 	}
 	return service.Install(service.Spec{
 		Kind:     service.KindAgent,

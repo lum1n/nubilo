@@ -254,10 +254,6 @@ func runAgentSetup(g global, insecure bool, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, "nubilo agent setup requires macOS")
-		return 2
-	}
 	dir, err := app.ResolveDataDir(g.dataDir)
 	if err != nil {
 		return fatal(err)
@@ -321,7 +317,8 @@ func runAgentSetup(g global, insecure bool, args []string) int {
 		}
 	}
 
-	if !*noService {
+	// The always-on agent service is a LaunchAgent; elsewhere run nubilo agent yourself.
+	if !*noService && runtime.GOOS == "darwin" {
 		doInstall := *yes
 		if !*yes {
 			fmt.Print("install LaunchAgent (always-on)? [Y/n] ")
@@ -337,14 +334,7 @@ func runAgentSetup(g global, insecure bool, args []string) int {
 		}
 	}
 
-	if !*yes {
-		fmt.Print("authorize Photos Full Access now? [y/N] ")
-		if readYesDefaultNo() {
-			_ = agentAuthorize()
-		}
-	}
-
-	fmt.Println("Select calendars/reminders/photos in: nubilo agent ui")
+	fmt.Println("Choose folders to sync in: nubilo agent ui")
 	fmt.Println("Then: nubilo doctor --agent --data-dir " + dir)
 	rep, err := doctor.Agent(dir)
 	if err == nil {
@@ -357,10 +347,4 @@ func readYesDefaultYes() bool {
 	line, _ := stdin.ReadString('\n')
 	line = strings.TrimSpace(strings.ToLower(line))
 	return line == "" || line == "y" || line == "yes"
-}
-
-func readYesDefaultNo() bool {
-	line, _ := stdin.ReadString('\n')
-	line = strings.TrimSpace(strings.ToLower(line))
-	return line == "y" || line == "yes"
 }

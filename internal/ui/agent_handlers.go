@@ -22,14 +22,11 @@ func (s *AgentServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"data_dir":         s.DataDir,
 		"ui_listen":        s.Listen,
 		"pairing":          pair,
-		"photos_auth":      agent.PhotosAuthStatus(),
 		"interval_seconds": sel.IntervalSeconds,
 		"counts": map[string]any{
-			"albums":  len(sel.Photos.Albums),
 			"folders": len(sel.Files.Folders),
 		},
-		"photos_enabled": sel.Photos.Enabled,
-		"files_enabled":  sel.Files.Enabled,
+		"files_enabled": sel.Files.Enabled,
 	})
 }
 
@@ -60,90 +57,6 @@ func (s *AgentServer) handleSelectionPut(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, got)
-}
-
-func (s *AgentServer) handleAlbums(w http.ResponseWriter, r *http.Request) {
-	sel, err := s.loadSel()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	chosen := map[string]bool{}
-	for _, id := range sel.Photos.Albums {
-		chosen[id] = true
-	}
-	libraryCount, albums, err := agent.PlatformAlbumList()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	rows := make([]map[string]any, 0, len(albums))
-	for _, a := range albums {
-		kind := a.Kind
-		if kind == "" {
-			kind = "user"
-		}
-		rows = append(rows, map[string]any{
-			"id":       a.ID,
-			"title":    a.Title,
-			"kind":     kind,
-			"count":    a.Count,
-			"selected": chosen[a.ID],
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"library_count": libraryCount,
-		"photos_auth":   agent.PhotosAuthStatus(),
-		"albums":        rows,
-	})
-}
-
-func (s *AgentServer) handleAlbumSelect(w http.ResponseWriter, r *http.Request) {
-	s.toggleAlbum(w, r, true)
-}
-
-func (s *AgentServer) handleAlbumUnselect(w http.ResponseWriter, r *http.Request) {
-	s.toggleAlbum(w, r, false)
-}
-
-func (s *AgentServer) toggleAlbum(w http.ResponseWriter, r *http.Request, on bool) {
-	var req struct {
-		ID string `json:"id"`
-	}
-	if err := readJSON(r, &req); err != nil || req.ID == "" {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sel, err := agent.LoadSelection(s.SelPath)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if on {
-		sel.SelectAlbum(req.ID)
-	} else {
-		sel.UnselectAlbum(req.ID)
-	}
-	if err := agent.SaveSelection(s.SelPath, sel); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (s *AgentServer) handlePhotosAuthorize(w http.ResponseWriter, r *http.Request) {
-	status, err := agent.AuthorizePhotosViaApp()
-	if err != nil {
-		status2, err2 := agent.RequestPhotosAccess()
-		if err2 != nil {
-			http.Error(w, err2.Error(), http.StatusBadGateway)
-			return
-		}
-		status = status2
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": status})
 }
 
 func (s *AgentServer) handleFilesAdd(w http.ResponseWriter, r *http.Request) {
