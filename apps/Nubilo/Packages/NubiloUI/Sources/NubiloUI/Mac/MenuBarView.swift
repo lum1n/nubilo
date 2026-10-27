@@ -92,7 +92,7 @@ public struct MenuBarView: View {
             if let report = server.agentDoctor {
                 DoctorSummary(report: report)
             } else {
-                Text("Not set up on this Mac. It syncs Photos.app albums and folders; run `nubilo agent setup` to pair it.")
+                Text("Not set up on this Mac. It syncs chosen folders; run `nubilo agent setup` to pair it. Photos back up from the app itself.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Button("Open Agent Settings") { server.openAgentSettings() }

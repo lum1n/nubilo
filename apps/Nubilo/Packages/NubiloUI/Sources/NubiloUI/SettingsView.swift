@@ -1,5 +1,8 @@
 import SwiftUI
 import NubiloKit
+#if os(macOS)
+import ServiceManagement
+#endif
 
 /// Server, account and sign out.
 struct SettingsView: View {
@@ -7,6 +10,9 @@ struct SettingsView: View {
     @State private var status: ServerStatus?
     @State private var confirmSignOut = false
     @State private var signingOut = false
+    #if os(macOS)
+    @State private var openAtLogin = SMAppService.mainApp.status == .enabled
+    #endif
 
     var body: some View {
         Form {
@@ -32,6 +38,14 @@ struct SettingsView: View {
                     }
                 }
             }
+            #if os(macOS)
+            Section {
+                Toggle("Open at Login", isOn: $openAtLogin)
+                    .onChange(of: openAtLogin) { _, on in setOpenAtLogin(on) }
+            } footer: {
+                Text("Nubilo backs up Photos and shows the menu bar only while it runs.")
+            }
+            #endif
             Section {
                 Button("Sign Out", role: .destructive) { confirmSignOut = true }
                     .disabled(signingOut)
@@ -56,4 +70,17 @@ struct SettingsView: View {
             await model.refreshMe()
         }
     }
+
+    #if os(macOS)
+    private func setOpenAtLogin(_ on: Bool) {
+        let service = SMAppService.mainApp
+        guard on != (service.status == .enabled) else { return }
+        do {
+            if on { try service.register() } else { try service.unregister() }
+        } catch {
+            model.alert = "Open at Login: \(describe(error))"
+            openAtLogin = service.status == .enabled
+        }
+    }
+    #endif
 }

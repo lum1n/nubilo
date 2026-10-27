@@ -50,14 +50,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// On the Mac the agent backs up Photos.app, so the phone backup screen is hidden.
-    static var visible: [AppSection] {
-        #if os(iOS)
-        allCases
-        #else
-        allCases.filter { $0 != .backup }
-        #endif
-    }
+    static var visible: [AppSection] { allCases }
 
     @MainActor @ViewBuilder
     var content: some View {

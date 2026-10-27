@@ -11,6 +11,11 @@ struct NubiloApp: App {
     @State private var model = AppModel()
     #if os(macOS)
     @State private var server = ServerController()
+
+    init() {
+        // Photo backup runs in the app on the Mac (no background tasks).
+        MainActor.assumeIsolated { MacBackupLoop.shared.start() }
+    }
     #endif
 
     var body: some Scene {

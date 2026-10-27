@@ -23,12 +23,14 @@ struct BackupStatusView: View {
             }
             accessSection
             Section {
-                Toggle("Back up this device's photos", isOn: $settings.enabled)
+                Toggle(Self.enableTitle, isOn: $settings.enabled)
                 Toggle("Include videos", isOn: $settings.includeVideos)
+                #if os(iOS)
                 Toggle("Only while charging", isOn: $settings.requiresPower)
                 Toggle("Use mobile data", isOn: $settings.allowCellular)
+                #endif
             } footer: {
-                Text("iOS decides when background backup runs, usually overnight while charging. Opening this screen and tapping Back Up Now is the quickest way to catch up.")
+                Text(Self.scheduleNote)
             }
             Section("Status") {
                 LabeledContent("Backed up", value: "\(counts.done)")
@@ -69,6 +71,8 @@ struct BackupStatusView: View {
             new.save()
             #if os(iOS)
             BackupScheduler.schedule()
+            #else
+            if new.enabled { MacBackupLoop.shared.nudge() }
             #endif
         }
         .task {
@@ -86,23 +90,38 @@ struct BackupStatusView: View {
         case .notDetermined:
             Section {
                 Button("Allow Access to Photos") {
-                    Task { authorization = await PHPhotoLibrary.requestAuthorization(for: .readWrite) }
+                    Task {
+                        authorization = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+                        #if os(macOS)
+                        MacBackupLoop.shared.nudge()
+                        #endif
+                    }
                 }
             } footer: {
                 Text("Nubilo reads your photos to copy them to your server. Nothing is deleted from this device.")
             }
         case .limited:
             Section {
-                Label("Only selected photos are backed up. Choose Full Access in Settings → Nubilo → Photos to back up everything.", systemImage: "photo.badge.exclamationmark")
+                Label("Only selected photos are backed up. Choose Full Access in \(Self.photosSettingsPath) to back up everything.", systemImage: "photo.badge.exclamationmark")
             }
         case .denied, .restricted:
             Section {
-                Label("Photos access is off. Turn it on in Settings → Nubilo → Photos.", systemImage: "lock")
+                Label("Photos access is off. Turn it on in \(Self.photosSettingsPath).", systemImage: "lock")
             }
         default:
             EmptyView()
         }
     }
+
+    #if os(iOS)
+    private static let enableTitle = "Back up this device's photos"
+    private static let photosSettingsPath = "Settings → Nubilo → Photos"
+    private static let scheduleNote = "iOS decides when background backup runs, usually overnight while charging. Opening this screen and tapping Back Up Now is the quickest way to catch up."
+    #else
+    private static let enableTitle = "Back up the Photos library on this Mac"
+    private static let photosSettingsPath = "System Settings → Privacy & Security → Photos → Nubilo"
+    private static let scheduleNote = "While Nubilo runs, new photos back up about a minute after they reach Photos, and the library is checked every 30 minutes. Turn on Open at Login in Settings so it keeps running."
+    #endif
 
     private func refresh() async {
         guard let engine = runtime.engine else { return }

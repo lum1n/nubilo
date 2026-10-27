@@ -2,9 +2,9 @@
 
 One SwiftUI app target for iOS 17+ and macOS 14+ that replaces the CLI for
 family members: join a server by scanning an invite, add Calendar, Contacts
-and Reminders through a profile, back up the camera roll, browse and share
-photos, and manage family members and devices. On the Mac it also runs the
-home server from the menu bar.
+and Reminders through a profile, back up the camera roll (on the Mac, the
+Photos library), browse and share photos, and manage family members and
+devices. On the Mac it can also run the home server from the menu bar.
 
 ```
 apps/Nubilo
@@ -102,12 +102,16 @@ password, shown once with a copy button. Finder connects with Go → Connect to
 Server. The iOS Files app's Connect to Server only speaks SMB, so on iPhone
 the guide points to a WebDAV-capable file app.
 
-**Photos (iPhone and iPad).**
+**Photos.**
 - *Backup*: asks for Photos access, then shows how many assets are backed up,
   waiting, uploading and failed, the last run and its errors. Settings: on/off,
   include videos, only while charging, use mobile data. Back Up Now runs a pass
   for up to ten minutes; uploads continue in a background URLSession after the
-  app is closed, and iOS runs further passes as `BGProcessingTask`s.
+  app is closed, and iOS runs further passes as `BGProcessingTask`s. On the
+  Mac there are no background tasks: `MacBackupLoop` runs a pass at launch, a
+  minute after Photos.app reports a change, and every 30 minutes while the
+  app runs (Settings → Open at Login keeps it running). The charging and
+  mobile-data settings are iOS only.
 - *Library*: a paged grid of the server library with thumbnails (memory cache
   plus a 500 MB URL cache) and a preview on tap. Select photos to add them to
   an album.
@@ -115,7 +119,8 @@ the guide points to a WebDAV-capable file app.
   shown), album grids, new albums, and sharing an album with family members as
   view-only or can-add.
 
-On the Mac the backup screen is hidden: the Mac agent backs up Photos.app.
+Backup is one way: photos added on the server are not written into
+Photos.app.
 
 **Family.** Admins see all members with role, status, devices and storage;
 can disable or enable a member and change roles; create invites shown as a QR
@@ -125,17 +130,17 @@ and storage, and can add another device to their own account: My Devices →
 Add a Device shows a QR code and a `nubilo://` link (single use, one hour) to
 scan or AirDrop to the new iPhone or Mac.
 
-**Settings.** Server address, account, and Sign Out, which revokes this
-device on the server, deletes its key and forgets the server and the backup
-state.
+**Settings.** Server address, account, Open at Login (Mac, via
+`SMAppService`), and Sign Out, which revokes this device on the server,
+deletes its key and forgets the server and the backup state.
 
 **Mac menu bar.** Server status from `nubilo server service`,
 `nubilo --json status` and `nubilo doctor --json`, with failing checks and
 their fixes; Start and Stop install and remove the server LaunchAgent
 (`nubilo server install` / `uninstall`). Agent health comes from
-`nubilo doctor --agent --json --data-dir ~/.nubilo-agent`; *Open Agent
-Settings* runs `nubilo agent ui`, which opens the agent's selection page in
-the browser. (The agent's loopback API needs the random session token that
+`nubilo doctor --agent --json --data-dir ~/.nubilo-agent`; the agent now
+only syncs chosen folders. *Open Agent Settings* runs `nubilo agent ui`,
+which opens the agent's folder page in the browser. (The agent's loopback API needs the random session token that
 `agent ui` prints on start, so the app does not call it directly.) *Set Up
 Server* opens a wizard that runs `nubilo setup --json --step 1…5` with the
 chosen mode (relay, direct or LAN), domain, email and relay invite, shows
