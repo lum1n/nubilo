@@ -570,6 +570,20 @@ func (s *Server) handleJoinPage(w http.ResponseWriter, r *http.Request) {
 document.getElementById("open").href=u;document.getElementById("code").textContent=c?"Invite code: "+c:"This link has no invite code.";</script></body></html>`, name)
 }
 
+// handleHomePage answers the bare server URL, so a shared link or a browser
+// visit shows what this is instead of a 404. It reveals only the server name,
+// which /join shows too.
+func (s *Server) handleHomePage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	name := htmlEscape(s.Cfg.Public.Name())
+	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%[1]s</title><style>body{font:17px -apple-system,system-ui,sans-serif;max-width:32em;margin:3em auto;padding:0 1em}</style></head>
+<body><h1>%[1]s</h1><p>This is a Nubilo server. Devices connect to it with the Nubilo app.</p>
+<p>To add a device, ask an admin for an invite and scan it with the Nubilo app, or open the invite link on the device.</p></body></html>`, name)
+}
+
 func htmlEscape(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&#39;")
 	return r.Replace(s)

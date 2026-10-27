@@ -70,6 +70,7 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("POST /api/v1/invites/redeem", s.handleInviteRedeem)
 	mux.HandleFunc("GET /api/v1/profile/{token}", s.handleProfileDownload)
 	mux.HandleFunc("GET /join", s.handleJoinPage)
+	mux.HandleFunc("GET /{$}", s.handleHomePage)
 	mux.HandleFunc("GET /api/v1/status", s.authed(s.handleStatus))
 	mux.HandleFunc("GET /api/v1/me", s.authed(s.handleMe))
 	mux.HandleFunc("GET /api/v1/me/passwords", s.authed(s.handleMyPasswords))
