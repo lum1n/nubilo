@@ -7,6 +7,11 @@ struct FilesView: View {
     @State private var created: NewAppPassword?
     @State private var working = false
     @State private var error: String?
+    #if os(iOS) && canImport(FileProvider)
+    @State private var locationStatus: String?
+    @State private var locationOK = false
+    @State private var checking = false
+    #endif
 
     var body: some View {
         Form {
@@ -16,10 +21,26 @@ struct FilesView: View {
                 Button("Open the Files App") {
                     if let url = URL(string: "shareddocuments://") { ExternalURL.open(url) }
                 }
+                #if canImport(FileProvider)
+                if let locationStatus {
+                    Label(locationStatus, systemImage: locationOK ? "checkmark.circle" : "exclamationmark.triangle")
+                        .foregroundStyle(locationOK ? Color.secondary : Color.red)
+                        .textSelection(.enabled)
+                }
+                Button {
+                    Task { await setUpLocation() }
+                } label: {
+                    HStack {
+                        Text("Set Up the Files Location Again")
+                        if checking { Spacer(); ProgressView() }
+                    }
+                }
+                .disabled(checking || model.client == nil)
+                #endif
             } header: {
                 Text("On this device")
             } footer: {
-                Text("If Nubilo is not listed, tap ⋯ → Edit in Browse and turn it on.")
+                Text("Nubilo is listed under Locations in Files → Browse. If it is missing, use the button above and check the message.")
             }
             #endif
             Section(Self.connectionTitle) {
@@ -66,7 +87,12 @@ struct FilesView: View {
         .formStyle(.grouped)
         .navigationTitle("Files")
         .errorAlert($error)
-        .task { if model.me == nil { await model.refreshMe() } }
+        .task {
+            if model.me == nil { await model.refreshMe() }
+            #if os(iOS) && canImport(FileProvider)
+            await checkLocation()
+            #endif
+        }
     }
 
     #if os(iOS)
@@ -85,6 +111,34 @@ struct FilesView: View {
         "Choose Registered User and enter the username and password above.",
         "Tick “Remember this password in my keychain” to reconnect automatically.",
     ]
+    #endif
+
+    #if os(iOS) && canImport(FileProvider)
+    private func checkLocation() async {
+        if let problem = FilesIntegration.problem {
+            locationOK = false
+            locationStatus = problem
+        } else if await FilesIntegration.isRegistered() {
+            locationOK = true
+            locationStatus = "Nubilo is set up in the Files app."
+        } else {
+            locationOK = false
+            locationStatus = FilesIntegration.extensionInstalled
+                ? "Nubilo is not registered with the Files app yet."
+                : "This build of the app does not contain the Files extension."
+        }
+    }
+
+    private func setUpLocation() async {
+        checking = true
+        defer { checking = false }
+        if let problem = await model.setUpFilesLocation() {
+            locationOK = false
+            locationStatus = problem
+        } else {
+            await checkLocation()
+        }
+    }
     #endif
 
     private func createPassword() async {

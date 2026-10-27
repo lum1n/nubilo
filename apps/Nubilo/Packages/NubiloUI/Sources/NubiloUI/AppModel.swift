@@ -105,6 +105,14 @@ public final class AppModel {
         }
     }
 
+    #if os(iOS) && canImport(FileProvider)
+    /// Sets up the Files app location again; returns the problem, if any.
+    public func setUpFilesLocation() async -> String? {
+        guard let current = store.load() ?? server else { return "This device is not set up yet." }
+        return await FilesIntegration.connect(current, keys: keys)
+    }
+    #endif
+
     /// Removes this device from the server (best effort), then deletes the key
     /// and the stored pairing.
     public func signOut() async {
