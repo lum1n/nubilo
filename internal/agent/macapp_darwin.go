@@ -70,16 +70,6 @@ func InstallAppBundle() (appPath string, err error) {
 	<string>Nubilo syncs selected albums and photos with your personal cloud.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Nubilo can write photos from your cloud back into Photos.</string>
-	<key>NSCalendarsUsageDescription</key>
-	<string>Nubilo syncs selected calendars with your personal cloud.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Nubilo syncs selected calendars with your personal cloud.</string>
-	<key>NSRemindersUsageDescription</key>
-	<string>Nubilo syncs selected reminder lists with your personal cloud.</string>
-	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Nubilo syncs selected reminder lists with your personal cloud.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>Nubilo syncs contacts with your personal cloud.</string>
 </dict>
 </plist>
 `
@@ -91,10 +81,6 @@ func InstallAppBundle() (appPath string, err error) {
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.personal-information.photos-library</key>
-	<true/>
-	<key>com.apple.security.personal-information.calendars</key>
-	<true/>
-	<key>com.apple.security.personal-information.addressbook</key>
 	<true/>
 </dict>
 </plist>

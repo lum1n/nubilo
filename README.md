@@ -2,7 +2,7 @@
 
 Single-binary private cloud for a family or small team: calendars, reminders, contacts, files, and photos, with per-user data and sharing.
 
-A Linux or macOS **server** holds encrypted blobs and metadata for several **users** (admins and members). Each user's devices see only that user's collections and what others shared with them (read-only or read-write). A **macOS agent** syncs EventKit, Contacts, PhotoKit, and selected folders. **iPhones** use native CalDAV / CardDAV accounts (installed by a configuration profile) and WebDAV, plus the Nubilo app (`apps/Nubilo`) for onboarding by QR code, photo backup, shared albums and family administration.
+A Linux or macOS **server** holds encrypted blobs and metadata for several **users** (admins and members). Each user's devices see only that user's collections and what others shared with them (read-only or read-write). A **macOS agent** syncs Photos.app and selected folders. iPhones and Macs use native CalDAV / CardDAV accounts for calendars, reminders and contacts (installed by a configuration profile) and WebDAV, plus the Nubilo app (`apps/Nubilo`) for onboarding by QR code, photo backup, shared albums and family administration.
 
 Priorities: security, integrity, correct sync. Server-side encryption, not end-to-end (see SECURITY.md).
 
@@ -83,8 +83,8 @@ Or configure sync in the loopback UI: `nubilo agent ui` (port 8788).
 
 | Surface | Path | Notes |
 | --- | --- | --- |
-| Calendars / reminders | Mac EventKit ↔ CalDAV | Recurrence, timezones, alarms (DISPLAY + EMAIL), URI attachments |
-| Contacts | Mac Contacts ↔ CardDAV | Names, org, note, emails, phones, addresses, URLs, birthday, photo; full vCard extras preserved across Mac round-trips |
+| Calendars / reminders | CalDAV account on each device | Installed by the configuration profile; the server stores what Calendar and Reminders send |
+| Contacts | CardDAV account on each device | Installed by the configuration profile |
 | Files | Mac folders ↔ WebDAV `/dav/` | Nested folders; iOS Files / Finder |
 | Photos | Mac PhotoKit ↔ gallery API | Originals byte-for-byte; preview/thumb derived; Live/RAW/video |
 
@@ -137,15 +137,10 @@ Server host must be reachable (Tailscale IP or hostname), not `127.0.0.1`.
 
 Signing device over `/sync/v1` (Ed25519). Device key lives in Keychain when possible. Linux `nubilo agent` refuses to start.
 
-Grant Calendar, Contacts, and Photos (Full Access) to **Nubilo** (or Terminal if you run the unsigned CLI). Corporate credentials never leave the Mac.
+Grant Photos (Full Access) to **Nubilo** (or Terminal if you run the unsigned CLI). Corporate credentials never leave the Mac.
 
 ```bash
 nubilo agent authorize                          # Photos Full Access dialog
-nubilo agent --data-dir ~/.nubilo-agent calendars
-nubilo agent --data-dir ~/.nubilo-agent select <id>
-nubilo agent --data-dir ~/.nubilo-agent reminder-lists
-nubilo agent --data-dir ~/.nubilo-agent select-reminder <id>
-nubilo agent --data-dir ~/.nubilo-agent contacts on
 nubilo agent --data-dir ~/.nubilo-agent photos on
 nubilo agent --data-dir ~/.nubilo-agent albums
 nubilo agent --data-dir ~/.nubilo-agent photos source albums
@@ -155,7 +150,9 @@ nubilo agent --data-dir ~/.nubilo-agent files on
 nubilo agent --data-dir ~/.nubilo-agent          # run once; prefer agent install
 ```
 
-People & Pets are `person:…` rows from `albums`, not same-named user albums. Sync window defaults to ±730 days; EventKit/Contacts changes wake the agent (poll is a backstop). Failed local listings never push mass deletes.
+People & Pets are `person:…` rows from `albums`, not same-named user albums. Failed local listings never push mass deletes.
+
+The agent does not sync Calendar, Reminders or Contacts. On the Mac, install the same Calendar & Contacts profile as on the iPhone (Nubilo app → Calendar & Contacts); older agents' `calendars`, `reminders` and `sync_contacts` settings in `agent.json` are ignored.
 
 If Photos stays Limited: System Settings → Privacy & Security → Photos → Nubilo → Full Access. Reset with `tccutil reset Photos` if stuck.
 
@@ -193,8 +190,7 @@ nubilo setup | doctor | init | server | ui | status
 nubilo server install|uninstall|service
 nubilo pair | devices | devices revoke|rename|password|enroll|rotate
 nubilo agent | agent setup|ui|install|uninstall|service|authorize
-nubilo agent calendars|select|unselect|reminder-lists|select-reminder|unselect-reminder
-nubilo agent contacts on|off | photos on|off | photos source|select | albums | files add|on|off
+nubilo agent photos on|off | photos source|select | albums | files add|on|off
 nubilo verify | gc | backup | restore | tls
 ```
 

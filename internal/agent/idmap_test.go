@@ -11,11 +11,11 @@ func TestMapPutRebindsObjectID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer m.Close()
-	a := Mapping{LocalID: "ek-a", Kind: kindEvent, ObjectID: "obj-1", CollectionID: "col", ContentHash: "h1", Revision: 1}
+	a := Mapping{LocalID: "ek-a", Kind: kindPhoto, ObjectID: "obj-1", CollectionID: "col", ContentHash: "h1", Revision: 1}
 	if err := m.Put(a); err != nil {
 		t.Fatal(err)
 	}
-	b := Mapping{LocalID: "ek-b", Kind: kindEvent, ObjectID: "obj-1", CollectionID: "col", ContentHash: "h2", Revision: 2}
+	b := Mapping{LocalID: "ek-b", Kind: kindPhoto, ObjectID: "obj-1", CollectionID: "col", ContentHash: "h2", Revision: 2}
 	if err := m.Put(b); err != nil {
 		t.Fatalf("rebind: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestMapPutRebindsObjectID(t *testing.T) {
 	if got.LocalID != "ek-b" || got.Revision != 2 {
 		t.Fatalf("%+v", got)
 	}
-	if _, err := m.ByLocal(kindEvent, "ek-a"); err == nil {
+	if _, err := m.ByLocal(kindPhoto, "ek-a"); err == nil {
 		t.Fatal("stale local id still mapped")
 	}
 	n, err := m.ForCollection("col")
@@ -46,7 +46,7 @@ func TestMapPutRebindJournalSpam(t *testing.T) {
 	defer m.Close()
 	for i := 0; i < 8; i++ {
 		row := Mapping{
-			LocalID: "ek-" + string(rune('a'+i)), Kind: kindEvent, ObjectID: "obj-1",
+			LocalID: "ek-" + string(rune('a'+i)), Kind: kindPhoto, ObjectID: "obj-1",
 			CollectionID: "col", ContentHash: "h", Revision: uint64(i + 1),
 		}
 		if err := m.Put(row); err != nil {

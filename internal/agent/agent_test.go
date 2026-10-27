@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,231 +31,6 @@ import (
 	"nubilo/internal/store"
 	"nubilo/internal/syncengine"
 )
-
-type fakeCal struct {
-	mu        sync.Mutex
-	calendars []agent.CalendarInfo
-	events    map[string][]agent.LocalEvent
-	listErr   error
-	seq       int
-	newIDs    bool
-	upsertErr error
-	lossy     bool
-}
-
-type fakeReminders struct {
-	mu    sync.Mutex
-	lists []agent.CalendarInfo
-	todos map[string][]agent.LocalTodo
-	seq   int
-}
-
-func (f *fakeReminders) ListReminderLists() ([]agent.CalendarInfo, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]agent.CalendarInfo(nil), f.lists...), nil
-}
-
-func (f *fakeReminders) ListReminders(listID string, start, end time.Time) ([]agent.LocalTodo, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []agent.LocalTodo
-	for _, td := range f.todos[listID] {
-		cp := td
-		cp.ICS = append([]byte(nil), td.ICS...)
-		out = append(out, cp)
-	}
-	return out, nil
-}
-
-func (f *fakeReminders) UpsertReminder(listID, localID string, ics []byte) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if localID == "" {
-		f.seq++
-		localID = "rem-" + ids.New()[:8]
-	}
-	uid := agent.UIDFromICS(ics)
-	row := agent.LocalTodo{ID: localID, ListID: listID, UID: uid, ICS: append([]byte(nil), ics...), DueMS: agent.TodoDueMS(ics)}
-	list := f.todos[listID]
-	found := false
-	for i := range list {
-		if list[i].ID == localID {
-			list[i] = row
-			found = true
-			break
-		}
-	}
-	if !found {
-		list = append(list, row)
-	}
-	if f.todos == nil {
-		f.todos = map[string][]agent.LocalTodo{}
-	}
-	f.todos[listID] = list
-	return localID, nil
-}
-
-func (f *fakeReminders) DeleteReminder(localID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for lid, list := range f.todos {
-		out := list[:0]
-		for _, td := range list {
-			if td.ID != localID {
-				out = append(out, td)
-			}
-		}
-		f.todos[lid] = out
-	}
-	return nil
-}
-
-func (f *fakeCal) ListCalendars() ([]agent.CalendarInfo, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := append([]agent.CalendarInfo(nil), f.calendars...)
-	return out, nil
-}
-
-func (f *fakeCal) ListEvents(calendarID string, start, end time.Time) ([]agent.LocalEvent, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.listErr != nil {
-		return nil, f.listErr
-	}
-	var out []agent.LocalEvent
-	for _, ev := range f.events[calendarID] {
-		t := time.UnixMilli(ev.StartMS).UTC()
-		if t.Before(start.UTC()) || t.After(end.UTC()) {
-			continue
-		}
-		cp := ev
-		cp.ICS = append([]byte(nil), ev.ICS...)
-		out = append(out, cp)
-	}
-	return out, nil
-}
-
-func (f *fakeCal) UpsertEvent(calendarID, localID string, ics []byte) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.upsertErr != nil {
-		return "", f.upsertErr
-	}
-	if localID == "" {
-		f.seq++
-		localID = "ek-" + ids.New()[:8]
-	}
-	prevID := localID
-	if f.newIDs {
-		localID = prevID + "-n"
-	}
-	ev := agent.LocalEvent{
-		ID: localID, CalendarID: calendarID, UID: agent.UIDFromICS(ics),
-		ICS: append([]byte(nil), ics...), StartMS: agent.EventStartMS(ics),
-	}
-	if f.lossy {
-		ics = agent.SetICSUID(ics, localID)
-		ev.UID = localID
-		ev.ICS = ics
-	}
-	list := f.events[calendarID]
-	for i := range list {
-		if list[i].ID == prevID || list[i].ID == localID {
-			list[i] = ev
-			f.events[calendarID] = list
-			return localID, nil
-		}
-	}
-	f.events[calendarID] = append(list, ev)
-	return localID, nil
-}
-
-func (f *fakeCal) DeleteEvent(localID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for cal, list := range f.events {
-		out := list[:0]
-		for _, ev := range list {
-			if ev.ID != localID {
-				out = append(out, ev)
-			}
-		}
-		f.events[cal] = out
-	}
-	return nil
-}
-
-func (f *fakeCal) eventICS(calendarID, localID string) []byte {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, ev := range f.events[calendarID] {
-		if ev.ID == localID {
-			return append([]byte(nil), ev.ICS...)
-		}
-	}
-	return nil
-}
-
-type fakeBook struct {
-	mu      sync.Mutex
-	list    []agent.LocalContact
-	listErr error
-	lossy   bool
-}
-
-func (f *fakeBook) ListContacts() ([]agent.LocalContact, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.listErr != nil {
-		return nil, f.listErr
-	}
-	out := make([]agent.LocalContact, len(f.list))
-	copy(out, f.list)
-	for i := range out {
-		out[i].VCard = append([]byte(nil), f.list[i].VCard...)
-	}
-	return out, nil
-}
-
-func (f *fakeBook) UpsertContact(localID string, vcf []byte) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if localID == "" {
-		localID = "cn-" + ids.New()[:8]
-	}
-	stored := append([]byte(nil), vcf...)
-	uid := agent.UIDFromVCard(vcf)
-	if f.lossy {
-		spec := agent.ParseContactVCard(vcf)
-		spec.UID = localID
-		stored = agent.EncodeContactVCard(spec)
-		uid = localID
-	}
-	c := agent.LocalContact{ID: localID, UID: uid, VCard: stored}
-	for i := range f.list {
-		if f.list[i].ID == localID {
-			f.list[i] = c
-			return localID, nil
-		}
-	}
-	f.list = append(f.list, c)
-	return localID, nil
-}
-
-func (f *fakeBook) DeleteContact(localID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := f.list[:0]
-	for _, c := range f.list {
-		if c.ID != localID {
-			out = append(out, c)
-		}
-	}
-	f.list = out
-	return nil
-}
 
 type harness struct {
 	ts     *httptest.Server
@@ -307,22 +81,6 @@ func startHarness(t *testing.T) *harness {
 	}
 }
 
-func testEvent(t *testing.T, uid, summary string, start time.Time) agent.LocalEvent {
-	t.Helper()
-	end := start.Add(time.Hour)
-	ics, err := agent.EncodeICS(uid, summary, start, end)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return agent.LocalEvent{
-		ID: "local-" + uid, CalendarID: "cal-1", UID: uid, ICS: ics, StartMS: start.UnixMilli(),
-	}
-}
-
-func testVCard(uid, fn string) []byte {
-	return []byte("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:" + uid + "\r\nFN:" + fn + "\r\nEND:VCARD\r\n")
-}
-
 func liveCount(t *testing.T, eng *syncengine.Engine, kind, name string) int {
 	t.Helper()
 	col, err := eng.FindChildCollection(context.Background(), "", kind, "", name)
@@ -348,386 +106,69 @@ func collection(t *testing.T, eng *syncengine.Engine, kind, name string) *syncen
 	return col
 }
 
-func newAgent(h *harness, sel agent.Selection, cal agent.CalendarSource, book agent.ContactSource) *agent.Agent {
+func newAgent(h *harness, sel agent.Selection) *agent.Agent {
 	return &agent.Agent{
-		Client: h.client, Map: h.m, Sel: sel, Cal: cal, Contacts: book,
+		Client: h.client, Map: h.m, Sel: sel,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 
-func TestPushLocalEvent(t *testing.T) {
-	h := startHarness(t)
-	start := time.Now().UTC().Truncate(time.Second)
-	ev := testEvent(t, "uid-push", "Standup", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	if err := newAgent(h, sel, cal, nil).SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "calendar", "Work"); n != 1 {
-		t.Fatalf("live objects %d", n)
-	}
-	col := collection(t, h.eng, "calendar", "Work")
-	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-push")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pt, err := h.st.GetBlobPlaintext(obj.BlobID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(pt), "Standup") {
-		t.Fatalf("blob %s", pt)
-	}
+// failingFiles is the real folder source with writes that can be made to fail.
+type failingFiles struct {
+	agent.FileSource
+	writeErr error
 }
 
-func TestPushCalendarColor(t *testing.T) {
-	h := startHarness(t)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work", Color: "#0E61B9"}},
-		events:    map[string][]agent.LocalEvent{},
+func (f *failingFiles) WriteFile(absPath string, data []byte) error {
+	if f.writeErr != nil {
+		return f.writeErr
 	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	if err := newAgent(h, sel, cal, nil).SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	col := collection(t, h.eng, "calendar", "Work")
-	if dav.ParseCalendarColMeta(col.Metadata).Color != "#0E61B9" {
-		t.Fatalf("metadata %s", col.Metadata)
-	}
+	return f.FileSource.WriteFile(absPath, data)
 }
 
-func TestPushReminders(t *testing.T) {
-	h := startHarness(t)
-	due := time.Now().UTC().Truncate(time.Second).Add(24 * time.Hour)
-	ics, err := agent.EncodeTodoICS(agent.TodoSpec{
-		UID: "todo-push", Summary: "Buy milk", Due: due, Status: "NEEDS-ACTION",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rems := &fakeReminders{
-		lists: []agent.CalendarInfo{{ID: "list-1", Title: "Errands", Color: "#FF2D55"}},
-		todos: map[string][]agent.LocalTodo{
-			"list-1": {{ID: "rem-1", ListID: "list-1", UID: "todo-push", ICS: ics, DueMS: due.UnixMilli()}},
+func filesSel(root string) agent.Selection {
+	return agent.Selection{
+		IntervalSeconds: 120,
+		Files: agent.FilesSel{
+			Enabled: true,
+			Folders: []agent.FileFolderSel{{Path: root, Name: "SyncRoot"}},
 		},
-	}
-	sel := agent.Selection{
-		IntervalSeconds: 120, WindowDays: 730,
-		Reminders: []agent.CalendarSel{{LocalID: "list-1", Title: "Errands"}},
-	}
-	a := newAgent(h, sel, nil, nil)
-	a.Reminders = rems
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	col := collection(t, h.eng, "calendar", "Errands")
-	meta := dav.ParseCalendarColMeta(col.Metadata)
-	if meta.Comp != "VTODO" || meta.Color != "#FF2D55" {
-		t.Fatalf("meta %+v %s", meta, col.Metadata)
-	}
-	if n := liveCount(t, h.eng, "calendar", "Errands"); n != 1 {
-		t.Fatalf("live objects %d", n)
-	}
-	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "todo-push")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pt, err := h.st.GetBlobPlaintext(obj.BlobID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(pt), "BEGIN:VTODO") || !strings.Contains(string(pt), "Buy milk") {
-		t.Fatalf("blob %s", pt)
-	}
-}
-
-func TestReminderNameCollision(t *testing.T) {
-	h := startHarness(t)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Personal"}},
-		events:    map[string][]agent.LocalEvent{},
-	}
-	rems := &fakeReminders{
-		lists: []agent.CalendarInfo{{ID: "list-1", Title: "Personal"}},
-		todos: map[string][]agent.LocalTodo{},
-	}
-	sel := agent.Selection{
-		IntervalSeconds: 120, WindowDays: 730,
-		Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Personal"}},
-		Reminders: []agent.CalendarSel{{LocalID: "list-1", Title: "Personal"}},
-	}
-	a := newAgent(h, sel, cal, nil)
-	a.Reminders = rems
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.eng.FindChildCollection(context.Background(), "", "calendar", "", "Personal"); err != nil {
-		t.Fatal(err)
-	}
-	col, err := h.eng.FindChildCollection(context.Background(), "", "calendar", "", "Personal Reminders")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dav.ParseCalendarColMeta(col.Metadata).Comp != "VTODO" {
-		t.Fatalf("%s", col.Metadata)
-	}
-}
-
-func TestPushRecurringSeriesOneObject(t *testing.T) {
-	h := startHarness(t)
-	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
-	ics, err := agent.EncodeEventICS(agent.EventSpec{
-		UID: "uid-series", Summary: "Weekly standup", Start: start, End: start.Add(time.Hour),
-		RRule: "FREQ=WEEKLY;BYDAY=MO",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ev := agent.LocalEvent{ID: "series-1", CalendarID: "cal-1", UID: "uid-series", ICS: ics, StartMS: start.UnixMilli()}
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	if err := newAgent(h, sel, cal, nil).SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "calendar", "Work"); n != 1 {
-		t.Fatalf("live objects %d", n)
-	}
-	col := collection(t, h.eng, "calendar", "Work")
-	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-series")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pt, err := h.st.GetBlobPlaintext(obj.BlobID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(pt), "RRULE") || !strings.Contains(string(pt), "FREQ=WEEKLY") {
-		t.Fatalf("blob %s", pt)
-	}
-}
-
-func TestFailedListDoesNotDelete(t *testing.T) {
-	h := startHarness(t)
-	start := time.Now().UTC().Truncate(time.Second)
-	ev := testEvent(t, "uid-keep", "Keep me", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	a := newAgent(h, sel, cal, nil)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	cal.mu.Lock()
-	cal.listErr = errors.New("eventkit timeout")
-	cal.mu.Unlock()
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "calendar", "Work"); n != 1 {
-		t.Fatalf("failed list deleted objects, live=%d", n)
-	}
-}
-
-func TestMissingInWindowDeletes(t *testing.T) {
-	h := startHarness(t)
-	start := time.Now().UTC().Truncate(time.Second)
-	ev := testEvent(t, "uid-gone", "Soon gone", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	a := newAgent(h, sel, cal, nil)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	cal.mu.Lock()
-	cal.events["cal-1"] = nil
-	cal.mu.Unlock()
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "calendar", "Work"); n != 0 {
-		t.Fatalf("expected tombstone, live=%d", n)
-	}
-}
-
-func TestOutOfWindowIsNotDelete(t *testing.T) {
-	h := startHarness(t)
-	start := time.Now().UTC().AddDate(0, 0, -10).Truncate(time.Second)
-	ev := testEvent(t, "uid-old", "Old meeting", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	a := newAgent(h, sel, cal, nil)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	a.Sel.WindowDays = 1
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "calendar", "Work"); n != 1 {
-		t.Fatalf("out-of-window treated as delete, live=%d", n)
-	}
-}
-
-func TestRemoteChangeApplied(t *testing.T) {
-	h := startHarness(t)
-	start := time.Now().UTC().Truncate(time.Second)
-	ev := testEvent(t, "uid-remote", "Original", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	a := newAgent(h, sel, cal, nil)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	col := collection(t, h.eng, "calendar", "Work")
-	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-remote")
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, err := agent.EncodeICS("uid-remote", "Updated title", start, start.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := ncrypto.SHA256Hex(updated)
-	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, strings.NewReader(string(updated)), hash); err != nil {
-		t.Fatal(err)
-	}
-	res, err := h.eng.Push(context.Background(), h.dev, ids.New(), []syncengine.ChangeInput{{
-		ObjectID: obj.ID, CollectionID: col.ID, Kind: "event", Op: syncengine.OpUpdate,
-		BaseRevision: obj.Revision, ContentHash: hash, BlobID: hash, Size: int64(len(updated)),
-		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "uid-remote.ics", UID: "uid-remote", Comp: "VEVENT"}),
-		Force:    true,
-	}})
-	if err != nil || len(res) == 0 || res[0].Status != "ok" {
-		t.Fatalf("push update %+v %v", res, err)
-	}
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	got := cal.eventICS("cal-1", ev.ID)
-	if !strings.Contains(string(got), "Updated title") {
-		t.Fatalf("local source not updated: %s", got)
-	}
-}
-
-func TestApplyChangeRebindsEventKitID(t *testing.T) {
-	h := startHarness(t)
-	start := time.Now().UTC().Truncate(time.Second)
-	ev := testEvent(t, "uid-rebind", "Original", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	a := newAgent(h, sel, cal, nil)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	col := collection(t, h.eng, "calendar", "Work")
-	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-rebind")
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, err := agent.EncodeICS("uid-rebind", "Rebound", start, start.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := ncrypto.SHA256Hex(updated)
-	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, strings.NewReader(string(updated)), hash); err != nil {
-		t.Fatal(err)
-	}
-	res, err := h.eng.Push(context.Background(), h.dev, ids.New(), []syncengine.ChangeInput{{
-		ObjectID: obj.ID, CollectionID: col.ID, Kind: "event", Op: syncengine.OpUpdate,
-		BaseRevision: obj.Revision, ContentHash: hash, BlobID: hash, Size: int64(len(updated)),
-		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "uid-rebind.ics", UID: "uid-rebind", Comp: "VEVENT"}),
-		Force:    true,
-	}})
-	if err != nil || len(res) == 0 || res[0].Status != "ok" {
-		t.Fatalf("push update %+v %v", res, err)
-	}
-	cal.mu.Lock()
-	cal.newIDs = true
-	cal.mu.Unlock()
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	got, err := a.Map.ByObject(obj.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.LocalID == ev.ID {
-		t.Fatal("expected rebind to new EventKit id")
-	}
-	rows, err := a.Map.ForCollection(col.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for _, r := range rows {
-		if r.ObjectID == obj.ID {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Fatalf("object mapped %d times", n)
 	}
 }
 
 func TestApplyChangeFailureDoesNotAck(t *testing.T) {
 	h := startHarness(t)
-	start := time.Now().UTC().Truncate(time.Second)
-	ev := testEvent(t, "uid-nack", "Original", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	a := newAgent(h, sel, cal, nil)
+	src := &failingFiles{FileSource: agent.OpenFiles()}
+	a := newAgent(h, filesSel(root))
+	a.Files = src
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	cur := a.Map.Cursor()
-	col := collection(t, h.eng, "calendar", "Work")
-	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-nack")
-	if err != nil {
-		t.Fatal(err)
+	col := collection(t, h.eng, "files", "SyncRoot")
+	objs, err := h.eng.ListObjects(context.Background(), col.ID)
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("objects %d %v", len(objs), err)
 	}
-	updated, err := agent.EncodeICS("uid-nack", "Will fail", start, start.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
+	obj := objs[0]
+	updated := []byte("changed on the server")
 	hash := ncrypto.SHA256Hex(updated)
-	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, strings.NewReader(string(updated)), hash); err != nil {
+	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(updated), hash); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.eng.Push(context.Background(), h.dev, ids.New(), []syncengine.ChangeInput{{
-		ObjectID: obj.ID, CollectionID: col.ID, Kind: "event", Op: syncengine.OpUpdate,
+		ObjectID: obj.ID, CollectionID: col.ID, Kind: "file", Op: syncengine.OpUpdate,
 		BaseRevision: obj.Revision, ContentHash: hash, BlobID: hash, Size: int64(len(updated)),
-		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "uid-nack.ics", UID: "uid-nack", Comp: "VEVENT"}),
+		Metadata: dav.EncodeFileMeta(dav.FileMeta{Name: "note.txt", MIME: "text/plain"}),
 		Force:    true,
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	cal.mu.Lock()
-	cal.upsertErr = errors.New("repeat field cannot be changed")
-	cal.mu.Unlock()
+	src.writeErr = errors.New("disk full")
 	if err := a.SyncOnce(context.Background()); err == nil {
 		t.Fatal("expected apply failure")
 	}
@@ -736,110 +177,15 @@ func TestApplyChangeFailureDoesNotAck(t *testing.T) {
 	}
 }
 
-func TestPushContact(t *testing.T) {
-	h := startHarness(t)
-	book := &fakeBook{list: []agent.LocalContact{{
-		ID: "cn-1", UID: "contact-1", VCard: testVCard("contact-1", "Ada Lovelace"),
-	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
-	if err := newAgent(h, sel, nil, book).SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "addressbook", "Contacts"); n != 1 {
-		t.Fatalf("live contacts %d", n)
-	}
-}
-
-func TestContactRoundTripPreservesExtras(t *testing.T) {
-	h := startHarness(t)
-	book := &fakeBook{list: []agent.LocalContact{{
-		ID: "cn-1", UID: "contact-1", VCard: testVCard("contact-1", "Ada Lovelace"),
-	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
-	a := newAgent(h, sel, nil, book)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	col := collection(t, h.eng, "addressbook", "Contacts")
-	objs, err := h.eng.ListObjects(context.Background(), col.ID)
-	if err != nil || len(objs) != 1 {
-		t.Fatalf("objs %v %d", err, len(objs))
-	}
-	rich := []byte("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:contact-1\r\nFN:Ada Lovelace\r\nN:Lovelace;Ada;;;\r\nEMAIL:ada@example.com\r\nNOTE:from-iphone\r\nX-CUSTOM:keep\r\nPHOTO;ENCODING=b;TYPE=JPEG:/w==\r\nEND:VCARD\r\n")
-	hash := ncrypto.SHA256Hex(rich)
-	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(rich), hash); err != nil {
-		t.Fatal(err)
-	}
-	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
-		ObjectID: objs[0].ID, CollectionID: objs[0].CollectionID, Op: syncengine.OpUpdate,
-		BaseRevision: objs[0].Revision, ContentHash: hash, BlobID: hash, Size: int64(len(rich)),
-		Metadata: objs[0].Metadata, Force: true,
-	}})
-	if err != nil || res[0].Status != "ok" {
-		t.Fatalf("iphone update %v %v", err, res)
-	}
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	// Simulate lossy Contacts.app re-encode (managed fields only; no PHOTO / X-CUSTOM).
-	book.mu.Lock()
-	thin := agent.EncodeContactVCard(agent.ContactSpec{
-		UID: "contact-1", FN: "Ada Lovelace", Given: "Ada", Family: "Lovelace",
-		Emails: []agent.ContactValue{{Value: "ada@example.com"}},
-		Note:   "from-iphone",
-	})
-	book.list = []agent.LocalContact{{ID: "cn-1", UID: "contact-1", VCard: thin}}
-	book.mu.Unlock()
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	obj, err := h.eng.GetObject(context.Background(), objs[0].ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	blob, err := h.st.GetBlobPlaintext(obj.BlobID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(blob, []byte("from-iphone")) || !bytes.Contains(blob, []byte("X-CUSTOM:keep")) || !bytes.Contains(blob, []byte("PHOTO")) {
-		t.Fatalf("lossy push wiped extras:\n%s", blob)
-	}
-}
-
-func TestFailedContactListDoesNotDelete(t *testing.T) {
-	h := startHarness(t)
-	book := &fakeBook{list: []agent.LocalContact{{
-		ID: "cn-1", UID: "contact-keep", VCard: testVCard("contact-keep", "Grace Hopper"),
-	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
-	a := newAgent(h, sel, nil, book)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	book.mu.Lock()
-	book.listErr = errors.New("contacts enumerate failed")
-	book.mu.Unlock()
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "addressbook", "Contacts"); n != 1 {
-		t.Fatalf("failed list deleted contacts, live=%d", n)
-	}
-}
-
 func TestOpenPlatformLinux(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("linux stub only")
 	}
-	_, _, _, _, err := agent.OpenPlatform(agent.DefaultSelection())
-	if !errors.Is(err, agent.ErrNeedDarwin) {
+	if _, err := agent.OpenPlatform(); !errors.Is(err, agent.ErrNeedDarwin) {
 		t.Fatalf("got %v", err)
 	}
-	if _, err := agent.PlatformCalendars(); !errors.Is(err, agent.ErrNeedDarwin) {
-		t.Fatalf("calendars %v", err)
-	}
-	if _, err := agent.PlatformReminderLists(); !errors.Is(err, agent.ErrNeedDarwin) {
-		t.Fatalf("reminders %v", err)
+	if _, err := agent.PlatformAlbums(); !errors.Is(err, agent.ErrNeedDarwin) {
+		t.Fatalf("albums %v", err)
 	}
 }
 
@@ -871,8 +217,9 @@ func TestLoadPairedClient(t *testing.T) {
 func TestSelectionPersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")
 	s := agent.DefaultSelection()
-	s.SelectCalendar("abc", "Work")
-	s.SyncContacts = true
+	s.Photos.Enabled = true
+	s.SelectAlbum("album-1")
+	s.AddFileFolder("/tmp/docs", "Docs")
 	if err := agent.SaveSelection(path, s); err != nil {
 		t.Fatal(err)
 	}
@@ -880,60 +227,59 @@ func TestSelectionPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Calendars) != 1 || got.Calendars[0].LocalID != "abc" || !got.SyncContacts {
+	if !got.Photos.Enabled || len(got.Photos.Albums) != 1 || len(got.Files.Folders) != 1 || got.Files.Folders[0].Name != "Docs" {
 		t.Fatalf("%+v", got)
 	}
-	got.UnselectCalendar("abc")
-	if len(got.Calendars) != 0 {
-		t.Fatalf("unselect %+v", got.Calendars)
+	got.UnselectAlbum("album-1")
+	got.RemoveFileFolder("/tmp/docs")
+	if len(got.Photos.Albums) != 0 || len(got.Files.Folders) != 0 {
+		t.Fatalf("unselect %+v", got)
 	}
 }
 
-func TestSelectionReloadPushesCalendar(t *testing.T) {
+func TestSelectionIgnoresRemovedCalendarFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	old := `{"interval_seconds":60,"window_days":730,"calendars":[{"local_id":"a","title":"Work"}],"sync_contacts":true,"photos":{"enabled":true}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := agent.LoadSelection(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IntervalSeconds != 60 || !got.Photos.Enabled {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestSelectionReloadPushesFiles(t *testing.T) {
 	h := startHarness(t)
-	start := time.Now().UTC().Truncate(time.Second)
-	ev := testEvent(t, "uid-reload", "After select", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "agent.json")
 	sel := agent.DefaultSelection()
 	if err := agent.SaveSelection(path, sel); err != nil {
 		t.Fatal(err)
 	}
-	a := newAgent(h, sel, cal, nil)
+	a := newAgent(h, sel)
+	a.Files = agent.OpenFiles()
 	a.SelPath = path
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if n := liveCount(t, h.eng, "calendar", "Work"); n != 0 {
+	if n := liveCount(t, h.eng, "files", "SyncRoot"); n != 0 {
 		t.Fatalf("pushed before select: %d", n)
 	}
-	sel.SelectCalendar("cal-1", "Work")
-	if err := agent.SaveSelection(path, sel); err != nil {
+	if err := agent.SaveSelection(path, filesSel(root)); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if n := liveCount(t, h.eng, "calendar", "Work"); n != 1 {
+	if n := liveCount(t, h.eng, "files", "SyncRoot"); n != 1 {
 		t.Fatalf("after reload live objects %d", n)
-	}
-}
-
-func TestEncodeICSRoundTrip(t *testing.T) {
-	start := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
-	ics, err := agent.EncodeICS("round-1", "Hello", start, start.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if agent.UIDFromICS(ics) != "round-1" {
-		t.Fatalf("uid %s", agent.UIDFromICS(ics))
-	}
-	sum, st, en := agent.EventSummaryStartEnd(ics)
-	if sum != "Hello" || !st.Equal(start) || !en.Equal(start.Add(time.Hour)) {
-		t.Fatalf("summary=%s start=%s end=%s", sum, st, en)
 	}
 }
 
@@ -1027,8 +373,8 @@ func TestPushPhoto(t *testing.T) {
 	src := &fakePhotos{list: []agent.LocalPhoto{{
 		ID: "pk-1", Filename: "a.jpg", TakenAtMS: time.Now().UnixMilli(), Original: orig,
 	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
-	a := newAgent(h, sel, nil, nil)
+	sel := agent.Selection{IntervalSeconds: 120, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	a := newAgent(h, sel)
 	a.Photos = src
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1063,8 +409,8 @@ func TestFailedPhotoListDoesNotDelete(t *testing.T) {
 	src := &fakePhotos{list: []agent.LocalPhoto{{
 		ID: "pk-keep", Filename: "k.jpg", TakenAtMS: time.Now().UnixMilli(), Original: orig,
 	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
-	a := newAgent(h, sel, nil, nil)
+	sel := agent.Selection{IntervalSeconds: 120, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	a := newAgent(h, sel)
 	a.Photos = src
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1086,8 +432,8 @@ func TestMissingPhotoDeletes(t *testing.T) {
 	src := &fakePhotos{list: []agent.LocalPhoto{{
 		ID: "pk-gone", Filename: "g.jpg", TakenAtMS: time.Now().UnixMilli(), Original: orig,
 	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
-	a := newAgent(h, sel, nil, nil)
+	sel := agent.Selection{IntervalSeconds: 120, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	a := newAgent(h, sel)
 	a.Photos = src
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1110,8 +456,8 @@ func TestPhotoDateRangeIsNotDelete(t *testing.T) {
 	src := &fakePhotos{list: []agent.LocalPhoto{{
 		ID: "pk-old", Filename: "old.jpg", TakenAtMS: old, Original: orig,
 	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
-	a := newAgent(h, sel, nil, nil)
+	sel := agent.Selection{IntervalSeconds: 120, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	a := newAgent(h, sel)
 	a.Photos = src
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1133,8 +479,8 @@ func TestPushPhotoModChangeRepushes(t *testing.T) {
 	src := &fakePhotos{list: []agent.LocalPhoto{{
 		ID: "pk-mod", Filename: "m.jpg", TakenAtMS: time.Now().UnixMilli(), ModMS: 1000, Original: orig1,
 	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
-	a := newAgent(h, sel, nil, nil)
+	sel := agent.Selection{IntervalSeconds: 120, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	a := newAgent(h, sel)
 	a.Photos = src
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1178,8 +524,8 @@ func TestPushVideoMeta(t *testing.T) {
 		ID: "pk-vid", Filename: "clip.mp4", Kind: "video", DurationMS: 3500,
 		TakenAtMS: time.Now().UnixMilli(), ModMS: 1, Original: vid,
 	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
-	a := newAgent(h, sel, nil, nil)
+	sel := agent.Selection{IntervalSeconds: 120, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	a := newAgent(h, sel)
 	a.Photos = src
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1205,20 +551,20 @@ func TestPhotoWriteBackImport(t *testing.T) {
 	h := startHarness(t)
 	orig := testJPEGBytes(t, 24, 24)
 	src := &fakePhotos{}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
+	sel := agent.Selection{IntervalSeconds: 120, Photos: agent.PhotosSel{Enabled: true, Source: "all"}}
 	// Separate idmap so this agent does not already know the object a2 pushed.
 	mp, err := agent.OpenMap(filepath.Join(t.TempDir(), "agent-b.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { mp.Close() })
-	a := newAgent(h, sel, nil, nil)
+	a := newAgent(h, sel)
 	a.Map = mp
 	a.Photos = src
 	src2 := &fakePhotos{list: []agent.LocalPhoto{{
 		ID: "remote-1", Filename: "r.jpg", TakenAtMS: time.Now().UnixMilli(), ModMS: 5, Original: orig,
 	}}}
-	a2 := newAgent(h, sel, nil, nil)
+	a2 := newAgent(h, sel)
 	a2.Photos = src2
 	if err := a2.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1257,7 +603,7 @@ func TestNestedFilesPush(t *testing.T) {
 			Folders: []agent.FileFolderSel{{Path: root, Name: "SyncRoot"}},
 		},
 	}
-	a := newAgent(h, sel, nil, nil)
+	a := newAgent(h, sel)
 	a.Files = agent.OpenFiles()
 	if err := a.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1291,323 +637,5 @@ func TestNestedFilesPush(t *testing.T) {
 	}
 	if len(nestedObjs) != 1 {
 		t.Fatalf("nested objects %d want 1", len(nestedObjs))
-	}
-}
-
-func TestContactPullNoEchoPreservesUID(t *testing.T) {
-	h := startHarness(t)
-	book := &fakeBook{lossy: true}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
-	a := newAgent(h, sel, nil, book)
-
-	col, err := h.eng.EnsureNamedCollection(context.Background(), h.dev.UserID, "addressbook", "Contacts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	vcf := testVCard("iphone-1", "Ada Lovelace")
-	hash := ncrypto.SHA256Hex(vcf)
-	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(vcf), hash); err != nil {
-		t.Fatal(err)
-	}
-	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
-		ObjectID: ids.New(), CollectionID: col.ID, Kind: "contact", Op: syncengine.OpCreate,
-		ContentHash: hash, BlobID: hash, Size: int64(len(vcf)),
-		Metadata: dav.EncodeContactMeta(dav.ContactMeta{Name: "iphone-1.vcf", UID: "iphone-1", FN: "Ada Lovelace"}),
-	}})
-	if err != nil || res[0].Status != "ok" {
-		t.Fatalf("create %v %v", err, res)
-	}
-	objID := res[0].ObjectID
-	before, err := h.eng.GetObject(context.Background(), objID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	after, err := h.eng.GetObject(context.Background(), objID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.Revision != before.Revision {
-		t.Fatalf("echo push bumped revision %d -> %d", before.Revision, after.Revision)
-	}
-	meta := dav.ParseContactMeta(after.Metadata)
-	if meta.UID != "iphone-1" || meta.Name != "iphone-1.vcf" {
-		t.Fatalf("meta %+v", meta)
-	}
-}
-
-func TestContactEditKeepsServerUID(t *testing.T) {
-	h := startHarness(t)
-	book := &fakeBook{lossy: true}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
-	a := newAgent(h, sel, nil, book)
-
-	col, err := h.eng.EnsureNamedCollection(context.Background(), h.dev.UserID, "addressbook", "Contacts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	vcf := testVCard("iphone-1", "Ada Lovelace")
-	hash := ncrypto.SHA256Hex(vcf)
-	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(vcf), hash); err != nil {
-		t.Fatal(err)
-	}
-	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
-		ObjectID: ids.New(), CollectionID: col.ID, Kind: "contact", Op: syncengine.OpCreate,
-		ContentHash: hash, BlobID: hash, Size: int64(len(vcf)),
-		Metadata: dav.EncodeContactMeta(dav.ContactMeta{Name: "iphone-1.vcf", UID: "iphone-1", FN: "Ada Lovelace"}),
-	}})
-	if err != nil || res[0].Status != "ok" {
-		t.Fatalf("create %v %v", err, res)
-	}
-	objID := res[0].ObjectID
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	book.mu.Lock()
-	if len(book.list) != 1 {
-		book.mu.Unlock()
-		t.Fatal("expected pulled contact")
-	}
-	edited := agent.EncodeContactVCard(agent.ContactSpec{
-		UID: book.list[0].UID, FN: "Ada L.", Given: "Ada", Family: "L.",
-		Emails: []agent.ContactValue{{Value: "ada@example.com"}},
-	})
-	book.list[0].VCard = edited
-	localID := book.list[0].ID
-	book.mu.Unlock()
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	obj, err := h.eng.GetObject(context.Background(), objID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	meta := dav.ParseContactMeta(obj.Metadata)
-	if meta.UID != "iphone-1" || meta.Name != "iphone-1.vcf" {
-		t.Fatalf("meta %+v local=%s", meta, localID)
-	}
-	pt, err := h.st.GetBlobPlaintext(obj.BlobID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(pt, []byte("UID:iphone-1")) || !bytes.Contains(pt, []byte("Ada L.")) {
-		t.Fatalf("blob %s", pt)
-	}
-}
-
-func TestEventPullNoEchoPreservesUID(t *testing.T) {
-	h := startHarness(t)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{},
-		lossy:     true,
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	a := newAgent(h, sel, cal, nil)
-
-	col, err := h.eng.EnsureNamedCollection(context.Background(), h.dev.UserID, "calendar", "Work")
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now().UTC().Truncate(time.Second)
-	ics, err := agent.EncodeICS("iphone-ev", "From phone", start, start.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := ncrypto.SHA256Hex(ics)
-	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(ics), hash); err != nil {
-		t.Fatal(err)
-	}
-	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
-		ObjectID: ids.New(), CollectionID: col.ID, Kind: "event", Op: syncengine.OpCreate,
-		ContentHash: hash, BlobID: hash, Size: int64(len(ics)),
-		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "iphone-ev.ics", UID: "iphone-ev", Comp: "VEVENT"}),
-	}})
-	if err != nil || res[0].Status != "ok" {
-		t.Fatalf("create %v %v", err, res)
-	}
-	objID := res[0].ObjectID
-	before, _ := h.eng.GetObject(context.Background(), objID)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := h.eng.GetObject(context.Background(), objID)
-	if after.Revision != before.Revision {
-		t.Fatalf("echo push bumped revision %d -> %d", before.Revision, after.Revision)
-	}
-	meta := dav.ParseEventMeta(after.Metadata)
-	if meta.UID != "iphone-ev" || meta.Name != "iphone-ev.ics" {
-		t.Fatalf("meta %+v", meta)
-	}
-}
-
-func TestPushConflictServerWins(t *testing.T) {
-	h := startHarness(t)
-	start := time.Now().UTC().Truncate(time.Second)
-	ev := testEvent(t, "uid-conflict", "Local", start)
-	cal := &fakeCal{
-		calendars: []agent.CalendarInfo{{ID: "cal-1", Title: "Work"}},
-		events:    map[string][]agent.LocalEvent{"cal-1": {ev}},
-	}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, Calendars: []agent.CalendarSel{{LocalID: "cal-1", Title: "Work"}}}
-	a := newAgent(h, sel, cal, nil)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	col := collection(t, h.eng, "calendar", "Work")
-	obj, err := h.eng.FindObjectByUID(context.Background(), col.ID, "uid-conflict")
-	if err != nil {
-		t.Fatal(err)
-	}
-	serverICS, err := agent.EncodeICS("uid-conflict", "Server wins", start, start.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := ncrypto.SHA256Hex(serverICS)
-	if _, _, err := h.st.PutUserBlob(context.Background(), h.dev.UserID, bytes.NewReader(serverICS), hash); err != nil {
-		t.Fatal(err)
-	}
-	res, err := h.eng.Push(context.Background(), syncengine.LocalOperator(), ids.New(), []syncengine.ChangeInput{{
-		ObjectID: obj.ID, CollectionID: col.ID, Kind: "event", Op: syncengine.OpUpdate,
-		BaseRevision: obj.Revision, ContentHash: hash, BlobID: hash, Size: int64(len(serverICS)),
-		Metadata: dav.EncodeEventMeta(dav.EventMeta{Name: "uid-conflict.ics", UID: "uid-conflict", Comp: "VEVENT"}),
-		Force:    true,
-	}})
-	if err != nil || res[0].Status != "ok" {
-		t.Fatalf("server update %v %v", err, res)
-	}
-	// Advance cursor past the server change without applying it, then push a local edit.
-	head, err := h.eng.HeadSeq(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Map.SetCursor(head); err != nil {
-		t.Fatal(err)
-	}
-	edited, _ := agent.EncodeICS("uid-conflict", "Local edit", start, start.Add(time.Hour))
-	cal.mu.Lock()
-	cal.events["cal-1"][0].ICS = edited
-	cal.mu.Unlock()
-	row, _ := a.Map.ByLocal("event", ev.ID)
-	row.LocalHash = "stale"
-	_ = a.Map.Put(row)
-
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	obj2, err := h.eng.GetObject(context.Background(), obj.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pt, err := h.st.GetBlobPlaintext(obj2.BlobID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(pt, []byte("Server wins")) || bytes.Contains(pt, []byte("Local edit")) {
-		t.Fatalf("conflict push overwrote server: %s", pt)
-	}
-
-	// Recover by replaying journal from the start.
-	if err := a.Map.SetCursor(0); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	got := cal.eventICS("cal-1", ev.ID)
-	if !strings.Contains(string(got), "Server wins") {
-		t.Fatalf("expected pull to apply server version: %s", got)
-	}
-}
-
-func TestContactsRemapNoDelete(t *testing.T) {
-	h := startHarness(t)
-	book := &fakeBook{list: []agent.LocalContact{{
-		ID: "cn-old", UID: "cn-old", VCard: testVCard("cn-old", "Grace Hopper"),
-	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
-	a := newAgent(h, sel, nil, book)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "addressbook", "Contacts"); n != 1 {
-		t.Fatalf("live %d", n)
-	}
-	col := collection(t, h.eng, "addressbook", "Contacts")
-	objs, err := h.eng.ListObjects(context.Background(), col.ID)
-	if err != nil || len(objs) != 1 {
-		t.Fatalf("objs %v", err)
-	}
-	objectID := objs[0].ID
-
-	_ = a.Map.SetMetaInt("contacts_id_mode", 0)
-	book.mu.Lock()
-	book.list = []agent.LocalContact{{
-		ID: "cn-new", UID: "cn-new", VCard: testVCard("cn-new", "Grace Hopper"),
-	}}
-	book.mu.Unlock()
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "addressbook", "Contacts"); n != 1 {
-		t.Fatalf("remap deleted/recreated, live=%d", n)
-	}
-	got, err := a.Map.ByObject(objectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.LocalID != "cn-new" {
-		t.Fatalf("local id %q", got.LocalID)
-	}
-}
-
-func TestContactsEmptyListingSkipsDeletes(t *testing.T) {
-	h := startHarness(t)
-	book := &fakeBook{list: []agent.LocalContact{{
-		ID: "cn-1", UID: "contact-keep", VCard: testVCard("contact-keep", "Grace Hopper"),
-	}}}
-	sel := agent.Selection{IntervalSeconds: 120, WindowDays: 730, SyncContacts: true}
-	a := newAgent(h, sel, nil, book)
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	book.mu.Lock()
-	book.list = nil
-	book.mu.Unlock()
-	if err := a.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := liveCount(t, h.eng, "addressbook", "Contacts"); n != 1 {
-		t.Fatalf("empty listing deleted contacts, live=%d", n)
-	}
-}
-
-func TestSetICSUID(t *testing.T) {
-	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
-	ics, err := agent.EncodeEventICS(agent.EventSpec{
-		UID: "old-uid", Summary: "Weekly", Start: start, End: start.Add(time.Hour),
-		RRule: "FREQ=WEEKLY",
-		Exceptions: []agent.EventSpec{{
-			UID: "old-uid", Summary: "Weekly (moved)", Start: start.AddDate(0, 0, 7), End: start.AddDate(0, 0, 7).Add(time.Hour),
-			RecurrenceID: start.AddDate(0, 0, 7),
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := agent.SetICSUID(ics, "kept-uid")
-	if strings.Count(string(got), "UID:kept-uid") < 2 {
-		t.Fatalf("expected UID on master and exception:\n%s", got)
-	}
-	if strings.Contains(string(got), "UID:old-uid") {
-		t.Fatalf("old uid remains:\n%s", got)
 	}
 }

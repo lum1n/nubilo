@@ -373,9 +373,9 @@ Same as CalDAV with `addressbook` / `contact` / vCard.
 
 ### macOS agent
 
-- Local EventKit identifiers stored in a *client-side* map `ek_identifier → object_id`
+- Local PhotoKit identifiers and file paths stored in a *client-side* map `local_id → object_id`
 - That map is not the server identity
-- Notifications trigger GET/PUSH; a timer and startup path always RECONCILE
+- A timer and the startup path trigger GET/PUSH and RECONCILE
 - A failed PhotoKit enumeration does not PUSH deletes
 
 ### Photos

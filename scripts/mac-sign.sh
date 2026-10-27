@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ad-hoc codesign nubilo so PhotoKit / EventKit / Contacts TCC prompts can appear.
+# Ad-hoc codesign nubilo so the PhotoKit TCC prompt can appear.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${1:-$(command -v nubilo || true)}"

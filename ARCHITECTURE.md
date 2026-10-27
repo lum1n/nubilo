@@ -43,11 +43,11 @@ Feature count is subordinate to those priorities. If a feature would weaken auth
 | Mode | Typical host | Role |
 | --- | --- | --- |
 | `server` | Always-on Linux or macOS | System of record. Serves sync protocol, HTTP API, CalDAV, CardDAV, and WebDAV. OS-agnostic. |
-| `agent` | macOS | Trusted connector. Reads EventKit / PhotoKit / Contacts / selected files and pushes into the server over the sync protocol. Never stores corporate credentials on Linux. |
+| `agent` | macOS | Trusted connector. Reads PhotoKit and selected files and pushes into the server over the sync protocol. Never stores corporate credentials on Linux. |
 | `client` | Linux or macOS | Generic sync client for files and photos without macOS frameworks. |
 | CLI | Either | Local administration, pairing, verify, gc, backup, restore. |
 
-All modes share the same packages. Platform-specific APIs are isolated behind build tags (`darwin` for EventKit/PhotoKit). Linux builds of `nubilo agent` refuse to start with an explicit error. `nubilo server install` / `nubilo agent install` register user-level always-on services (systemd `--user` on Linux; LaunchAgent on macOS). Agent install is macOS-only and runs the binary from `~/Applications/Nubilo.app` for TCC attribution. `nubilo setup` / `nubilo doctor` (and the UI health panel) guide first-run hardening: auto-backup, disk encryption checks, and pairing. Agent signing keys live in the macOS Keychain.
+All modes share the same packages. Platform-specific APIs are isolated behind build tags (`darwin` for PhotoKit). Linux builds of `nubilo agent` refuse to start with an explicit error. `nubilo server install` / `nubilo agent install` register user-level always-on services (systemd `--user` on Linux; LaunchAgent on macOS). Agent install is macOS-only and runs the binary from `~/Applications/Nubilo.app` for TCC attribution. `nubilo setup` / `nubilo doctor` (and the UI health panel) guide first-run hardening: auto-backup, disk encryption checks, and pairing. Agent signing keys live in the macOS Keychain.
 
 ## Trust and deployment shape
 
@@ -58,7 +58,7 @@ Corporate services
       │
       ▼
     macOS (agent)
-      │  EventKit / PhotoKit / permitted APIs
+      │  PhotoKit / selected folders
       ▼
 Nubilo Agent
       │  TLS + device signatures + encrypted blobs
@@ -104,7 +104,7 @@ Protocol adapters (not implemented until the sync engine and security model are 
 ```text
 internal/dav        WebDAV / CalDAV / CardDAV adapters
 internal/photos     image metadata, derivatives, PhotoKit mapping
-internal/agent      macOS EventKit / Contacts / PhotoKit
+internal/agent      macOS PhotoKit and folder sync
 ```
 
 ## Object model (summary)
@@ -257,4 +257,4 @@ Rules:
 
 See [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
-**Phases 1–8 are implemented:** foundation, the generic sync engine with `/sync/v1`, WebDAV at `/dav/`, CalDAV at `/caldav/`, CardDAV at `/carddav/`, the macOS EventKit/Contacts agent, photos (`/api/v1/photos` plus PhotoKit), and hardening (`verify`, `gc`, fuzz, corruption, backup drills). Treat as suitable for important personal data only after the operator has run `verify`, taken an encrypted backup that restored cleanly, and put LUKS (or equivalent) under `$data_dir`.
+**Phases 1–8 are implemented:** foundation, the generic sync engine with `/sync/v1`, WebDAV at `/dav/`, CalDAV at `/caldav/`, CardDAV at `/carddav/`, the macOS agent (its EventKit/Contacts sync was later replaced by CalDAV/CardDAV accounts on the Mac), photos (`/api/v1/photos` plus PhotoKit), and hardening (`verify`, `gc`, fuzz, corruption, backup drills). Treat as suitable for important personal data only after the operator has run `verify`, taken an encrypted backup that restored cleanly, and put LUKS (or equivalent) under `$data_dir`.

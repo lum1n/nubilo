@@ -4,9 +4,5 @@
 <dict>
 	<key>com.apple.security.personal-information.photos-library</key>
 	<true/>
-	<key>com.apple.security.personal-information.calendars</key>
-	<true/>
-	<key>com.apple.security.personal-information.addressbook</key>
-	<true/>
 </dict>
 </plist>

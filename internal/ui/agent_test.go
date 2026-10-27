@@ -69,13 +69,10 @@ func TestAgentUISelectionRoundTrip(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&sel); err != nil {
 		t.Fatal(err)
 	}
-	sel.SyncContacts = true
 	sel.IntervalSeconds = 90
-	sel.WindowDays = 365
 	sel.Photos.Enabled = true
 	sel.Photos.Source = "albums"
 	sel.SelectAlbum("person:test-pet")
-	sel.SelectCalendar("cal-1", "Work")
 	sel.Files.Enabled = true
 	folder := filepath.Join(dir, "docs")
 	if err := os.MkdirAll(folder, 0o700); err != nil {
@@ -100,14 +97,11 @@ func TestAgentUISelectionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.SyncContacts || got.IntervalSeconds != 90 || got.WindowDays != 365 {
+	if got.IntervalSeconds != 90 {
 		t.Fatalf("selection %#v", got)
 	}
 	if !got.Photos.Enabled || got.Photos.Source != "albums" || len(got.Photos.Albums) != 1 || got.Photos.Albums[0] != "person:test-pet" {
 		t.Fatalf("photos %#v", got.Photos)
-	}
-	if len(got.Calendars) != 1 || got.Calendars[0].LocalID != "cal-1" {
-		t.Fatalf("calendars %#v", got.Calendars)
 	}
 	if !got.Files.Enabled || len(got.Files.Folders) != 1 {
 		t.Fatalf("files %#v", got.Files)

@@ -10,9 +10,6 @@
 
   const routes = {
     home: { title: "overview", render: renderHome },
-    calendars: { title: "calendars", render: renderCalendars },
-    reminders: { title: "reminders", render: renderReminders },
-    contacts: { title: "contacts", render: renderContacts },
     photos: { title: "photos", render: renderPhotos },
     files: { title: "files", render: renderFiles },
     setup: { title: "setup", render: renderSetup },
@@ -115,84 +112,12 @@
         ${kvRow("device", p.paired ? esc(p.name || p.device_id) : "—")}
         ${kvRow("photos access", esc(o.photos_auth))}
         ${kvRow("interval", esc(o.interval_seconds) + "s")}
-        ${kvRow("window", esc(o.window_days) + "d")}
-        ${kvRow("calendars", esc(o.counts.calendars))}
-        ${kvRow("reminders", esc(o.counts.reminders))}
-        ${kvRow("contacts", o.sync_contacts ? "on" : "off")}
         ${kvRow("photos", o.photos_enabled ? "on (" + o.counts.albums + " albums)" : "off")}
         ${kvRow("files", o.files_enabled ? "on (" + o.counts.folders + " folders)" : "off")}
       </table>
       <p class="muted">CLI: <code>nubilo agent setup</code> · <code>nubilo doctor --agent</code></p>
     `;
     statusText.textContent = p.paired ? "paired" : "unpaired";
-  }
-
-  function checklistTable(rows, idKey, labelFn, onToggle) {
-    const q = `<input type="search" id="filter" placeholder="filter…" style="max-width:16rem;margin-bottom:0.4rem">`;
-    const body = rows
-      .map((row) => {
-        const id = row[idKey];
-        const checked = row.selected ? "checked" : "";
-        return `<tr data-q="${esc((labelFn(row) + " " + id).toLowerCase())}">
-          <td><input type="checkbox" data-id="${esc(id)}" ${checked}></td>
-          <td>${labelFn(row)}</td>
-        </tr>`;
-      })
-      .join("");
-    content.innerHTML = `${q}<div class="block"><table class="data"><thead><tr><th></th><th>name</th></tr></thead><tbody>${body}</tbody></table></div>`;
-    const filter = $("#filter");
-    filter.addEventListener("input", () => {
-      const v = filter.value.trim().toLowerCase();
-      content.querySelectorAll("tbody tr").forEach((tr) => {
-        tr.style.display = !v || tr.dataset.q.includes(v) ? "" : "none";
-      });
-    });
-    content.querySelectorAll("input[type=checkbox][data-id]").forEach((cb) => {
-      cb.addEventListener("change", async () => {
-        try {
-          await onToggle(cb.dataset.id, cb.checked);
-          toast(cb.checked ? "selected" : "unselected");
-        } catch (e) {
-          cb.checked = !cb.checked;
-          toast(String(e.message || e));
-        }
-      });
-    });
-  }
-
-  async function renderCalendars() {
-    const data = await api("/calendars");
-    checklistTable(data.calendars || [], "id", (r) => esc(r.title || r.id), async (id, on) => {
-      await api(on ? "/calendars/select" : "/calendars/unselect", {
-        method: "POST",
-        body: JSON.stringify({ id }),
-      });
-    });
-  }
-
-  async function renderReminders() {
-    const data = await api("/reminders");
-    checklistTable(data.reminders || [], "id", (r) => esc(r.title || r.id), async (id, on) => {
-      await api(on ? "/reminders/select" : "/reminders/unselect", {
-        method: "POST",
-        body: JSON.stringify({ id }),
-      });
-    });
-  }
-
-  async function renderContacts() {
-    const sel = await api("/selection");
-    content.innerHTML = `
-      <div class="section">
-        <h3 class="section-title">contacts</h3>
-        <label><input type="checkbox" id="sync-contacts" ${sel.sync_contacts ? "checked" : ""}> sync Address Book contacts</label>
-        <p style="margin-top:0.5rem"><button type="button" class="btn primary" id="save-contacts" style="width:auto">save</button></p>
-      </div>`;
-    $("#save-contacts").onclick = async () => {
-      sel.sync_contacts = $("#sync-contacts").checked;
-      await api("/selection", { method: "PUT", body: JSON.stringify(sel) });
-      toast("saved");
-    };
   }
 
   async function renderPhotos() {
@@ -360,7 +285,6 @@
       <div class="section">
         <h3 class="section-title">sync timing</h3>
         <label>interval (seconds)<input type="number" id="interval" value="${esc(sel.interval_seconds)}" min="30"></label>
-        <label>window (days)<input type="number" id="window" value="${esc(sel.window_days)}" min="1"></label>
         <p><button type="button" class="btn primary" id="save-setup" style="width:auto">save</button></p>
         <p class="muted">data dir: ${esc(o.data_dir)}</p>
       </div>
@@ -380,7 +304,6 @@
     $("#save-setup").onclick = async () => {
       const next = await api("/selection");
       next.interval_seconds = parseInt($("#interval").value, 10) || 120;
-      next.window_days = parseInt($("#window").value, 10) || 730;
       await api("/selection", { method: "PUT", body: JSON.stringify(next) });
       toast("saved");
     };

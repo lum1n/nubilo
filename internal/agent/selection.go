@@ -5,11 +5,6 @@ import (
 	"os"
 )
 
-type CalendarSel struct {
-	LocalID string `json:"local_id"`
-	Title   string `json:"title"`
-}
-
 type PhotosSel struct {
 	Enabled  bool     `json:"enabled"`
 	Source   string   `json:"source"`
@@ -29,18 +24,13 @@ type FilesSel struct {
 }
 
 type Selection struct {
-	IntervalSeconds int           `json:"interval_seconds"`
-	WindowDays      int           `json:"window_days"`
-	Calendars       []CalendarSel `json:"calendars"`
-	Reminders       []CalendarSel `json:"reminders"`
-	SyncContacts      bool          `json:"sync_contacts"`
-	ContactsContainer string        `json:"contacts_container,omitempty"`
-	Photos            PhotosSel     `json:"photos"`
-	Files             FilesSel      `json:"files"`
+	IntervalSeconds int       `json:"interval_seconds"`
+	Photos          PhotosSel `json:"photos"`
+	Files           FilesSel  `json:"files"`
 }
 
 func DefaultSelection() Selection {
-	return Selection{IntervalSeconds: 120, WindowDays: 730}
+	return Selection{IntervalSeconds: 120}
 }
 
 func LoadSelection(path string) (Selection, error) {
@@ -58,9 +48,6 @@ func LoadSelection(path string) (Selection, error) {
 	if s.IntervalSeconds <= 0 {
 		s.IntervalSeconds = 120
 	}
-	if s.WindowDays <= 0 {
-		s.WindowDays = 730
-	}
 	if s.Photos.Source == "" {
 		s.Photos.Source = "all"
 	}
@@ -71,9 +58,6 @@ func SaveSelection(path string, s Selection) error {
 	if s.IntervalSeconds <= 0 {
 		s.IntervalSeconds = 120
 	}
-	if s.WindowDays <= 0 {
-		s.WindowDays = 730
-	}
 	if s.Photos.Source == "" {
 		s.Photos.Source = "all"
 	}
@@ -82,46 +66,6 @@ func SaveSelection(path string, s Selection) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o600)
-}
-
-func (s *Selection) SelectCalendar(id, title string) {
-	for i := range s.Calendars {
-		if s.Calendars[i].LocalID == id {
-			s.Calendars[i].Title = title
-			return
-		}
-	}
-	s.Calendars = append(s.Calendars, CalendarSel{LocalID: id, Title: title})
-}
-
-func (s *Selection) UnselectCalendar(id string) {
-	out := s.Calendars[:0]
-	for _, c := range s.Calendars {
-		if c.LocalID != id {
-			out = append(out, c)
-		}
-	}
-	s.Calendars = out
-}
-
-func (s *Selection) SelectReminder(id, title string) {
-	for i := range s.Reminders {
-		if s.Reminders[i].LocalID == id {
-			s.Reminders[i].Title = title
-			return
-		}
-	}
-	s.Reminders = append(s.Reminders, CalendarSel{LocalID: id, Title: title})
-}
-
-func (s *Selection) UnselectReminder(id string) {
-	out := s.Reminders[:0]
-	for _, c := range s.Reminders {
-		if c.LocalID != id {
-			out = append(out, c)
-		}
-	}
-	s.Reminders = out
 }
 
 func (s *Selection) SelectAlbum(id string) {

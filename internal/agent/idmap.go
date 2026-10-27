@@ -12,8 +12,7 @@ import (
 )
 
 type Map struct {
-	DB   *sql.DB
-	Path string // sqlite file path; used for contact-cache sidecars
+	DB *sql.DB
 }
 
 type Mapping struct {
@@ -71,7 +70,7 @@ func OpenMap(path string) (*Map, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Map{DB: db, Path: path}, nil
+	return &Map{DB: db}, nil
 }
 
 func migrateIDMap(db *sql.DB) error {
@@ -147,9 +146,9 @@ func (m *Map) Put(row Mapping) error {
 		return err
 	}
 	defer tx.Rollback()
-	// EventKit can return a new calendarItemIdentifier for the same server
-	// object (recurring save, pull-after-push). Rebind instead of inserting
-	// a second row, which trips UNIQUE(object_id).
+	// A server object can come back under a new local id (a photo
+	// re-imported, a file moved). Rebind instead of inserting a second row,
+	// which trips UNIQUE(object_id).
 	if row.ObjectID != "" {
 		if _, err := tx.Exec(`DELETE FROM idmap WHERE object_id = ? AND (local_id != ? OR kind != ?)`,
 			row.ObjectID, row.LocalID, row.Kind); err != nil {

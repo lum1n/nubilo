@@ -1,43 +1,29 @@
 # Nubilo gaps
 
-Snapshot of what is implemented vs missing. Calendar remains the lock-in surface; contacts and photos now have production-minded round-trips without a mobile app.
+Snapshot of what is implemented vs missing. Calendars, reminders and contacts live on the server; every device (iPhone, iPad, Mac) reaches them through its built-in CalDAV / CardDAV account, installed by the configuration profile.
 
 Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 
 ## Works today
 
-- Mac agent over `/sync/v1` for selected calendars and reminder lists, including recurrence (`RRULE` / `EXDATE` / exceptions) and event timezones.
-- iPhone CalDAV (app password, Apple-trusted TLS).
-- WebDAV files, CardDAV contacts, PhotoKit **push + pull write-back**, photo HTTP API and `nubilo ui` gallery + upload.
+- CalDAV (calendars and reminders) and CardDAV (contacts) for every device, with app passwords and Apple-trusted TLS.
+- WebDAV files, PhotoKit **push + pull write-back**, photo HTTP API and `nubilo ui` gallery + upload.
 - Pairing, backup/restore (CLI + UI), enroll/rotate, TLS regen, verify, gc, optional server auto-backup.
 - Always-on user services: `nubilo server install` (Linux systemd `--user` or macOS LaunchAgent), `nubilo agent install` (macOS LaunchAgent via Nubilo.app).
 - Guided setup + doctor: `nubilo setup`, `nubilo agent setup`, `nubilo doctor`, UI health panel; macOS agent keys in Keychain.
-- EventKit / Contacts change notifications wake the agent (still polls as a backstop).
 
-## Calendar (lock-in)
+## Calendars, reminders and contacts
 
-Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then edits round-trip.
+The Mac agent no longer syncs Calendar, Reminders or Contacts through EventKit. The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the profile from the app or the web UI), so Apple's own clients talk to the server directly and the server stores their ICS / vCard bodies unchanged.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Summary, notes, location, start/end, all-day | Done | |
-| Recurrence (`RRULE`, `EXDATE`, detached `RECURRENCE-ID`) | Done | Window ±730 days; series with no in-window occurrence is not pushed. Sparse EventKit listings do not invent EXDATEs |
-| Event timezone (`TZID`) | Done | |
-| `VTIMEZONE` component | Done | Emitted next to `TZID` |
-| Alarms (`VALARM`) | Done | DISPLAY + EMAIL (ATTENDEE); relative and absolute |
-| URL | Done | |
-| URI `ATTACH` | Done | URI attachments round-trip in ICS; inline binary attachments deferred |
-| Status (`CONFIRMED` / `TENTATIVE` / `CANCELLED`) | Done | Read into ICS from EventKit. `EKEvent.status` is readonly — pull cannot set STATUS; cancelled events are deletes |
-| Busy/free (`TRANSP`) | Done | |
-| Organizer / attendees | Done | Read from EventKit into ICS so iPhone sees invitees. macOS EventKit does not allow creating attendees without EventKitUI; pull will not attach people on the Mac |
-| Failed `apply_change` still ACKed | Done | Journal cursor does not advance if any apply in the batch failed |
-| Calendar color (`calendar-color` PROPPATCH) | Done | Stored in collection metadata; returned on PROPFIND. Mac agent pushes EventKit calendar color |
-| Alarms that are procedure | Open | Not useful on Apple clients |
+| Events, recurrence, timezones, alarms, attendees | Done | Stored as the client sent them |
+| Reminders (`VTODO`) | Done | VTODO-only calendar collections |
+| Calendar color (`calendar-color` PROPPATCH) | Done | Stored in collection metadata; returned on PROPFIND |
+| Sharing a calendar or address book with another user | Done | Read-only or read-write shares (SECURITY.md §5.1) |
 | Inline binary attachments | Open | Would bloat blobs; URI ATTACH only |
-| Travel time / conference / structured location extras | Open | Not in standard VEVENT |
-| Reminders (`VTODO` / EventKit reminders) | Done | Mac agent syncs selected reminder lists as VTODO-only CalDAV collections. Incomplete always; completed within `window_days` |
-| EventKit change notifications | Done | `EKEventStoreChangedNotification` + 2s debounce; poll remains as backstop |
-| Calendar window | Open | Default ±730 days; operator can raise `window_days` |
+| Moving data out of iCloud | Manual | Export from iCloud (or drag the calendars into the Nubilo account on the Mac) |
 
 ## Photos
 
@@ -53,13 +39,6 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 - Identical plaintext bytes dedup to one blob. Default **256 MiB** cap (`sync.max_blob_bytes`; legacy 32/64 MiB configs are bumped on load so phone videos sync).
 - Blob PUT/GET use a 15m client timeout (JSON sync stays at 60s). Oversized bodies return 413; truncated uploads no longer trip the auth fail → 429 cascade.
 
-## Contacts
-
-- Mac agent syncs FN/N, org, nickname, note, emails, phones, postal addresses, URLs, birthday (`BDAY`, including yearless `--MM-DD`), and photo when present.
-- CardDAV stores full vCard blobs; agent keeps a per-contact cache and **merges** Mac-managed fields into the last full card so iPhone extras (and `X-*` props) are not wiped on the next push.
-- FN-only / org-only cards apply a displayable name into Contacts.app so they do not round-trip blank.
-- Contacts store change notifications wake the agent (with poll backstop).
-
 ## Files
 
 - iOS Files / Finder can mount `/dav/` (nested folders, file + collection COPY, MOVE across folders).
@@ -71,7 +50,6 @@ Target: EventKit → ICS → CalDAV → iPhone looks like the same event, then e
 ## Integrity / sync
 
 - Failed `apply_change` no longer advances the journal cursor.
-- Synthetic `EXDATE` skipped when EventKit listing looks incomplete (missing ≫ listed).
 - Multi-user since schema v2: users, per-collection ownership, read-only/read-write shares of top-level collections, isolated journal/blobs/photos/DAV (SECURITY.md §5.1). Groups, quotas and per-user web logins are not implemented yet; the admin console acts as a chosen user.
 
 ## Security / ops

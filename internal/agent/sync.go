@@ -21,28 +21,20 @@ import (
 )
 
 const (
-	kindEvent   = "event"
-	kindTodo    = "todo"
-	kindContact = "contact"
-	kindCal     = "calendar"
-	kindBook    = "addressbook"
-	kindPhoto   = "photo"
-	kindPhotos  = "photos"
-	kindFile    = "file"
-	kindFiles   = "files"
+	kindPhoto  = "photo"
+	kindPhotos = "photos"
+	kindFile   = "file"
+	kindFiles  = "files"
 )
 
 type Agent struct {
-	Client    *protocol.Client
-	Map       *Map
-	Sel       Selection
-	SelPath   string // agent.json; reloaded at the start of each SyncOnce
-	Cal       CalendarSource
-	Reminders ReminderSource
-	Contacts  ContactSource
-	Photos    PhotoSource
-	Files     FileSource
-	Log       *slog.Logger
+	Client  *protocol.Client
+	Map     *Map
+	Sel     Selection
+	SelPath string // agent.json; reloaded at the start of each SyncOnce
+	Photos  PhotoSource
+	Files   FileSource
+	Log     *slog.Logger
 
 	routes map[string]route
 
@@ -146,16 +138,6 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 	existing, mapErr := a.Map.ByObject(ch.ObjectID)
 	if ch.Op == syncengine.OpDelete || ch.Deleted {
 		if mapErr == nil {
-			if rt.kind == kindEvent && a.Cal != nil {
-				_ = a.Cal.DeleteEvent(existing.LocalID)
-			}
-			if rt.kind == kindTodo && a.Reminders != nil {
-				_ = a.Reminders.DeleteReminder(existing.LocalID)
-			}
-			if rt.kind == kindContact && a.Contacts != nil {
-				_ = a.Contacts.DeleteContact(existing.LocalID)
-				a.Map.DeleteContactCache(existing.LocalID)
-			}
 			if rt.kind == kindFile && a.Files != nil {
 				_ = a.Files.DeleteFile(existing.LocalID)
 			}
@@ -180,66 +162,7 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 	var localID string
 	var startMS int64
 	var modMS int64
-	uid := ""
-	name := ""
 	switch rt.kind {
-	case kindEvent:
-		if a.Cal == nil {
-			return nil
-		}
-		meta := dav.ParseEventMeta(ch.Metadata)
-		uid, name = meta.UID, meta.Name
-		if uid == "" {
-			uid = UIDFromICS(payload)
-		}
-		prev := ""
-		if mapErr == nil {
-			prev = existing.LocalID
-		}
-		id, err := a.Cal.UpsertEvent(rt.localID, prev, payload)
-		if err != nil {
-			return err
-		}
-		localID = id
-		startMS = EventStartMS(payload)
-	case kindTodo:
-		if a.Reminders == nil {
-			return nil
-		}
-		meta := dav.ParseEventMeta(ch.Metadata)
-		uid, name = meta.UID, meta.Name
-		if uid == "" {
-			uid = UIDFromICS(payload)
-		}
-		prev := ""
-		if mapErr == nil {
-			prev = existing.LocalID
-		}
-		id, err := a.Reminders.UpsertReminder(rt.localID, prev, payload)
-		if err != nil {
-			return err
-		}
-		localID = id
-		startMS = TodoDueMS(payload)
-	case kindContact:
-		if a.Contacts == nil {
-			return nil
-		}
-		meta := dav.ParseContactMeta(ch.Metadata)
-		uid, name = meta.UID, meta.Name
-		if uid == "" {
-			uid = UIDFromVCard(payload)
-		}
-		prev := ""
-		if mapErr == nil {
-			prev = existing.LocalID
-		}
-		id, err := a.Contacts.UpsertContact(prev, payload)
-		if err != nil {
-			return err
-		}
-		localID = id
-		_ = a.Map.SaveContactCache(localID, payload)
 	case kindFile:
 		if a.Files == nil || rt.rootPath == "" {
 			return nil
@@ -291,488 +214,14 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 	return a.Map.Put(Mapping{
 		LocalID: localID, Kind: rt.kind, ObjectID: ch.ObjectID, CollectionID: ch.CollectionID,
 		ContentHash: ch.ContentHash, Revision: ch.Revision, StartMS: startMS, ModMS: modMS,
-		UID: uid, Name: name, LocalHash: "",
 	})
 }
 
 func (a *Agent) pushLocal(ctx context.Context) error {
-	if err := a.pushCalendars(ctx); err != nil {
-		return err
-	}
-	if err := a.pushReminders(ctx); err != nil {
-		return err
-	}
-	if err := a.pushContacts(ctx); err != nil {
-		return err
-	}
 	if err := a.pushPhotos(ctx); err != nil {
 		return err
 	}
 	return a.pushFiles(ctx)
-}
-
-func (a *Agent) pushCalendars(ctx context.Context) error {
-	if a.Cal == nil {
-		return nil
-	}
-	now := time.Now()
-	start := now.AddDate(0, 0, -a.Sel.WindowDays)
-	end := now.AddDate(0, 0, a.Sel.WindowDays)
-	colorByID := map[string]string{}
-	if cals, err := a.Cal.ListCalendars(); err == nil {
-		for _, c := range cals {
-			if c.Color != "" {
-				colorByID[c.ID] = c.Color
-			}
-		}
-	}
-	for _, sel := range a.Sel.Calendars {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		col, err := a.ensureCollection(kindCal, sel.Title)
-		if err != nil {
-			return err
-		}
-		if hex := colorByID[sel.LocalID]; hex != "" {
-			if err := a.syncCollectionColor(col, hex); err != nil {
-				a.Log.Warn("calendar_color", "name", sel.Title, "err", err.Error())
-			}
-		}
-		events, err := a.Cal.ListEvents(sel.LocalID, start, end)
-		if err != nil {
-			a.Log.Warn("list_events_failed", "calendar", sel.Title, "err", err.Error())
-			continue
-		}
-		a.Log.Info("push_calendar", "name", sel.Title, "events", len(events))
-		seen := map[string]bool{}
-		for _, ev := range events {
-			seen[ev.ID] = true
-			if err := a.pushEvent(col.ID, ev); err != nil {
-				a.Log.Warn("push_event", "err", err.Error(), "local", ev.ID)
-			}
-		}
-		mapped, err := a.Map.ForCollection(col.ID)
-		if err != nil {
-			return err
-		}
-		winStart, winEnd := start.UnixMilli(), end.UnixMilli()
-		for _, row := range mapped {
-			if seen[row.LocalID] {
-				continue
-			}
-			if row.StartMS == 0 || row.StartMS < winStart || row.StartMS > winEnd {
-				continue
-			}
-			if err := a.pushDelete(row); err != nil {
-				a.Log.Warn("push_delete", "err", err.Error(), "object", row.ObjectID)
-			}
-		}
-	}
-	return nil
-}
-
-func (a *Agent) pushReminders(ctx context.Context) error {
-	if a.Reminders == nil || len(a.Sel.Reminders) == 0 {
-		return nil
-	}
-	now := time.Now()
-	start := now.AddDate(0, 0, -a.Sel.WindowDays)
-	end := now.AddDate(0, 0, a.Sel.WindowDays)
-	colorByID := map[string]string{}
-	if lists, err := a.Reminders.ListReminderLists(); err == nil {
-		for _, c := range lists {
-			if c.Color != "" {
-				colorByID[c.ID] = c.Color
-			}
-		}
-	}
-	for _, sel := range a.Sel.Reminders {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		col, err := a.ensureReminderCollection(sel.Title, colorByID[sel.LocalID])
-		if err != nil {
-			return err
-		}
-		todos, err := a.Reminders.ListReminders(sel.LocalID, start, end)
-		if err != nil {
-			a.Log.Warn("list_reminders_failed", "list", sel.Title, "err", err.Error())
-			continue
-		}
-		a.Log.Info("push_reminders", "name", sel.Title, "todos", len(todos))
-		seen := map[string]bool{}
-		for _, td := range todos {
-			seen[td.ID] = true
-			if err := a.pushTodo(col.ID, td); err != nil {
-				a.Log.Warn("push_todo", "err", err.Error(), "local", td.ID)
-			}
-		}
-		mapped, err := a.Map.ForCollection(col.ID)
-		if err != nil {
-			return err
-		}
-		winStart, winEnd := start.UnixMilli(), end.UnixMilli()
-		for _, row := range mapped {
-			if seen[row.LocalID] {
-				continue
-			}
-			// Incomplete undated todos use StartMS=0; always delete if missing from list.
-			if row.StartMS != 0 && (row.StartMS < winStart || row.StartMS > winEnd) {
-				continue
-			}
-			if err := a.pushDelete(row); err != nil {
-				a.Log.Warn("push_delete", "err", err.Error(), "object", row.ObjectID)
-			}
-		}
-	}
-	return nil
-}
-
-func (a *Agent) pushContacts(ctx context.Context) error {
-	if a.Contacts == nil || !a.Sel.SyncContacts {
-		return nil
-	}
-	col, err := a.ensureCollection(kindBook, "Contacts")
-	if err != nil {
-		return err
-	}
-	list, err := a.Contacts.ListContacts()
-	if err != nil {
-		a.Log.Warn("list_contacts_failed", "err", err.Error())
-		return nil
-	}
-	mapped, err := a.Map.ForCollection(col.ID)
-	if err != nil {
-		return err
-	}
-	skipDeletes := false
-	if a.Map.MetaInt("contacts_id_mode") != 1 {
-		list, mapped, skipDeletes = a.remapContacts(list, mapped)
-		if err := a.Map.SetMetaInt("contacts_id_mode", 1); err != nil {
-			return err
-		}
-	}
-	seen := map[string]bool{}
-	for _, c := range list {
-		seen[c.ID] = true
-		if err := a.pushContact(col.ID, c); err != nil {
-			a.Log.Warn("push_contact", "err", err.Error(), "local", c.ID)
-		}
-	}
-	if len(list) == 0 && len(mapped) > 0 {
-		a.Log.Warn("contacts_empty_listing", "mapped", len(mapped))
-		return nil
-	}
-	if skipDeletes {
-		return nil
-	}
-	for _, row := range mapped {
-		if seen[row.LocalID] {
-			continue
-		}
-		if err := a.pushDelete(row); err != nil {
-			a.Log.Warn("push_delete", "err", err.Error(), "object", row.ObjectID)
-		}
-	}
-	return nil
-}
-
-// remapContacts rebinds idmap rows whose unified identifiers no longer match
-// the non-unified container listing. Returns updated list/mapped and whether
-// deletes should be skipped for this run.
-func (a *Agent) remapContacts(list []LocalContact, mapped []Mapping) ([]LocalContact, []Mapping, bool) {
-	byID := map[string]bool{}
-	for _, c := range list {
-		byID[c.ID] = true
-	}
-	used := map[string]bool{}
-	fpList := map[string]string{}
-	for _, c := range list {
-		fpList[c.ID] = ContactFingerprint(ParseContactVCard(c.VCard))
-	}
-	outMapped := make([]Mapping, 0, len(mapped))
-	for _, row := range mapped {
-		if byID[row.LocalID] {
-			outMapped = append(outMapped, row)
-			used[row.LocalID] = true
-			continue
-		}
-		want := ""
-		if cached := a.Map.LoadContactCache(row.LocalID); len(cached) > 0 {
-			want = ContactFingerprint(ParseContactVCard(cached))
-		}
-		if want == "" {
-			outMapped = append(outMapped, row)
-			continue
-		}
-		matched := ""
-		for _, c := range list {
-			if used[c.ID] {
-				continue
-			}
-			if fpList[c.ID] == want {
-				matched = c.ID
-				break
-			}
-		}
-		if matched == "" {
-			outMapped = append(outMapped, row)
-			continue
-		}
-		oldID := row.LocalID
-		row.LocalID = matched
-		row.LocalHash = ""
-		if err := a.Map.Put(row); err != nil {
-			a.Log.Warn("contacts_remap", "err", err.Error(), "from", oldID, "to", matched)
-			row.LocalID = oldID
-			outMapped = append(outMapped, row)
-			continue
-		}
-		if cached := a.Map.LoadContactCache(oldID); len(cached) > 0 {
-			_ = a.Map.SaveContactCache(matched, cached)
-			a.Map.DeleteContactCache(oldID)
-		}
-		used[matched] = true
-		outMapped = append(outMapped, row)
-	}
-	return list, outMapped, true // skip deletes on first container-mode run
-}
-
-func (a *Agent) pushEvent(collectionID string, ev LocalEvent) error {
-	rawHash := ncrypto.SHA256Hex(ev.ICS)
-	row, mapErr := a.Map.ByLocal(kindEvent, ev.ID)
-	if mapErr == nil {
-		if row.LocalHash == "" {
-			row.LocalHash = rawHash
-			return a.Map.Put(row)
-		}
-		if row.LocalHash == rawHash {
-			return nil
-		}
-	} else if !errors.Is(mapErr, sql.ErrNoRows) {
-		return mapErr
-	}
-
-	ics := ev.ICS
-	uid := ev.UID
-	name := ""
-	if mapErr == nil && row.UID != "" {
-		uid = row.UID
-		ics = SetICSUID(ev.ICS, row.UID)
-		name = row.Name
-	}
-	if uid == "" {
-		uid = UIDFromICS(ics)
-	}
-	if uid == "" {
-		uid = ev.ID
-	}
-	if name == "" {
-		name = dav.DAVResourceName(uid+".ics", ".ics")
-	}
-	hash := ncrypto.SHA256Hex(ics)
-	if err := a.putBlob(hash, ics); err != nil {
-		return err
-	}
-	in := syncengine.ChangeInput{
-		CollectionID: collectionID,
-		Kind:         kindEvent,
-		ContentHash:  hash,
-		BlobID:       hash,
-		Size:         int64(len(ics)),
-		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: name, UID: uid, Comp: "VEVENT"}),
-	}
-	if errors.Is(mapErr, sql.ErrNoRows) {
-		in.ObjectID = ids.New()
-		in.Op = syncengine.OpCreate
-	} else {
-		in.ObjectID = row.ObjectID
-		in.Op = syncengine.OpUpdate
-		in.BaseRevision = row.Revision
-	}
-	res, err := a.Client.Push(ids.New(), []syncengine.ChangeInput{in})
-	if err != nil {
-		return err
-	}
-	if len(res) == 0 {
-		return errors.New("push event rejected")
-	}
-	if res[0].Status == "conflict" {
-		a.Log.Warn("push_conflict", "object", in.ObjectID, "server_revision", res[0].ServerRevision, "server_hash", res[0].ServerContentHash)
-		return nil
-	}
-	if res[0].Status != "ok" {
-		return errors.New("push event rejected")
-	}
-	start := ev.StartMS
-	if start == 0 {
-		start = EventStartMS(ics)
-	}
-	return a.Map.Put(Mapping{
-		LocalID: ev.ID, Kind: kindEvent, ObjectID: in.ObjectID, CollectionID: collectionID,
-		ContentHash: hash, Revision: res[0].Revision, StartMS: start,
-		UID: uid, Name: name, LocalHash: rawHash,
-	})
-}
-
-func (a *Agent) pushTodo(collectionID string, td LocalTodo) error {
-	rawHash := ncrypto.SHA256Hex(td.ICS)
-	row, mapErr := a.Map.ByLocal(kindTodo, td.ID)
-	if mapErr == nil {
-		if row.LocalHash == "" {
-			row.LocalHash = rawHash
-			return a.Map.Put(row)
-		}
-		if row.LocalHash == rawHash {
-			return nil
-		}
-	} else if !errors.Is(mapErr, sql.ErrNoRows) {
-		return mapErr
-	}
-
-	ics := td.ICS
-	uid := td.UID
-	name := ""
-	if mapErr == nil && row.UID != "" {
-		uid = row.UID
-		ics = SetICSUID(td.ICS, row.UID)
-		name = row.Name
-	}
-	if uid == "" {
-		uid = UIDFromICS(ics)
-	}
-	if uid == "" {
-		uid = td.ID
-	}
-	if name == "" {
-		name = dav.DAVResourceName(uid+".ics", ".ics")
-	}
-	hash := ncrypto.SHA256Hex(ics)
-	if err := a.putBlob(hash, ics); err != nil {
-		return err
-	}
-	in := syncengine.ChangeInput{
-		CollectionID: collectionID,
-		Kind:         kindTodo,
-		ContentHash:  hash,
-		BlobID:       hash,
-		Size:         int64(len(ics)),
-		Metadata:     dav.EncodeEventMeta(dav.EventMeta{Name: name, UID: uid, Comp: "VTODO"}),
-	}
-	if errors.Is(mapErr, sql.ErrNoRows) {
-		in.ObjectID = ids.New()
-		in.Op = syncengine.OpCreate
-	} else {
-		in.ObjectID = row.ObjectID
-		in.Op = syncengine.OpUpdate
-		in.BaseRevision = row.Revision
-	}
-	res, err := a.Client.Push(ids.New(), []syncengine.ChangeInput{in})
-	if err != nil {
-		return err
-	}
-	if len(res) == 0 {
-		return errors.New("push todo rejected")
-	}
-	if res[0].Status == "conflict" {
-		a.Log.Warn("push_conflict", "object", in.ObjectID, "server_revision", res[0].ServerRevision, "server_hash", res[0].ServerContentHash)
-		return nil
-	}
-	if res[0].Status != "ok" {
-		return errors.New("push todo rejected")
-	}
-	due := td.DueMS
-	if due == 0 {
-		due = TodoDueMS(ics)
-	}
-	return a.Map.Put(Mapping{
-		LocalID: td.ID, Kind: kindTodo, ObjectID: in.ObjectID, CollectionID: collectionID,
-		ContentHash: hash, Revision: res[0].Revision, StartMS: due,
-		UID: uid, Name: name, LocalHash: rawHash,
-	})
-}
-
-func (a *Agent) pushContact(collectionID string, c LocalContact) error {
-	rawHash := ncrypto.SHA256Hex(c.VCard)
-	row, mapErr := a.Map.ByLocal(kindContact, c.ID)
-	if mapErr == nil {
-		if row.LocalHash == "" {
-			row.LocalHash = rawHash
-			return a.Map.Put(row)
-		}
-		if row.LocalHash == rawHash {
-			return nil
-		}
-	} else if !errors.Is(mapErr, sql.ErrNoRows) {
-		return mapErr
-	}
-
-	spec := ParseContactVCard(c.VCard)
-	if mapErr == nil && row.UID != "" && spec.UID == "" {
-		spec.UID = row.UID
-	}
-	vcf := c.VCard
-	if cached := a.Map.LoadContactCache(c.ID); len(cached) > 0 {
-		vcf = MergeContactVCard(cached, ParseContactVCard(c.VCard))
-	} else if mapErr == nil && row.UID != "" {
-		spec.UID = row.UID
-		vcf = EncodeContactVCard(spec)
-	}
-	uid := UIDFromVCard(vcf)
-	if uid == "" {
-		uid = c.UID
-	}
-	if uid == "" {
-		uid = c.ID
-	}
-	name := ""
-	if mapErr == nil && row.Name != "" {
-		name = row.Name
-	}
-	if name == "" {
-		name = dav.DAVResourceName(uid+".vcf", ".vcf")
-	}
-	hash := ncrypto.SHA256Hex(vcf)
-	if err := a.putBlob(hash, vcf); err != nil {
-		return err
-	}
-	in := syncengine.ChangeInput{
-		CollectionID: collectionID,
-		Kind:         kindContact,
-		ContentHash:  hash,
-		BlobID:       hash,
-		Size:         int64(len(vcf)),
-		Metadata:     dav.EncodeContactMeta(dav.ContactMetaFromVCard(name, uid, vcf)),
-	}
-	if errors.Is(mapErr, sql.ErrNoRows) {
-		in.ObjectID = ids.New()
-		in.Op = syncengine.OpCreate
-	} else {
-		in.ObjectID = row.ObjectID
-		in.Op = syncengine.OpUpdate
-		in.BaseRevision = row.Revision
-	}
-	res, err := a.Client.Push(ids.New(), []syncengine.ChangeInput{in})
-	if err != nil {
-		return err
-	}
-	if len(res) == 0 {
-		return errors.New("push contact rejected")
-	}
-	if res[0].Status == "conflict" {
-		a.Log.Warn("push_conflict", "object", in.ObjectID, "server_revision", res[0].ServerRevision, "server_hash", res[0].ServerContentHash)
-		return nil
-	}
-	if res[0].Status != "ok" {
-		return errors.New("push contact rejected")
-	}
-	_ = a.Map.SaveContactCache(c.ID, vcf)
-	return a.Map.Put(Mapping{
-		LocalID: c.ID, Kind: kindContact, ObjectID: in.ObjectID, CollectionID: collectionID,
-		ContentHash: hash, Revision: res[0].Revision,
-		UID: uid, Name: name, LocalHash: rawHash,
-	})
 }
 
 func (a *Agent) pushPhotos(ctx context.Context) error {
@@ -1125,40 +574,10 @@ func (a *Agent) pushDelete(row Mapping) error {
 	if len(res) == 0 || res[0].Status != "ok" {
 		return errors.New("push delete rejected")
 	}
-	if row.Kind == kindContact {
-		a.Map.DeleteContactCache(row.LocalID)
-	}
 	return a.Map.DeleteObject(row.ObjectID)
 }
 
 func (a *Agent) reconcile(ctx context.Context) error {
-	for _, sel := range a.Sel.Calendars {
-		col, err := a.ensureCollection(kindCal, sel.Title)
-		if err != nil {
-			return err
-		}
-		if err := a.reconcileCollection(ctx, col.ID); err != nil {
-			return err
-		}
-	}
-	for _, sel := range a.Sel.Reminders {
-		col, err := a.ensureReminderCollection(sel.Title, "")
-		if err != nil {
-			return err
-		}
-		if err := a.reconcileCollection(ctx, col.ID); err != nil {
-			return err
-		}
-	}
-	if a.Sel.SyncContacts {
-		col, err := a.ensureCollection(kindBook, "Contacts")
-		if err != nil {
-			return err
-		}
-		if err := a.reconcileCollection(ctx, col.ID); err != nil {
-			return err
-		}
-	}
 	if a.Sel.Photos.Enabled {
 		col, err := a.ensureCollection(kindPhotos, photos.DefaultName)
 		if err != nil {
@@ -1216,27 +635,6 @@ func (a *Agent) applyRemoteObject(ctx context.Context, collectionID, objectID st
 
 func (a *Agent) bindRoutes() error {
 	a.routes = map[string]route{}
-	for _, sel := range a.Sel.Calendars {
-		col, err := a.ensureCollection(kindCal, sel.Title)
-		if err != nil {
-			return err
-		}
-		a.routes[col.ID] = route{localID: sel.LocalID, kind: kindEvent}
-	}
-	for _, sel := range a.Sel.Reminders {
-		col, err := a.ensureReminderCollection(sel.Title, "")
-		if err != nil {
-			return err
-		}
-		a.routes[col.ID] = route{localID: sel.LocalID, kind: kindTodo}
-	}
-	if a.Sel.SyncContacts {
-		col, err := a.ensureCollection(kindBook, "Contacts")
-		if err != nil {
-			return err
-		}
-		a.routes[col.ID] = route{kind: kindContact}
-	}
 	if a.Sel.Photos.Enabled {
 		col, err := a.ensureCollection(kindPhotos, photos.DefaultName)
 		if err != nil {
@@ -1359,72 +757,12 @@ func (a *Agent) ensureCollection(kind, name string) (*syncengine.Collection, err
 	return a.Client.EnsureCollection(kind, name, nil)
 }
 
-func reminderDAVName(title string, cols []syncengine.Collection) string {
-	base := dav.DAVResourceName(title, "")
-	for i := range cols {
-		c := &cols[i]
-		if c.Kind != kindCal || c.DeletedAt != nil || c.Name != base || !ownCollection(c) {
-			continue
-		}
-		if dav.ParseCalendarColMeta(c.Metadata).Comp == "VTODO" {
-			return base
-		}
-		return dav.DAVResourceName(title+" Reminders", "")
-	}
-	return base
-}
-
-func (a *Agent) ensureReminderCollection(title, color string) (*syncengine.Collection, error) {
-	if title == "" {
-		title = "Reminders"
-	}
-	cols, err := a.collections()
-	if err != nil {
-		return nil, err
-	}
-	name := reminderDAVName(title, cols)
-	color = dav.NormalizeCalendarColor(color)
-	patch := dav.EncodeCalendarColMeta(dav.CalendarColMeta{Comp: "VTODO", Color: color})
-	for i := range cols {
-		c := &cols[i]
-		if c.Kind != kindCal || c.Name != name || c.DeletedAt != nil || !ownCollection(c) {
-			continue
-		}
-		meta := dav.ParseCalendarColMeta(c.Metadata)
-		need := meta.Comp != "VTODO" || (color != "" && meta.Color != color)
-		if !need {
-			return c, nil
-		}
-		a.colCache = nil
-		return a.Client.EnsureCollection(kindCal, name, patch)
-	}
-	a.colCache = nil
-	return a.Client.EnsureCollection(kindCal, name, patch)
-}
-
-func (a *Agent) syncCollectionColor(col *syncengine.Collection, color string) error {
-	color = dav.NormalizeCalendarColor(color)
-	if color == "" {
-		return nil
-	}
-	if dav.ParseCalendarColMeta(col.Metadata).Color == color {
-		return nil
-	}
-	a.colCache = nil
-	updated, err := a.Client.EnsureCollection(kindCal, col.Name, dav.EncodeCalendarColMeta(dav.CalendarColMeta{Color: color}))
-	if err != nil {
-		return err
-	}
-	*col = *updated
-	return nil
-}
-
 func (a *Agent) runSync(ctx context.Context) {
 	if err := a.SyncOnce(ctx); err != nil {
 		a.Log.Error("sync", "err", err.Error())
 		return
 	}
-	a.Log.Info("sync_ok", "calendars", len(a.Sel.Calendars), "reminders", len(a.Sel.Reminders), "contacts", a.Sel.SyncContacts, "photos", a.Sel.Photos.Enabled, "files", a.Sel.Files.Enabled)
+	a.Log.Info("sync_ok", "photos", a.Sel.Photos.Enabled, "files", a.Sel.Files.Enabled)
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -1435,24 +773,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	t := time.NewTicker(d)
 	defer t.Stop()
-	local := watchLocalChanges()
-	var debounce *time.Timer
 	for {
 		select {
 		case <-ctx.Done():
-			if debounce != nil {
-				debounce.Stop()
-			}
 			return ctx.Err()
 		case <-t.C:
 			a.runSync(ctx)
-		case <-local:
-			if debounce != nil {
-				debounce.Stop()
-			}
-			debounce = time.AfterFunc(2*time.Second, func() {
-				a.runSync(ctx)
-			})
 		}
 	}
 }

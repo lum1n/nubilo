@@ -24,30 +24,30 @@ import (
 type Severity string
 
 const (
-	OK       Severity = "ok"
-	Warn     Severity = "warn"
-	Fail     Severity = "fail"
-	Info     Severity = "info"
+	OK   Severity = "ok"
+	Warn Severity = "warn"
+	Fail Severity = "fail"
+	Info Severity = "info"
 )
 
 // Check is one health item.
 type Check struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Status   Severity `json:"status"`
-	Detail   string   `json:"detail,omitempty"`
-	Fix      string   `json:"fix,omitempty"`
+	ID     string   `json:"id"`
+	Title  string   `json:"title"`
+	Status Severity `json:"status"`
+	Detail string   `json:"detail,omitempty"`
+	Fix    string   `json:"fix,omitempty"`
 }
 
 // Report aggregates checks.
 type Report struct {
-	Role     string  `json:"role"` // server | agent
-	DataDir  string  `json:"data_dir"`
-	Checks   []Check `json:"checks"`
-	OK       int     `json:"ok"`
-	Warn     int     `json:"warn"`
-	Fail     int     `json:"fail"`
-	Healthy  bool    `json:"healthy"` // no fails
+	Role    string  `json:"role"` // server | agent
+	DataDir string  `json:"data_dir"`
+	Checks  []Check `json:"checks"`
+	OK      int     `json:"ok"`
+	Warn    int     `json:"warn"`
+	Fail    int     `json:"fail"`
+	Healthy bool    `json:"healthy"` // no fails
 }
 
 func (r *Report) add(c Check) {
@@ -181,23 +181,12 @@ func Agent(dataDir string) (Report, error) {
 	if err != nil {
 		r.add(Check{ID: "selection", Title: "sync selection", Status: Warn, Detail: err.Error()})
 	} else {
-		n := len(sel.Calendars) + len(sel.Reminders)
-		if sel.SyncContacts {
-			n++
-		}
-		if sel.Photos.Enabled {
-			n++
-		}
-		if sel.Files.Enabled {
-			n++
-		}
-		if n == 0 {
+		if !sel.Photos.Enabled && !sel.Files.Enabled {
 			r.add(Check{ID: "selection", Title: "sync selection", Status: Warn, Detail: "nothing selected",
-				Fix: "nubilo agent ui   or   nubilo agent select …"})
+				Fix: "nubilo agent ui"})
 		} else {
 			r.add(Check{ID: "selection", Title: "sync selection", Status: OK,
-				Detail: fmt.Sprintf("calendars=%d reminders=%d contacts=%v photos=%v files=%v",
-					len(sel.Calendars), len(sel.Reminders), sel.SyncContacts, sel.Photos.Enabled, sel.Files.Enabled)})
+				Detail: fmt.Sprintf("photos=%v files=%v", sel.Photos.Enabled, sel.Files.Enabled)})
 		}
 	}
 

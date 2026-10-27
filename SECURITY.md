@@ -17,7 +17,7 @@ This document is the threat model and security architecture. It is written *befo
 | Collection names, object sizes, timestamps | Medium | SQLite metadata |
 | Audit logs | Medium | Local log files; redacted |
 
-Corporate credentials are **not** an asset of this system. The macOS agent reads local EventKit/PhotoKit data the OS already made available to the user. Those credentials never leave the Mac. A failed EventKit, Contacts, or PhotoKit enumeration must not be treated as “everything was deleted.”
+Corporate credentials are **not** an asset of this system. The macOS agent reads only Photos.app and the folders the user selected; calendars and contacts reach the server through the built-in CalDAV/CardDAV accounts. Those credentials never leave the Mac. A failed PhotoKit or folder enumeration must not be treated as “everything was deleted.”
 
 ## 2. Trust boundaries
 
@@ -246,7 +246,7 @@ Tailscale does not replace this. If a TLS terminator exists in front (Tailscale 
 - Blobs: `nonce (12) || ciphertext || tag (16)` using ChaCha20-Poly1305. Nonce is random per write; key+nonce reuse is a fatal invariant checked in tests.
 - Content addressing uses SHA-256 of **plaintext**. Two identical photos collapse to one blob even if encrypted under different nonces (the store writes once per hash).
 - Private keys on clients: on macOS the agent signing key is stored in the **Keychain** (`dev.nubilo.agent`); a leftover `device.key` file is migrated on load and removed. Other platforms use a `0600` file under the client data dir.
-- macOS agent map (`agent.db`) is a local EventKit/Contacts identifier ↔ object_id table, not server identity. Object IDs remain ULIDs.
+- macOS agent map (`agent.db`) is a local PhotoKit identifier / file path ↔ object_id table, not server identity. Object IDs remain ULIDs.
 - Photo preview/thumb blobs are extra hashes in object metadata (`preview_hash`, `thumb_hash`). `verify` and `gc` count them as live references so derivatives are not deleted while the photo object exists.
 
 ### SQLite at rest (Phase 8 evaluation)
