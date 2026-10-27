@@ -46,11 +46,21 @@ public struct MenuBarView: View {
                 Text("\(summary.listen) · \(summary.devices) devices · \(summary.version)")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if let doctor = server.doctor {
+            // Doctor checks ~/.nubilo; without it they only list missing files.
+            if server.isServerInitialized, let doctor = server.doctor {
                 DoctorSummary(report: doctor)
+            } else if server.service == .running || server.service == .stopped {
+                Text("A server service is installed on this Mac, but it has no data in ~/.nubilo. Stop removes the service.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if !server.isServerInitialized {
+                Text("No server runs on this Mac. That is normal when your server is on another computer.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 if !server.isServerInitialized {
+                    if server.service == .running || server.service == .stopped {
+                        Button("Stop") { Task { await server.stop() } }
+                    }
                     Button("Set Up Server…") {
                         openWindow(id: "setup")
                         NSApp.activate(ignoringOtherApps: true)
@@ -95,14 +105,17 @@ public struct MenuBarView: View {
         case .unknown: "Checking…"
         case .notInstalled: server.isServerInitialized ? "Not started" : "Not set up"
         case .stopped: "Stopped"
-        case .running: "Running"
+        case .running: server.isServerInitialized ? "Running" : "Running without data"
         }
     }
 
     private var serviceColor: Color {
         switch server.service {
-        case .running: server.doctor?.healthy == false ? .orange : .green
-        case .stopped, .notInstalled: .red
+        case .running:
+            !server.isServerInitialized || server.doctor?.healthy == false ? .orange : .green
+        case .stopped: .red
+        // Gray, not red: most Macs only run the app against a server elsewhere.
+        case .notInstalled: server.isServerInitialized ? .red : .gray
         case .unknown: .gray
         }
     }
