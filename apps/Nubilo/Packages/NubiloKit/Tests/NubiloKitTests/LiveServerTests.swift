@@ -151,6 +151,10 @@ final class LiveFilesTests: XCTestCase {
         } catch FilesError.filesNeedAFolder {}
 
         let docs = try await fs.createFolder(named: "Docs", in: files.id)
+        let empty = try await fs.children(of: docs.id)
+        XCTAssertEqual(empty.count, 0, "an empty folder lists as empty")
+        let quiet = try await fs.changes(since: try await fs.currentAnchor())
+        XCTAssertTrue(quiet.updated.isEmpty && quiet.deleted.isEmpty, "no changes decodes as empty")
         let note = try await fs.createFile(named: "note.txt", in: docs.id, data: Data("hello".utf8), mime: "text/plain")
         XCTAssertEqual(note.parentID, docs.id)
         XCTAssertEqual(note.size, 5)

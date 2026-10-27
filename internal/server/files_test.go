@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,9 @@ func TestFolderEndpoints(t *testing.T) {
 
 	docs := alice.json(http.MethodPost, "/sync/v1/collection", map[string]any{"kind": "files", "name": "Docs", "parent_id": files}, http.StatusOK)
 	docsID, _ := docs["id"].(string)
+	if code, out := alice.do(http.MethodPost, "/sync/v1/objects", map[string]any{"collection_id": docsID}); code != http.StatusOK || !strings.Contains(string(out), `"objects":[]`) {
+		t.Fatalf("empty folder: %d %s", code, out)
+	}
 	_, hash := putBlob(alice, []byte("hello"))
 	if st := pushStatus(pushCreate(alice, docsID, hash, 5)); st != "ok" {
 		t.Fatalf("push %s", st)

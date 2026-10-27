@@ -43,6 +43,9 @@ func (s *Server) handleObjects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
 	}
+	if objs == nil {
+		objs = []syncengine.Object{} // [] rather than null for empty folders
+	}
 	next := ""
 	if len(objs) == req.Limit {
 		next = objs[len(objs)-1].ID

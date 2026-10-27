@@ -94,8 +94,8 @@ public struct SyncPushResult: Decodable, Sendable {
 extension NubiloClient {
     /// Collections the device can see (own and shared).
     public func syncCollections() async throws -> [SyncCollection] {
-        struct Wrap: Decodable { var collections: [SyncCollection] }
-        return try await call("POST", "/sync/v1/collections", json: [String: String](), as: Wrap.self).collections
+        struct Wrap: Decodable { var collections: [SyncCollection]? }
+        return try await call("POST", "/sync/v1/collections", json: [String: String](), as: Wrap.self).collections ?? []
     }
 
     /// Finds or creates the caller's top-level collection `name` of `kind` and
@@ -130,14 +130,14 @@ extension NubiloClient {
             var afterId: String
         }
         struct Res: Decodable {
-            var objects: [SyncObject]
+            var objects: [SyncObject]? // null from older servers for empty folders
             var nextAfterId: String?
         }
         var out: [SyncObject] = []
         var after = ""
         while true {
             let page = try await call("POST", "/sync/v1/objects", json: Req(collectionId: collectionID, afterId: after), as: Res.self)
-            out += page.objects
+            out += page.objects ?? []
             guard let next = page.nextAfterId, !next.isEmpty, next != after else { return out }
             after = next
         }
@@ -233,6 +233,19 @@ public struct SyncChangesPage: Decodable, Sendable {
     public var hasMore: Bool
     /// The cursor is past the server's journal (a restored server): start over.
     public var needReconcile: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case changes, nextSeq, hasMore, needReconcile
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // The server sends null, not [], when there is nothing new.
+        changes = try c.decodeIfPresent([SyncChangeRecord].self, forKey: .changes) ?? []
+        nextSeq = try c.decodeIfPresent(Int64.self, forKey: .nextSeq) ?? 0
+        hasMore = try c.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+        needReconcile = try c.decodeIfPresent(Bool.self, forKey: .needReconcile)
+    }
 }
 
 /// A live object as `/sync/v1/objects` and `/sync/v1/object` return it.
