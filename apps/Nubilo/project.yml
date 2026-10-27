@@ -45,6 +45,10 @@ targets:
     dependencies:
       - package: NubiloKit
       - package: NubiloUI
+      # Nubilo in the Files app (iPhone and iPad only).
+      - target: NubiloFiles
+        embed: true
+        platformFilters: [iOS]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.nubilo.app
@@ -76,6 +80,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSPhotoLibraryUsageDescription: Nubilo backs up your photos and videos to your own server.
+        # Keychain group shared with the Files extension (SharedCredentials).
+        NubiloKeychainGroup: $(AppIdentifierPrefix)dev.nubilo.shared
         # Mac: the calendar mirror reads the calendars you choose (read-only).
         NSCalendarsFullAccessUsageDescription: Nubilo copies the calendars you choose to your own server, so your other devices can show them.
         NSCameraUsageDescription: Nubilo uses the camera to scan the QR code of your invite.
@@ -116,6 +122,35 @@ targets:
           # Photos and Calendar access belong to the app.
           codesign --force --options runtime "${TIMESTAMP}" \
             --sign "${IDENTITY}" "${DEST}/nubilo"
+
+  NubiloFiles:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: FilesExtension
+        excludes:
+          - "*.entitlements"
+          - Info.plist
+    dependencies:
+      - package: NubiloKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.nubilo.app.files
+        PRODUCT_NAME: NubiloFiles
+        CODE_SIGN_ENTITLEMENTS: FilesExtension/NubiloFiles.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: FilesExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Nubilo
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NubiloKeychainGroup: $(AppIdentifierPrefix)dev.nubilo.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).FileProviderExtension
+          NSExtensionFileProviderSupportsEnumeration: true
+          NSExtensionFileProviderDocumentGroup: group.dev.nubilo.shared
 
 schemes:
   Nubilo:

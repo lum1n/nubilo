@@ -104,3 +104,48 @@ final class FakeCalendars: CalendarReading, @unchecked Sendable {
         return events[calendarID] ?? []
     }
 }
+
+final class FilesChangesTests: XCTestCase {
+    func collection(_ id: String, parent: String? = nil, name: String, revision: UInt64 = 1, access: String = "owner") throws -> SyncCollection {
+        var json = "{\"id\":\"\(id)\",\"kind\":\"files\",\"name\":\"\(name)\",\"revision\":\(revision),\"access\":\"\(access)\",\"owner\":\"ann\""
+        if let parent { json += ",\"parent_id\":\"\(parent)\"" }
+        json += "}"
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return try d.decode(SyncCollection.self, from: Data(json.utf8))
+    }
+
+    func page(_ json: String) throws -> SyncChangesPage {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return try d.decode(SyncChangesPage.self, from: Data(json.utf8))
+    }
+
+    func testFolderAndFileChanges() throws {
+        let before = FilesAnchor(seq: 10, folders: FilesSession.stamps([try collection("A", name: "Files"), try collection("B", parent: "A", name: "Old")]))
+        let now = [try collection("A", name: "Files"), try collection("B", parent: "A", name: "New", revision: 2),
+                   try collection("S", name: "Shared", access: "ro")]
+        let p = try page("""
+        {"changes":[
+          {"seq":11,"object_id":"o1","collection_id":"B","kind":"file","op":"create","revision":1,"content_hash":"h1","size":3,"metadata":{"name":"a.txt"}},
+          {"seq":12,"object_id":"o1","collection_id":"B","kind":"file","op":"update","revision":2,"content_hash":"h2","size":4,"metadata":{"name":"b.txt"}},
+          {"seq":13,"object_id":"o2","collection_id":"A","op":"delete","revision":3,"content_hash":"","deleted":true},
+          {"seq":14,"object_id":"ev","collection_id":"CAL","kind":"event","op":"create","revision":1,"content_hash":"x"}
+        ],"next_seq":14,"has_more":false}
+        """)
+        let c = FilesSession.changes(previous: before, folders: now, page: p)
+        XCTAssertEqual(c.anchor.seq, 14)
+        XCTAssertEqual(Set(c.updated.filter { $0.kind == .folder }.map(\.id)), ["c:B", "c:S"])
+        XCTAssertEqual(c.updated.first { $0.id == "c:S" }?.name, "Shared (ann)")
+        XCTAssertEqual(c.updated.first { $0.id == "c:S" }?.writable, false)
+        let file = try XCTUnwrap(c.updated.first { $0.id == "o:o1" })
+        XCTAssertEqual(file.name, "b.txt")
+        XCTAssertEqual(file.contentHash, "h2")
+        XCTAssertEqual(c.deleted, ["o:o2"])
+
+        // B disappears: the folder is reported deleted.
+        let gone = FilesSession.changes(previous: c.anchor, folders: [try collection("A", name: "Files")],
+                                        page: try page("{\"changes\":[],\"next_seq\":14,\"has_more\":false}"))
+        XCTAssertEqual(Set(gone.deleted), ["c:B", "c:S"])
+    }
+}

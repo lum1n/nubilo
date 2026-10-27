@@ -128,3 +128,68 @@ final class LiveCalendarMirrorTests: XCTestCase {
         XCTAssertEqual(live.count, 1)
     }
 }
+
+final class LiveFilesTests: XCTestCase {
+    func testFilesRoundTrip() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let base = env["NUBILO_TEST_URL"].flatMap(URL.init(string:)), let invite = env["NUBILO_TEST_INVITE_3"] else {
+            throw XCTSkip("set NUBILO_TEST_URL and NUBILO_TEST_INVITE_3")
+        }
+        let key = Ed25519Key()
+        let paired = try await Onboarding.join(
+            link: SetupLink(server: base, invite: invite), username: "files\(Int.random(in: 1000...9999))",
+            displayName: "Files Test", deviceName: "iPhone", key: key, keyTag: "test")
+        let fs = FilesSession(client: NubiloClient(baseURL: base, signer: RequestSigner(deviceID: paired.deviceID, key: key)))
+
+        let roots = try await fs.children(of: RemoteItem.rootID)
+        let files = try XCTUnwrap(roots.first { $0.name == "Files" && $0.kind == .folder })
+        let start = try await fs.currentAnchor()
+
+        do {
+            _ = try await fs.createFile(named: "loose.txt", in: RemoteItem.rootID, data: Data("x".utf8), mime: nil)
+            XCTFail("file at the top level")
+        } catch FilesError.filesNeedAFolder {}
+
+        let docs = try await fs.createFolder(named: "Docs", in: files.id)
+        let note = try await fs.createFile(named: "note.txt", in: docs.id, data: Data("hello".utf8), mime: "text/plain")
+        XCTAssertEqual(note.parentID, docs.id)
+        XCTAssertEqual(note.size, 5)
+        let listed = try await fs.children(of: docs.id)
+        XCTAssertEqual(listed.map(\.name), ["note.txt"])
+        let body = try await fs.contents(of: note)
+        XCTAssertEqual(String(decoding: body, as: UTF8.self), "hello")
+
+        var changes = try await fs.changes(since: start)
+        XCTAssertTrue(changes.updated.contains { $0.id == docs.id }, "new folder in changes")
+        XCTAssertTrue(changes.updated.contains { $0.id == note.id }, "new file in changes")
+
+        // Edit, rename and move the file; rename the folder.
+        var mid = changes.anchor
+        let edited = try await fs.updateFile(note, data: Data("hello again".utf8), name: "renamed.txt", parentID: files.id, mime: nil)
+        XCTAssertEqual(edited.id, note.id)
+        XCTAssertEqual(edited.parentID, files.id)
+        XCTAssertEqual(edited.name, "renamed.txt")
+        XCTAssertNotEqual(edited.contentHash, note.contentHash)
+        let renamed = try await fs.updateFolder(docs, name: "Papers", parentID: nil)
+        XCTAssertEqual(renamed.name, "Papers")
+        changes = try await fs.changes(since: mid)
+        let fileChange = try XCTUnwrap(changes.updated.first { $0.id == note.id })
+        XCTAssertEqual(fileChange.name, "renamed.txt")
+        XCTAssertEqual(fileChange.parentID, files.id)
+        XCTAssertTrue(changes.updated.contains { $0.id == docs.id && $0.name == "Papers" })
+
+        // Move the folder to the top level, then delete things.
+        mid = changes.anchor
+        let top = try await fs.updateFolder(renamed, name: nil, parentID: RemoteItem.rootID)
+        XCTAssertEqual(top.parentID, RemoteItem.rootID)
+        try await fs.delete(edited)
+        try await fs.delete(top)
+        changes = try await fs.changes(since: mid)
+        XCTAssertTrue(changes.deleted.contains(note.id))
+        XCTAssertTrue(changes.deleted.contains(docs.id))
+        do {
+            _ = try await fs.item(note.id)
+            XCTFail("deleted file still found")
+        } catch FilesError.notFound {}
+    }
+}

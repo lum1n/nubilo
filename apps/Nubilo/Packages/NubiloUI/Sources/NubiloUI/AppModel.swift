@@ -43,6 +43,9 @@ public final class AppModel {
                 #if canImport(Photos) && canImport(SwiftData)
                 await BackupRuntime.shared.connect(client: client, tlsPin: paired.tlsPin)
                 #endif
+                #if os(iOS) && canImport(FileProvider)
+                await FilesIntegration.connect(paired, keys: keys)
+                #endif
                 await refreshMe()
             }
         } catch {
@@ -60,6 +63,12 @@ public final class AppModel {
             let fresh = try await client.me()
             me = fresh
             await follow(publicURL: fresh.publicUrl)
+            #if os(iOS) && canImport(FileProvider)
+            // The stored pairing may have gained a TLS pin since activation.
+            if let current = store.load() {
+                await FilesIntegration.connect(current, keys: keys)
+            }
+            #endif
         } catch let NubiloError.http(status, _) where status == 401 {
             alert = "The server no longer accepts this device. It may have been removed; sign out and set it up again."
         } catch {
@@ -107,6 +116,9 @@ public final class AppModel {
         #endif
         #if os(macOS) && canImport(EventKit)
         await MacCalendarMirror.shared.signedOut()
+        #endif
+        #if os(iOS) && canImport(FileProvider)
+        await FilesIntegration.disconnect()
         #endif
         if let server { try? keys.delete(tag: server.keyTag) }
         store.clear()

@@ -10,7 +10,19 @@ struct FilesView: View {
 
     var body: some View {
         Form {
-            Section("Connection") {
+            #if os(iOS)
+            Section {
+                Text("Your folders are in the Files app: open Files, tap Browse and choose Nubilo. Files you add there are stored on your server.")
+                Button("Open the Files App") {
+                    if let url = URL(string: "shareddocuments://") { ExternalURL.open(url) }
+                }
+            } header: {
+                Text("On this device")
+            } footer: {
+                Text("If Nubilo is not listed, tap ⋯ → Edit in Browse and turn it on.")
+            }
+            #endif
+            Section(Self.connectionTitle) {
                 if let me = model.me {
                     if let dav = me.urls["webdav"] {
                         CopyableRow(title: "Server", value: dav)
@@ -58,15 +70,15 @@ struct FilesView: View {
     }
 
     #if os(iOS)
-    // The Files app's "Connect to Server" only speaks SMB, so WebDAV needs a
-    // client app; once added there it shows up as a location in Files.
+    static let connectionTitle = "Other apps and computers"
+    // This device uses the Files app integration; the WebDAV details are for
+    // other apps and for computers.
     static let guide = [
-        "Install a file app that supports WebDAV from the App Store.",
-        "In that app, add a WebDAV connection with the server address, username and password above.",
-        "If the app integrates with Files, turn it on in Files → ⋯ → Edit to browse it there too.",
-        "On a Mac: Finder → Go → Connect to Server (⌘K), paste the server address and sign in.",
+        "On a Mac: Finder → Go → Connect to Server (⌘K), paste the server address and sign in with the username and password above.",
+        "In another app that supports WebDAV, add a connection with the same details.",
     ]
     #else
+    static let connectionTitle = "Connection"
     static let guide = [
         "In Finder choose Go → Connect to Server (⌘K).",
         "Paste the server address above and click Connect.",

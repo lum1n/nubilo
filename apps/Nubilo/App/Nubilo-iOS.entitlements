@@ -3,14 +3,18 @@
 <plist version="1.0">
 <dict>
 	<!--
-	No entitlements are required: the device key lives in the app's default
-	Keychain access group. To share it with a future extension (File Provider,
-	Phase D), add a group here and pass it as KeychainKeyStore(accessGroup:):
-
+	Shared with the Files extension (FilesExtension/), which reads the pairing
+	and device key through SharedCredentials. Items stored before this group
+	existed stay in the app's default group and are still found.
+	-->
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)dev.nubilo.shared</string>
 	</array>
-	-->
+	<!-- Apple's File Provider template pairs the extension with an app group. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.dev.nubilo.shared</string>
+	</array>
 </dict>
 </plist>

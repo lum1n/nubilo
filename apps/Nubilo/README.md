@@ -97,10 +97,19 @@ in Safari, the only place iOS installs profiles from. A numbered guide covers
 Settings → Profile Downloaded → Install. Reminders ride on the CalDAV account.
 On the Mac the profile opens in the browser and installs from System Settings.
 
-**Files.** Shows the WebDAV address and username and creates a files-only app
-password, shown once with a copy button. Finder connects with Go → Connect to
-Server. The iOS Files app's Connect to Server only speaks SMB, so on iPhone
-the guide points to a WebDAV-capable file app.
+**Files.** On iPhone and iPad, Nubilo is a location in the Files app: the
+`NubiloFiles` File Provider extension (`FilesExtension/`, a replicated
+`NSFileProviderReplicatedExtension`) lists the user's own and shared folders
+and reads and writes files through the signed sync API (`FilesSession` in
+NubiloKit). The app shares its pairing and device key with the extension in
+the Keychain group `$(AppIdentifierPrefix)dev.nubilo.shared`
+(`SharedCredentials`), registers the location after pairing, and signals
+Files to look for changes when it comes to the foreground; the working set
+reports changes from the server journal plus folder renames, moves and
+deletes. Top-level items are folders only (files need a folder). The Files
+screen in the app opens the Files app and still shows the WebDAV address and
+a files-only app password for Finder (Go → Connect to Server) and other
+WebDAV apps.
 
 **Photos.**
 - *Backup*: asks for Photos access, then shows how many assets are backed up,
