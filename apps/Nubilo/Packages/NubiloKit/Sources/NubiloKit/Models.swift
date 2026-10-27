@@ -41,6 +41,8 @@ public struct Me: Codable, Sendable {
     public var device: DeviceInfo
     public var storage: Storage
     public var urls: [String: String]
+    /// The server's public address, empty while it is LAN-only.
+    public var publicUrl: String?
 }
 
 public struct AppPassword: Codable, Sendable, Identifiable, Hashable {

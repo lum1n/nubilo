@@ -42,6 +42,20 @@ final class SignerTests: XCTestCase {
         }
     }
 
+    func testMovingToPublicURL() {
+        let lan = PairedServer(baseURL: URL(string: "https://192.168.1.180:9443")!, deviceID: "d", userID: "u",
+                               username: "v", serverKey: "k", keyTag: "t", tlsPin: "pin")
+        XCTAssertNil(lan.movingTo(publicURL: nil))
+        XCTAssertNil(lan.movingTo(publicURL: ""))
+        XCTAssertNil(lan.movingTo(publicURL: "http://cloud.example.com"))
+        XCTAssertNil(lan.movingTo(publicURL: "https://192.168.1.180:9443/"))
+        let moved = lan.movingTo(publicURL: "https://cloud.example.com")
+        XCTAssertEqual(moved?.baseURL.absoluteString, "https://cloud.example.com")
+        XCTAssertEqual(moved?.tlsPin, "pin")
+        XCTAssertEqual(moved?.deviceID, "d")
+        XCTAssertNil(moved?.movingTo(publicURL: "https://CLOUD.example.com:443"))
+    }
+
     func testSetupLinks() throws {
         let a = try SetupLink(parsing: "nubilo://setup?url=https%3A%2F%2Fcloud.example.com&invite=nbi-ABCDEFGHJKMNPQRSTVWX&fp=abc_-")
         XCTAssertEqual(a.server.absoluteString, "https://cloud.example.com")

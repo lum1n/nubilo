@@ -85,6 +85,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 			"webdav":  base + "/dav/",
 			"photos":  base + "/api/v1/photos",
 		},
+		// Apps paired on a LAN address move to this once it answers for them.
+		"public_url": s.Cfg.Public.BaseURL(),
 	})
 }
 

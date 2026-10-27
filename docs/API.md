@@ -56,7 +56,7 @@ The older code flow (`POST /api/v1/pair/begin {code,name,public_key}` then `pair
 
 | Request | Response |
 | --- | --- |
-| `GET /api/v1/me` | `{"user":{id,username,display_name,role,status,created_at},"device":{id,name,role,user_id,…},"storage":{"objects","bytes"},"urls":{"caldav","carddav","webdav","photos"}}` |
+| `GET /api/v1/me` | `{"user":{id,username,display_name,role,status,created_at},"device":{id,name,role,user_id,…},"storage":{"objects","bytes"},"urls":{"caldav","carddav","webdav","photos"},"public_url"}` — `public_url` is `""` until a public domain is set; apps then switch to it after a signed request through it succeeds |
 | `GET /api/v1/me/passwords` | `{"passwords":[{"id","label","scope","created_at","last_used"}]}` |
 | `POST /api/v1/me/passwords {"label","scope"}` | 201 `{"id","username","password"}` — the password is shown once; scope is a comma list of `caldav,carddav,webdav,photos` or `all`; at most 10 per user (409) |
 | `DELETE /api/v1/me/passwords/{id}` | `{"revoked":id}` |

@@ -57,12 +57,30 @@ public final class AppModel {
     public func refreshMe() async {
         guard let client else { return }
         do {
-            me = try await client.me()
+            let fresh = try await client.me()
+            me = fresh
+            await follow(publicURL: fresh.publicUrl)
         } catch let NubiloError.http(status, _) where status == 401 {
             alert = "The server no longer accepts this device. It may have been removed; sign out and set it up again."
         } catch {
             // Offline or server down: keep the last known state.
         }
+    }
+
+    /// Moves to the public address the server advertises (paired on the LAN,
+    /// then the server got a domain), once a signed request through it answers
+    /// for this device. The probe trusts only system-trusted certificates, so
+    /// nothing is pinned on the way.
+    private func follow(publicURL: String?) async {
+        guard let current = server, let moved = current.movingTo(publicURL: publicURL),
+              let key = try? keys.load(tag: current.keyTag) else { return }
+        let probe = NubiloClient(baseURL: moved.baseURL,
+                                 signer: RequestSigner(deviceID: current.deviceID, key: key),
+                                 transport: URLSessionTransport())
+        guard let check = try? await probe.me(), check.device.id == current.deviceID,
+              server == current else { return }
+        try? store.save(moved)
+        activate(moved)
     }
 
     /// Handles `nubilo://setup?…` links (and https join links passed in).

@@ -73,6 +73,25 @@ public struct PairedServer: Codable, Equatable, Sendable {
     }
 }
 
+extension PairedServer {
+    /// This server with `baseURL` moved to the public address the server
+    /// advertises, or nil when there is nothing to move to. The caller must
+    /// check that a signed request through the new address answers for this
+    /// device before saving it. The TLS pin is kept: it only applies to
+    /// certificates the system does not trust (the LAN one).
+    public func movingTo(publicURL text: String?) -> PairedServer? {
+        guard let text, let url = URL(string: text.trimmingCharacters(in: .whitespaces)),
+              url.scheme == "https", let host = url.host(), !host.isEmpty else { return nil }
+        func key(_ u: URL) -> String {
+            "\(u.host()?.lowercased() ?? ""):\(u.port ?? 443)"
+        }
+        guard key(url) != key(baseURL) else { return nil }
+        var moved = self
+        moved.baseURL = url
+        return moved
+    }
+}
+
 public enum Onboarding {
     /// Redeems an invite and completes pairing with `key`:
     /// `invites/redeem` → sign the challenge → `pair/complete`, checking the
