@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"nubilo/internal/dav"
 	"nubilo/internal/identity"
 	"nubilo/internal/ids"
 	"nubilo/internal/syncengine"
@@ -31,7 +32,12 @@ func TestCalDAVMirrorIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eng.PatchCollectionMetadata(ctx, col.ID, json.RawMessage(`{"mirror":true}`)); err != nil {
+	// The Mac app turns the mirror on; the server records it as the writer,
+	// whatever mirror_device the client sent.
+	mac := &identity.Device{ID: "mac-app", Role: identity.RoleClient, UserID: dev.UserID,
+		Permissions: identity.DefaultPermissions(identity.RoleClient)}
+	patch := syncengine.MirrorPatch(json.RawMessage(`{"mirror":true,"mirror_device":"someone-else"}`), mac)
+	if _, err := eng.PatchCollectionMetadata(ctx, col.ID, patch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,18 +60,28 @@ func TestCalDAVMirrorIsReadOnly(t *testing.T) {
 		t.Fatalf("mirror not advertised read-only: %s", body)
 	}
 
-	// The agent that feeds the mirror may still write.
-	agent := &identity.Device{ID: "mac-agent", Role: identity.RoleAgent, UserID: dev.UserID,
-		Permissions: identity.DefaultPermissions(identity.RoleAgent)}
+	// A color change from the phone keeps the mirror and its writer.
+	resp = calReq(t, ts, "PROPPATCH", "/caldav/user/calendars/Work/", dev.ID, pass, "application/xml",
+		[]byte(`<?xml version="1.0"?><D:propertyupdate xmlns:D="DAV:" xmlns:A="http://apple.com/ns/ical/"><D:set><D:prop><A:calendar-color>#FF0000FF</A:calendar-color></D:prop></D:set></D:propertyupdate>`))
+	resp.Body.Close()
+	got, err := eng.GetCollection(ctx, col.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := dav.ParseCalendarColMeta(got.Metadata); !m.Mirror || m.MirrorDevice != "mac-app" || m.Color == "" {
+		t.Fatalf("after color change %s", got.Metadata)
+	}
+
+	// The device that owns the mirror may still write.
 	objs, err := eng.ListObjects(ctx, col.ID)
 	if err != nil || len(objs) != 1 {
 		t.Fatalf("objects %d %v", len(objs), err)
 	}
-	res, err := eng.Push(ctx, agent, ids.New(), []syncengine.ChangeInput{{
+	res, err := eng.Push(ctx, mac, ids.New(), []syncengine.ChangeInput{{
 		ObjectID: objs[0].ID, CollectionID: col.ID, Op: syncengine.OpDelete, BaseRevision: objs[0].Revision, Force: true,
 	}})
 	if err != nil || res[0].Status != "ok" {
-		t.Fatalf("agent delete %v %+v", err, res)
+		t.Fatalf("mirror owner delete %v %+v", err, res)
 	}
 
 	// Removing the whole mirrored calendar from the phone works.

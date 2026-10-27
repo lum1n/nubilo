@@ -16,5 +16,8 @@
 	<!-- Hardened Runtime blocks Photos access without this (photo backup). -->
 	<key>com.apple.security.personal-information.photos-library</key>
 	<true/>
+	<!-- Calendar mirror (EventKit, read-only). -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
 </dict>
 </plist>

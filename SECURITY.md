@@ -435,10 +435,10 @@ In **proxy** mode the relay runs on a host whose provider proxy (exe.dev) termin
 
 ## 15e. Calendar mirror
 
-- The Mac agent can copy chosen calendars from that Mac's Calendar app (EventKit, read-only access) to the server, for calendars only that Mac reaches, such as a work Exchange account. Copying work data to a personal server may break the employer's policy; that is the user's call.
-- A mirrored calendar has `"mirror": true` in its collection metadata. The sync engine refuses object writes to it from any device except agent and system devices (`read-only mirror`, HTTP 403 over CalDAV), and CalDAV advertises read-only privileges, so phones cannot change or delete the copied meetings. Deleting the whole mirrored calendar stays possible for its owner.
+- The Nubilo Mac app can copy chosen calendars from that Mac's Calendar app (EventKit, read-only access) to the server, for calendars only that Mac reaches, such as a work Exchange account. Copying work data to a personal server may break the employer's policy; that is the user's call.
+- A mirrored calendar has `"mirror": true` in its collection metadata. The sync engine refuses object writes to it from any device except the device that created the mirror (recorded in the metadata as `mirror_device` by the server) and system devices (`read-only mirror`, HTTP 403 over CalDAV), and CalDAV advertises read-only privileges, so phones cannot change or delete the copied meetings. Deleting the whole mirrored calendar stays possible for its owner.
 - This guards against accidents, not against the owner: the owner's devices can patch the collection metadata and clear the flag.
-- Nothing flows back to the Mac: the agent never writes to EventKit.
+- Nothing flows back to the Mac: the app never writes to EventKit.
 
 ## 15d. Tailscale mode
 

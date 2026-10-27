@@ -60,3 +60,71 @@ final class LiveServerTests: XCTestCase {
 
 // 8×8 baseline JPEG.
 let tinyJPEG = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAAIAAgBAREA/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAA/AKp//9k="
+
+final class LiveCalendarMirrorTests: XCTestCase {
+    func testMirrorRoundTrip() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let base = env["NUBILO_TEST_URL"].flatMap(URL.init(string:)), let invite = env["NUBILO_TEST_INVITE_2"] else {
+            throw XCTSkip("set NUBILO_TEST_URL and NUBILO_TEST_INVITE_2")
+        }
+        let key = Ed25519Key()
+        let paired = try await Onboarding.join(
+            link: SetupLink(server: base, invite: invite), username: "mirror\(Int.random(in: 1000...9999))",
+            displayName: "Mirror Test", deviceName: "Mac", key: key, keyTag: "test")
+        let c = NubiloClient(baseURL: base, signer: RequestSigner(deviceID: paired.deviceID, key: key))
+        let now = Date()
+        func ev(_ k: String, _ title: String, _ hours: Double) -> MirrorEvent {
+            MirrorEvent(key: k, title: title, start: now.addingTimeInterval(hours * 3600), end: now.addingTimeInterval(hours * 3600 + 1800))
+        }
+        let fake = FakeCalendars(
+            list: [MirrorCalendarInfo(id: "ex", title: "Work", color: "#0E61B9", account: "Exchange"),
+                   MirrorCalendarInfo(id: "own", title: "Personal", color: nil, account: "iCloud")],
+            events: ["ex": [ev("a", "Standup", 1), ev("b", "Review", 30)], "own": [ev("p", "Dentist", 5)]])
+        let sels = [MirrorSelection(calendarID: "ex", title: "Work"), MirrorSelection(calendarID: "own", title: "Personal")]
+        let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent("mirror-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: stateURL) }
+
+        var engine = CalendarMirrorEngine(stateURL: stateURL)
+        var run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.errors, [])
+        XCTAssertEqual(run.calendars.map(\.pushed), [2, 1])
+        // The user's default "Personal" calendar is not taken over.
+        XCTAssertEqual(run.calendars.map(\.serverName), ["Work", "Personal (Mac)"])
+        let cols = try await c.syncCollections()
+        let work = try XCTUnwrap(cols.first { $0.name == "Work" && $0.kind == "calendar" })
+        XCTAssertEqual(work.calendar?.mirror, true)
+        XCTAssertEqual(work.calendar?.mirrorDevice, paired.deviceID)
+        XCTAssertEqual(work.calendar?.color, "#0E61B9")
+        let personal = try XCTUnwrap(cols.first { $0.name == "Personal" && $0.kind == "calendar" })
+        XCTAssertNotEqual(personal.calendar?.mirror, true)
+
+        // Unchanged: nothing pushed.
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.calendars.map(\.pushed), [0, 0])
+
+        // A failed listing deletes nothing.
+        fake.fail = true
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.errors.count, 2)
+        fake.fail = false
+        var live = try await c.liveObjects(collectionID: work.id)
+        XCTAssertEqual(live.count, 2)
+
+        // Edit one, delete the other on the Mac.
+        fake.events["ex"] = [ev("a", "Standup moved", 2)]
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.calendars.first?.pushed, 1)
+        XCTAssertEqual(run.calendars.first?.deleted, 1)
+        live = try await c.liveObjects(collectionID: work.id)
+        XCTAssertEqual(live.count, 1)
+
+        // This Mac lost its state: the copy is adopted, not duplicated.
+        try? FileManager.default.removeItem(at: stateURL)
+        engine = CalendarMirrorEngine(stateURL: stateURL)
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.errors, [])
+        XCTAssertEqual(run.calendars.map(\.pushed), [0, 0])
+        live = try await c.liveObjects(collectionID: work.id)
+        XCTAssertEqual(live.count, 1)
+    }
+}

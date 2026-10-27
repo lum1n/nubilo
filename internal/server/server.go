@@ -595,7 +595,7 @@ func (s *Server) handleEnsureCollection(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		c, err = s.Engine.PatchCollectionMetadata(r.Context(), c.ID, req.Metadata)
+		c, err = s.Engine.PatchCollectionMetadata(r.Context(), c.ID, syncengine.MirrorPatch(req.Metadata, dev))
 		if err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return

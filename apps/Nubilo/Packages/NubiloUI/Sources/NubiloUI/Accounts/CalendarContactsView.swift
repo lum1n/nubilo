@@ -40,6 +40,13 @@ struct CalendarContactsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            #if os(macOS) && canImport(EventKit)
+            Section {
+                NavigationLink("Mirror Mac Calendars") { CalendarMirrorView() }
+            } footer: {
+                Text("For calendars only this Mac can reach, such as a work Exchange account: copy them to Nubilo, read-only on your other devices.")
+            }
+            #endif
         }
         .formStyle(.grouped)
         .navigationTitle("Calendar & Contacts")

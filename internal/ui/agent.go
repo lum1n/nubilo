@@ -58,8 +58,6 @@ func NewAgent(dataDir, listen string, log *slog.Logger) (*AgentServer, error) {
 	mux.HandleFunc("PUT /api/selection", s.gate.authed(s.handleSelectionPut))
 	mux.HandleFunc("POST /api/files/add", s.gate.authed(s.handleFilesAdd))
 	mux.HandleFunc("POST /api/files/remove", s.gate.authed(s.handleFilesRemove))
-	mux.HandleFunc("GET /api/calendars", s.gate.authed(s.handleCalendars))
-	mux.HandleFunc("POST /api/calendars/mirror", s.gate.authed(s.handleCalendarMirror))
 	mux.HandleFunc("POST /api/pair", s.gate.authed(s.handlePair))
 	static, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(static))))

@@ -105,6 +105,9 @@ public final class AppModel {
         #if canImport(Photos) && canImport(SwiftData)
         await BackupRuntime.shared.disconnect()
         #endif
+        #if os(macOS) && canImport(EventKit)
+        await MacCalendarMirror.shared.signedOut()
+        #endif
         if let server { try? keys.delete(tag: server.keyTag) }
         store.clear()
         server = nil

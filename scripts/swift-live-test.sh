@@ -16,8 +16,9 @@ c["tls"].update(cert="", key="", auto=False)
 json.dump(c, open(p, "w"), indent=2)
 PY
 INVITE=$("$TMP/nubilo" --data-dir "$TMP/data" --json users invite --role admin | python3 -c 'import json,sys; print(json.load(sys.stdin)["code"])')
+INVITE_2=$("$TMP/nubilo" --data-dir "$TMP/data" --json users invite --role member | python3 -c 'import json,sys; print(json.load(sys.stdin)["code"])')
 "$TMP/nubilo" --data-dir "$TMP/data" server >"$TMP/server.log" 2>&1 &
 PID=$!
 sleep 1
 cd "$ROOT/apps/Nubilo/Packages/NubiloKit"
-NUBILO_TEST_URL="http://127.0.0.1:$PORT" NUBILO_TEST_INVITE="$INVITE" swift test
+NUBILO_TEST_URL="http://127.0.0.1:$PORT" NUBILO_TEST_INVITE="$INVITE" NUBILO_TEST_INVITE_2="$INVITE_2" swift test

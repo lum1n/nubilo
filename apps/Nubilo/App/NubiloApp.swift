@@ -14,7 +14,10 @@ struct NubiloApp: App {
 
     init() {
         // Photo backup runs in the app on the Mac (no background tasks).
-        MainActor.assumeIsolated { MacBackupLoop.shared.start() }
+        MainActor.assumeIsolated {
+            MacBackupLoop.shared.start()
+            MacCalendarMirror.shared.start()
+        }
     }
     #endif
 

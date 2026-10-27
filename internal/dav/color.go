@@ -23,9 +23,11 @@ type CalendarColMeta struct {
 	Color string `json:"color,omitempty"`
 	Order int    `json:"order,omitempty"`
 	Comp  string `json:"comp,omitempty"`
-	// Mirror marks a calendar the Mac agent copies from the Mac (for example
-	// an Exchange account). Only agents write to it (syncengine.ErrMirrorReadOnly).
-	Mirror bool `json:"mirror,omitempty"`
+	// Mirror marks a calendar the Mac app copies from the Mac (for example
+	// an Exchange account). Only MirrorDevice, which the server records when
+	// the mirror is turned on, writes to it (syncengine.ErrMirrorReadOnly).
+	Mirror       bool   `json:"mirror,omitempty"`
+	MirrorDevice string `json:"mirror_device,omitempty"`
 }
 
 func ParseCalendarColMeta(raw json.RawMessage) CalendarColMeta {
@@ -156,8 +158,9 @@ func (b *CalDAV) serveCalendarPropPatch(w http.ResponseWriter, r *http.Request) 
 					http.Error(w, "forbidden", http.StatusForbidden)
 					return
 				}
-				meta := PatchCalendarColMeta(hc.col.Metadata, CalendarColMeta{Color: color, Order: order})
-				_ = b.Engine.SetCollectionMetadata(r.Context(), hc.col.ID, meta)
+				// Merge, so keys this struct does not know (slug, mirror_device) survive.
+				_, _ = b.Engine.PatchCollectionMetadata(r.Context(), hc.col.ID,
+					EncodeCalendarColMeta(CalendarColMeta{Color: color, Order: order}))
 			} else {
 				_ = b.Engine.SetPref(r.Context(), u.id, hc.col.ID, syncengine.Pref{Color: color, Order: order})
 			}

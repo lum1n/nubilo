@@ -184,16 +184,12 @@ func Agent(dataDir string) (Report, error) {
 	if err != nil {
 		r.add(Check{ID: "selection", Title: "sync selection", Status: Warn, Detail: err.Error()})
 	} else {
-		folders := 0
-		if sel.Files.Enabled {
-			folders = len(sel.Files.Folders)
-		}
-		if folders == 0 && len(sel.Calendars) == 0 {
-			r.add(Check{ID: "selection", Title: "sync selection", Status: Warn, Detail: "no folders or calendars selected",
+		if !sel.Files.Enabled || len(sel.Files.Folders) == 0 {
+			r.add(Check{ID: "selection", Title: "sync selection", Status: Warn, Detail: "no folders selected",
 				Fix: "nubilo agent ui"})
 		} else {
 			r.add(Check{ID: "selection", Title: "sync selection", Status: OK,
-				Detail: fmt.Sprintf("%d folders, %d mirrored calendars", folders, len(sel.Calendars))})
+				Detail: fmt.Sprintf("%d folders", len(sel.Files.Folders))})
 		}
 	}
 

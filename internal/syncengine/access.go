@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -325,25 +326,50 @@ func (e *Engine) BlobReadable(ctx context.Context, userID, hash string) (bool, e
 const ErrMirrorReadOnly = "read-only mirror"
 
 // mirrorReadOnlyQ reports whether dev may not write to collectionID because
-// it is a mirror: collection metadata "mirror": true, set by the Mac agent
+// it is a mirror: collection metadata "mirror": true, set by the Mac app
 // that copies a calendar from the Mac (for example an Exchange account only
-// that Mac reaches). Only agent and system devices write to mirrors, so
-// phones see the copy but cannot change the original's events. This guards
-// against accidental edits; the owner can still clear the flag.
+// that Mac reaches). Only the device recorded in "mirror_device" (see
+// MirrorPatch) and system devices write to it, so phones see the copy but
+// cannot change the original's events. This guards against accidental
+// edits; the owner can still clear the flag.
 func mirrorReadOnlyQ(q querier, dev *identity.Device, collectionID string) (bool, error) {
-	if dev == nil || dev.System() || dev.Role == identity.RoleAgent {
+	if dev == nil || dev.System() {
 		return false, nil
 	}
 	var mirror sql.NullBool
+	var owner sql.NullString
 	err := q.QueryRow(`
-		SELECT json_extract(metadata, '$.mirror') FROM collections
+		SELECT json_extract(metadata, '$.mirror'), json_extract(metadata, '$.mirror_device') FROM collections
 		WHERE id = ? AND json_valid(metadata)
-	`, collectionID).Scan(&mirror)
+	`, collectionID).Scan(&mirror, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return mirror.Valid && mirror.Bool, nil
+	return mirror.Valid && mirror.Bool && owner.String != dev.ID, nil
+}
+
+// MirrorPatch records dev as the writer of a collection when a metadata
+// patch turns "mirror" on, overriding any "mirror_device" the client sent.
+// Other patches are returned unchanged.
+func MirrorPatch(patch json.RawMessage, dev *identity.Device) json.RawMessage {
+	var m map[string]any
+	if dev == nil || json.Unmarshal(patch, &m) != nil {
+		return patch
+	}
+	if on, _ := m["mirror"].(bool); !on {
+		delete(m, "mirror_device")
+		if b, err := json.Marshal(m); err == nil {
+			return b
+		}
+		return patch
+	}
+	m["mirror_device"] = dev.ID
+	b, err := json.Marshal(m)
+	if err != nil {
+		return patch
+	}
+	return b
 }

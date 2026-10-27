@@ -76,6 +76,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSPhotoLibraryUsageDescription: Nubilo backs up your photos and videos to your own server.
+        # Mac: the calendar mirror reads the calendars you choose (read-only).
+        NSCalendarsFullAccessUsageDescription: Nubilo copies the calendars you choose to your own server, so your other devices can show them.
         NSCameraUsageDescription: Nubilo uses the camera to scan the QR code of your invite.
         CFBundleURLTypes:
           - CFBundleURLName: dev.nubilo.setup
@@ -110,10 +112,9 @@ targets:
           IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:--}"
           TIMESTAMP="--timestamp"
           [ "${IDENTITY}" = "-" ] && TIMESTAMP="--timestamp=none"
-          # Calendar entitlement for the agent's calendar mirror (EventKit);
-          # Photos access belongs to the app.
+          # No entitlements: the CLI runs the server and folder sync only;
+          # Photos and Calendar access belong to the app.
           codesign --force --options runtime "${TIMESTAMP}" \
-            --entitlements "${SRCROOT}/../../cmd/nubilo/nubilo.entitlements" \
             --sign "${IDENTITY}" "${DEST}/nubilo"
 
 schemes:

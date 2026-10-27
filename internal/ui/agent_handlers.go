@@ -24,8 +24,7 @@ func (s *AgentServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"pairing":          pair,
 		"interval_seconds": sel.IntervalSeconds,
 		"counts": map[string]any{
-			"folders":   len(sel.Files.Folders),
-			"calendars": len(sel.Calendars),
+			"folders": len(sel.Files.Folders),
 		},
 		"files_enabled": sel.Files.Enabled,
 	})
@@ -134,75 +133,6 @@ func (s *AgentServer) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "device_id": id})
-}
-
-// handleCalendars lists the Mac's calendars with the mirrored ones marked.
-func (s *AgentServer) handleCalendars(w http.ResponseWriter, r *http.Request) {
-	sel, err := s.loadSel()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	list, err := agent.PlatformCalendars()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	chosen := map[string]bool{}
-	for _, c := range sel.Calendars {
-		chosen[c.LocalID] = true
-	}
-	rows := make([]map[string]any, 0, len(list))
-	for _, c := range list {
-		rows = append(rows, map[string]any{"id": c.ID, "title": c.Title, "color": c.Color, "mirrored": chosen[c.ID]})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"calendars": rows})
-}
-
-// handleCalendarMirror turns mirroring of one Mac calendar on or off.
-func (s *AgentServer) handleCalendarMirror(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID     string `json:"id"`
-		Mirror bool   `json:"mirror"`
-	}
-	if err := readJSON(r, &req); err != nil || req.ID == "" {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	title := ""
-	if req.Mirror {
-		list, err := agent.PlatformCalendars()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		for _, c := range list {
-			if c.ID == req.ID {
-				title = c.Title
-			}
-		}
-		if title == "" {
-			http.Error(w, "no such calendar on this Mac", http.StatusNotFound)
-			return
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sel, err := agent.LoadSelection(s.SelPath)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if req.Mirror {
-		sel.AddCalendar(req.ID, title)
-	} else {
-		sel.RemoveCalendar(req.ID)
-	}
-	if err := agent.SaveSelection(s.SelPath, sel); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *AgentServer) loadSel() (agent.Selection, error) {

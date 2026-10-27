@@ -122,6 +122,17 @@ the guide points to a WebDAV-capable file app.
 Backup is one way: photos added on the server are not written into
 Photos.app.
 
+**Mirror Mac Calendars (Mac).** Under Calendar & Contacts. For calendars
+only this Mac reaches (a work Exchange account): the chosen calendars are
+copied one way to server calendars marked as mirrors, which other devices
+see read-only (the server lets only this device write them). `MacCalendarMirror`
+runs `CalendarMirrorEngine` (NubiloKit) 30 s after `EKEventStoreChanged` and
+every 15 minutes; each occurrence from −30 to +365 days becomes its own
+event (`ICSWriter`), state is in Application Support
+(`calendar-mirror.json`), and a Mac that lost it adopts the server copy by
+UID instead of duplicating it. Needs Calendar full access
+(`NSCalendarsFullAccessUsageDescription`, calendars entitlement).
+
 **Family.** Admins see all members with role, status, devices and storage;
 can disable or enable a member and change roles; create invites shown as a QR
 code with a share link, and revoke open ones; and see every device by owner

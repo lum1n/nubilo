@@ -28,8 +28,7 @@ type Agent struct {
 	Client  *protocol.Client
 	Map     *Map
 	Sel     Selection
-	SelPath string         // agent.json; reloaded at the start of each SyncOnce
-	Cal     CalendarSource // nil off macOS; mirrors selected calendars
+	SelPath string // agent.json; reloaded at the start of each SyncOnce
 	Files   FileSource
 	Log     *slog.Logger
 
@@ -179,9 +178,6 @@ func (a *Agent) applyChange(ctx context.Context, ch syncengine.Change) error {
 }
 
 func (a *Agent) pushLocal(ctx context.Context) error {
-	if err := a.pushCalendars(ctx); err != nil {
-		return err
-	}
 	return a.pushFiles(ctx)
 }
 
@@ -514,24 +510,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	t := time.NewTicker(d)
 	defer t.Stop()
-	// Calendar changes on the Mac sync after a short pause, in this loop so
-	// two syncs never run at once.
-	var local <-chan struct{}
-	if a.Cal != nil {
-		local = watchLocalChanges()
-	}
-	debounce := time.NewTimer(time.Hour)
-	debounce.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			debounce.Stop()
 			return ctx.Err()
 		case <-t.C:
-			a.runSync(ctx)
-		case <-local:
-			debounce.Reset(2 * time.Second)
-		case <-debounce.C:
 			a.runSync(ctx)
 		}
 	}
