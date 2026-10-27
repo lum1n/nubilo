@@ -38,6 +38,11 @@ func checkPublic(ctx context.Context, r *Report, cfg config.Config) {
 	if pub.Relay.Invite != "" {
 		checkRelay(ctx, r, cfg)
 	}
+	if pub.Relay.BehindProxy {
+		r.add(Check{ID: "proxy_tls", Title: "TLS termination", Status: Warn,
+			Detail: "the proxy in front of the relay (e.g. exe.dev) holds the certificate for " + pub.Domain + " and can read calendar, contacts, files, photos and app passwords",
+			Fix:    "for TLS that ends at home, run `nubilo relay` on a VPS with public ports instead (nubilo setup → relay)"})
+	}
 	if pub.DirectListen != "" {
 		checkDirectPorts(r, pub)
 	}
@@ -62,8 +67,11 @@ func checkRelay(ctx context.Context, r *Report, cfg config.Config) {
 	case "direct", "relay":
 		r.add(Check{ID: "relay", Title: "relay", Status: OK, Detail: "connected (" + path + " path)"})
 	default:
-		r.add(Check{ID: "relay", Title: "relay", Status: Fail, Detail: "relay: unreachable",
-			Fix: "on the VPS: nubilo relay members (is `nubilo relay run` up? ports 7443 tcp/udp, 7842 udp open?)"})
+		fix := "on the VPS: nubilo relay members (is `nubilo relay run` up? ports 7443 tcp/udp, 7842 udp open?)"
+		if cfg.Public.Relay.BehindProxy {
+			fix = "on the relay host: nubilo relay members (is `nubilo relay run` up? does the proxy forward to its listen port and is it public?)"
+		}
+		r.add(Check{ID: "relay", Title: "relay", Status: Fail, Detail: "relay: unreachable", Fix: fix})
 	}
 }
 

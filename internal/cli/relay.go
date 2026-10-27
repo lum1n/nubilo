@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -46,21 +47,37 @@ func runRelay(g global, args []string) int {
 		fs := flag.NewFlagSet("relay init", flag.ContinueOnError)
 		host := fs.String("public-host", "", "public IP or DNS name of this VPS (put into the invite)")
 		home := fs.String("home", "home", "overlay node name of the home server")
+		proxyURL := fs.String("behind-proxy", "", "https URL of a TLS-terminating proxy in front of this host (exe.dev: https://<vm>.exe.xyz)")
+		listen := fs.String("listen", relay.EdgeListen, "with --behind-proxy: the plain-HTTP address the proxy forwards to")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		if *host == "" {
-			return fatal(fmt.Errorf("relay init requires --public-host"))
+		if *host == "" && *proxyURL == "" {
+			return fatal(fmt.Errorf("relay init requires --public-host (a VPS) or --behind-proxy URL (exe.dev)"))
 		}
 		if !wiredx.Available() {
 			return fatal(wiredx.ErrUnavailable)
 		}
-		inv, err := relay.Init(dir, relay.DefaultConfig(*host, *home))
+		cfg := relay.DefaultConfig(*host, *home)
+		if *proxyURL != "" {
+			if cfg, err = relay.EdgeDefaultConfig(*proxyURL, *listen, *home); err != nil {
+				return fatal(err)
+			}
+		}
+		inv, err := relay.Init(dir, cfg)
 		if err != nil {
 			return fatal(err)
 		}
 		fmt.Printf("relay initialized in %s\n\n", dir)
 		printRelayInvite(inv)
+		if e := cfg.Edge; e != nil {
+			_, port, _ := net.SplitHostPort(e.Listen)
+			fmt.Printf("\nBehind a proxy: point it at port %s (exe.dev: ssh exe.dev share port <vm> %s; ssh exe.dev share set-public <vm>).\n", port, port)
+			fmt.Printf("The proxy terminates TLS for %s and can read the traffic; wired encrypts the hop to your home.\n", e.URL)
+			fmt.Println("Then: nubilo relay install   (or run it in the foreground: nubilo relay run)")
+			fmt.Printf("At home: nubilo setup --mode proxy --domain %s --relay-invite '<invite above>'\n", cfg.PublicHost)
+			return 0
+		}
 		fmt.Printf("\nOpen on this VPS: TCP 80, 443, %d and UDP %d, %d.\n", wiredx.AnchorPort, wiredx.AnchorPort, wiredx.QADPort)
 		fmt.Println("Then: nubilo relay install   (or run it in the foreground: nubilo relay run)")
 		fmt.Println("At home: nubilo setup, choose \"relay\", and paste the invite above.")

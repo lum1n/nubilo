@@ -424,6 +424,16 @@ Default logs may include: device_id, collection_id, object_id, sequence numbers,
 - Public listeners send `Strict-Transport-Security: max-age=31536000`. Plain HTTP only answers ACME HTTP-01 and redirects to HTTPS.
 - The LAN listener keeps its self-signed certificate (and serves the ACME certificate when the SNI is the public domain), so phones on Wi-Fi keep working when the relay is down.
 
+## 15c. Relay behind a TLS-terminating proxy (exe.dev)
+
+In **proxy** mode the relay runs on a host whose provider proxy (exe.dev) terminates TLS for the public name and forwards plain HTTP to the relay. This is weaker than §15a:
+
+- The proxy operator holds the certificate key and sees every request and response in plaintext, including app passwords in CalDAV/CardDAV Basic auth, calendar and contact data, files and photos. It can also modify traffic. App API requests stay signed by the device key (a modified request fails verification), but responses are not signed.
+- The relay VM sees the same plaintext. wired encrypts the hop from the VM to the home server, which listens only on the overlay `web` service (plain HTTP) in this mode.
+- The home server takes the client address from `X-Nubilo-Client-IP`, only on that overlay listener. The relay always overwrites the header with the last `X-Forwarded-For` entry its proxy appended, so clients cannot set it.
+- Blobs and payloads stay encrypted at rest at home, so data at rest is protected as in other modes. The exposure is data in transit.
+- `nubilo doctor` reports this as a `TLS termination` warning. Use the VPS relay (§15a) when TLS must end at home.
+
 ## 15b. Invites, upload tokens and configuration profiles
 
 - **Invites** (`nbi-` + 20 Crockford base32 characters, 100 bits) are stored as Argon2id hashes, expire (default 24 h, max 30 days), are single-use unless an admin sets `max_uses`, and are admin-only to create. Redeeming creates the user (or pairs a device for an existing one) and the pairing challenge in one transaction; a failed redeem (e.g. username taken) does not consume a use. QR links are `https://<domain>/join#<code>`: the code stays in the URL fragment and never reaches the server's logs.

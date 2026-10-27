@@ -24,6 +24,10 @@ const (
 	ModeRelay  = "relay"  // a VPS runs `nubilo relay`; the home stays closed
 	ModeDirect = "direct" // this host is public (port forward or VPS)
 	ModeLAN    = "lan"    // LAN/Tailscale only, self-signed certificate
+	// ModeProxy: `nubilo relay --behind-proxy` runs on a host whose
+	// TLS-terminating proxy (exe.dev) owns the certificate; that proxy can
+	// read the traffic. The home stays closed, as in relay mode.
+	ModeProxy = "proxy"
 )
 
 // Wizard holds the answers of `nubilo setup`. Each step is idempotent so the
@@ -88,6 +92,24 @@ func (w *Wizard) StepReachability(ctx context.Context) StepResult {
 		cfg.Public.ACME = config.ACMEConfig{}
 		cfg.Public.Relay = config.RelayConfig{}
 		cfg.Public.DirectListen = ""
+	case ModeProxy:
+		if w.Domain == "" {
+			return fail(2, errors.New("a domain is required: the proxy's name, e.g. nubilo.exe.xyz"))
+		}
+		inv := strings.TrimSpace(w.RelayInvite)
+		if inv == "" {
+			return fail(2, errors.New("proxy mode needs the invite printed by `nubilo relay init --behind-proxy` on the proxied host"))
+		}
+		cfg.Public.Domain = w.Domain
+		cfg.Public.ACME = config.ACMEConfig{}
+		cfg.Public.DirectListen = ""
+		cfg.Public.Relay = config.RelayConfig{Invite: inv, Name: server.RelayHomeName, BehindProxy: true}
+		data["domain"] = w.Domain
+		path, err := probeRelay(ctx, inv, p.Wired)
+		if err != nil {
+			return fail(2, fmt.Errorf("joining the relay: %w", err))
+		}
+		data["relay_path"] = path
 	case ModeRelay, ModeDirect:
 		if w.Domain == "" {
 			return fail(2, errors.New("a domain is required (e.g. cloud.example.com, with DNS pointing at the relay or this host)"))
@@ -115,7 +137,7 @@ func (w *Wizard) StepReachability(ctx context.Context) StepResult {
 			cfg.Public.DirectListen = ":443"
 		}
 	default:
-		return fail(2, fmt.Errorf("unknown mode %q (relay, direct or lan)", w.Mode))
+		return fail(2, fmt.Errorf("unknown mode %q (relay, proxy, direct or lan)", w.Mode))
 	}
 	if err := cfg.Validate(); err != nil {
 		return fail(2, err)
@@ -124,7 +146,14 @@ func (w *Wizard) StepReachability(ctx context.Context) StepResult {
 		return fail(2, err)
 	}
 	msg := "LAN only (self-signed certificate)"
-	if w.Mode != ModeLAN {
+	switch w.Mode {
+	case ModeLAN:
+	case ModeProxy:
+		msg = fmt.Sprintf("%s via a relay behind its TLS proxy (the proxy holds the certificate and can read traffic)", w.Domain)
+		if path, ok := data["relay_path"]; ok {
+			msg += fmt.Sprintf(" (relay path: %v)", path)
+		}
+	default:
 		msg = fmt.Sprintf("%s via %s, Let's Encrypt certificate", w.Domain, w.Mode)
 		if path, ok := data["relay_path"]; ok {
 			msg += fmt.Sprintf(" (relay path: %v)", path)

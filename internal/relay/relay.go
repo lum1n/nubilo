@@ -3,6 +3,11 @@
 // bytes: TLS terminates on the home server, so the VPS never holds the
 // master key, the database, or a certificate private key, and sees only
 // ciphertext. It can deny service; it cannot read data.
+//
+// Behind a TLS-terminating proxy (exe.dev: one HTTPS name, one forwarded
+// port, no inbound TCP/UDP) it runs as an edge instead (see edge.go): the
+// proxy holds the certificate and sees plaintext, and the relay serves the
+// wired relay and HTTP to the home server on the one port it is given.
 package relay
 
 import (
@@ -13,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +40,20 @@ type Config struct {
 	PublicHost string    `json:"public_host"`
 	Port       uint16    `json:"port,omitempty"`
 	Forward    []Forward `json:"forward"`
+	// Edge is set when the relay sits behind a TLS-terminating proxy.
+	Edge *EdgeConfig `json:"edge,omitempty"`
+}
+
+// EdgeConfig runs the relay behind a TLS-terminating proxy such as exe.dev.
+type EdgeConfig struct {
+	// URL is the public https URL the proxy serves (https://nubilo.exe.xyz).
+	URL string `json:"url"`
+	// Listen is the plain-HTTP address the proxy forwards to (default :8000).
+	Listen string `json:"listen"`
+	// RelayBind is where the wired relay listens locally (default 127.0.0.1:8790).
+	RelayBind string `json:"relay_bind"`
+	// Upstream is the home server's overlay web service (web@home).
+	Upstream string `json:"upstream"`
 }
 
 // anchor starts the overlay anchor; tests replace it with a fake.
@@ -58,6 +78,37 @@ func DefaultConfig(publicHost, homeNode string) Config {
 			{Listen: ":80", Target: wiredx.ServiceHTTP + "@" + homeNode},
 		},
 	}
+}
+
+// EdgeDefaults are the listen and relay addresses when not given.
+const (
+	EdgeListen    = ":8000"
+	EdgeRelayBind = "127.0.0.1:8790"
+)
+
+// EdgeDefaultConfig serves publicURL through a TLS-terminating proxy that
+// forwards plain HTTP to listen.
+func EdgeDefaultConfig(publicURL, listen, homeNode string) (Config, error) {
+	u, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || u.Scheme != "https" || u.Host == "" || (u.Path != "" && u.Path != "/") {
+		return Config{}, fmt.Errorf("relay: --behind-proxy needs the proxy's https URL, e.g. https://nubilo.exe.xyz (got %q)", publicURL)
+	}
+	if homeNode == "" {
+		homeNode = "home"
+	}
+	if listen == "" {
+		listen = EdgeListen
+	}
+	return Config{
+		Name:       "relay",
+		PublicHost: u.Hostname(),
+		Edge: &EdgeConfig{
+			URL:       "https://" + u.Host,
+			Listen:    listen,
+			RelayBind: EdgeRelayBind,
+			Upstream:  wiredx.ServiceWeb + "@" + homeNode,
+		},
+	}, nil
 }
 
 func Load(dir string) (Config, error) {
@@ -98,11 +149,28 @@ func (c Config) validate() error {
 			return fmt.Errorf("relay: forward target %q must be service@node", f.Target)
 		}
 	}
+	if e := c.Edge; e != nil {
+		if !strings.HasPrefix(e.URL, "https://") {
+			return fmt.Errorf("relay: edge url %q must be https", e.URL)
+		}
+		for _, a := range []string{e.Listen, e.RelayBind} {
+			if _, _, err := net.SplitHostPort(a); err != nil {
+				return fmt.Errorf("relay: edge address %q: %w", a, err)
+			}
+		}
+		if !strings.Contains(e.Upstream, "@") {
+			return fmt.Errorf("relay: edge upstream %q must be service@node", e.Upstream)
+		}
+	}
 	return nil
 }
 
 func (c Config) anchorOptions(dir string) wiredx.AnchorOptions {
-	return wiredx.AnchorOptions{Name: c.Name, PublicHost: c.PublicHost, Port: c.Port, StateDir: filepath.Join(dir, stateSubdir)}
+	o := wiredx.AnchorOptions{Name: c.Name, PublicHost: c.PublicHost, Port: c.Port, StateDir: filepath.Join(dir, stateSubdir)}
+	if c.Edge != nil {
+		o.RelayURL, o.RelayBind, o.NoQAD = c.Edge.URL, c.Edge.RelayBind, true
+	}
+	return o
 }
 
 // Init starts the anchor once to create its state and returns the invite.
@@ -149,6 +217,29 @@ func Run(ctx context.Context, dir string, log *slog.Logger) error {
 			defer wg.Done()
 			errCh <- wiredx.Forward(ctx, ln, func(ctx context.Context) (net.Conn, error) { return node.Dial(ctx, target) }, log,
 				wiredx.ForwardOptions{SendProxyHeader: true})
+		}()
+	}
+	if e := c.Edge; e != nil {
+		ln, err := net.Listen("tcp", e.Listen)
+		if err != nil {
+			return fmt.Errorf("relay: edge listen %s: %w", e.Listen, err)
+		}
+		upstream := e.Upstream
+		h := EdgeHandler(e.RelayBind, func(ctx context.Context) (net.Conn, error) { return node.Dial(ctx, upstream) }, log)
+		srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+		log.Info("relay_edge", "listen", e.Listen, "url", e.URL, "upstream", upstream)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			go func() {
+				<-ctx.Done()
+				_ = srv.Close()
+			}()
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+				return
+			}
+			errCh <- nil
 		}()
 	}
 	ctl, err := serveControl(ctx, dir, node, log)

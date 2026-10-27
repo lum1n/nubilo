@@ -138,12 +138,15 @@ func runSetup(g global, args []string) int {
 	if interactive && w.Mode == "" {
 		fmt.Println("\nHow will phones reach this server from outside your home?")
 		fmt.Println("  1) relay   — a small VPS runs `nubilo relay`; nothing opens on your router (recommended)")
-		fmt.Println("  2) direct  — this host is reachable on ports 443/80 (port forward or VPS)")
-		fmt.Println("  3) lan     — home network / Tailscale only, self-signed certificate")
+		fmt.Println("  2) proxy   — `nubilo relay --behind-proxy` on a host like exe.dev; its proxy holds the certificate and can read traffic")
+		fmt.Println("  3) direct  — this host is reachable on ports 443/80 (port forward or VPS)")
+		fmt.Println("  4) lan     — home network / Tailscale only, self-signed certificate")
 		switch prompt("choice [1]: ") {
-		case "2", "direct":
+		case "2", "proxy":
+			w.Mode = setup.ModeProxy
+		case "3", "direct":
 			w.Mode = setup.ModeDirect
-		case "3", "lan":
+		case "4", "lan":
 			w.Mode = setup.ModeLAN
 		default:
 			w.Mode = setup.ModeRelay
@@ -154,13 +157,17 @@ func runSetup(g global, args []string) int {
 	}
 	if interactive && w.Mode != setup.ModeLAN {
 		if w.Domain == "" {
-			w.Domain = prompt("public domain (DNS A record → the relay VPS or this host): ")
+			if w.Mode == setup.ModeProxy {
+				w.Domain = prompt("public name the proxy serves (e.g. nubilo.exe.xyz): ")
+			} else {
+				w.Domain = prompt("public domain (DNS A record → the relay VPS or this host): ")
+			}
 		}
-		if w.Email == "" {
+		if w.Email == "" && w.Mode != setup.ModeProxy {
 			w.Email = prompt("email for Let's Encrypt expiry notices (optional): ")
 		}
-		if w.Mode == setup.ModeRelay && w.RelayInvite == "" {
-			w.RelayInvite = prompt("relay invite (from `nubilo relay init` on the VPS): ")
+		if (w.Mode == setup.ModeRelay || w.Mode == setup.ModeProxy) && w.RelayInvite == "" {
+			w.RelayInvite = prompt("relay invite (from `nubilo relay init` on the relay host): ")
 		}
 	}
 	if !report(run(2)) {

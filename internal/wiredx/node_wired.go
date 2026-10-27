@@ -23,7 +23,10 @@ func Join(o JoinOptions) (Node, error) {
 }
 
 func Anchor(o AnchorOptions) (Node, error) {
-	n, err := wired.Anchor(wired.AnchorOptions{Name: o.Name, PublicHost: o.PublicHost, Port: o.Port, StateDir: o.StateDir})
+	n, err := wired.Anchor(wired.AnchorOptions{
+		Name: o.Name, PublicHost: o.PublicHost, Port: o.Port, StateDir: o.StateDir,
+		RelayURL: o.RelayURL, RelayBind: o.RelayBind, NoQAD: o.NoQAD,
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -55,6 +55,12 @@ type AnchorOptions struct {
 	// Port is the UDP peer port and TCP relay port (default 7443).
 	Port     uint16
 	StateDir string
+	// RelayURL and RelayBind serve the wired relay behind a TLS-terminating
+	// proxy (exe.dev) instead of on public ports: peers reach it at RelayURL,
+	// and the proxy hands /relay and /ping to the plain-HTTP RelayBind.
+	RelayURL, RelayBind string
+	// NoQAD turns off UDP address discovery (nothing is reachable behind a proxy).
+	NoQAD bool
 }
 
 // Ports the anchor needs open on the VPS firewall.
@@ -67,4 +73,12 @@ const (
 const (
 	ServiceHTTPS = "https"
 	ServiceHTTP  = "http"
+	// ServiceWeb is plain HTTP for a relay behind a TLS-terminating proxy:
+	// TLS already ended at the proxy, and wired encrypts the hop home.
+	ServiceWeb = "web"
 )
+
+// ClientIPHeader carries the client address from a relay behind a proxy to
+// the home server's web service. The relay always overwrites it, and only
+// the overlay web listener reads it.
+const ClientIPHeader = "X-Nubilo-Client-IP"

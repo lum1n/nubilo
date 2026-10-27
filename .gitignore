@@ -7,3 +7,4 @@
 .nubilo/
 *.test
 coverage.out
+/bin/

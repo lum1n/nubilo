@@ -57,6 +57,10 @@ type RelayConfig struct {
 	Invite   string `json:"invite,omitempty"`
 	Name     string `json:"name,omitempty"`
 	StateDir string `json:"state_dir,omitempty"`
+	// BehindProxy: the relay sits behind a TLS-terminating proxy (exe.dev)
+	// that holds the certificate for Domain. The home server serves plain
+	// HTTP to the relay over the overlay and runs no ACME.
+	BehindProxy bool `json:"behind_proxy,omitempty"`
 }
 
 // LetsEncryptStaging is the staging ACME directory for dry runs.
