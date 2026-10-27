@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -102,12 +103,14 @@ func Server(ctx context.Context, dataDir string, opt Options) (Report, error) {
 	if err != nil {
 		r.add(Check{ID: "devices", Title: "devices", Status: Warn, Detail: err.Error()})
 	} else {
-		agents, davs := 0, 0
+		apps, agents, davs := 0, 0, 0
 		for _, d := range devs {
 			if d.Revoked() {
 				continue
 			}
 			switch d.Role {
+			case identity.RoleClient:
+				apps++
 			case identity.RoleAgent:
 				agents++
 			case identity.RoleDAV:
@@ -115,11 +118,11 @@ func Server(ctx context.Context, dataDir string, opt Options) (Report, error) {
 			}
 		}
 		st := OK
-		detail := fmt.Sprintf("%d agent(s), %d dav password device(s)", agents, davs)
+		detail := fmt.Sprintf("%d app(s), %d agent(s), %d dav password device(s)", apps, agents, davs)
 		fix := ""
-		if agents == 0 {
+		if apps == 0 && agents == 0 {
 			st = Warn
-			fix = "nubilo pair --role agent  (then complete on the Mac)"
+			fix = "nubilo users invite, then scan it with the Nubilo app"
 		}
 		r.add(Check{ID: "devices", Title: "paired devices", Status: st, Detail: detail, Fix: fix})
 	}
@@ -357,10 +360,49 @@ func checkServerService(r *Report) {
 	}
 	r.add(Check{ID: "service", Title: "always-on service", Status: OK, Detail: st.Detail})
 	if runtime.GOOS == "linux" {
+		checkLinger(r)
+	}
+}
+
+func checkLinger(r *Report) {
+	on, err := lingerEnabled()
+	switch {
+	case err != nil:
 		r.add(Check{ID: "linger", Title: "systemd linger", Status: Info,
-			Detail: "user units stop on logout unless linger is enabled",
+			Detail: "could not read linger state: " + err.Error(),
+			Fix:    "loginctl enable-linger $USER"})
+	case on:
+		r.add(Check{ID: "linger", Title: "systemd linger", Status: OK, Detail: "enabled"})
+	default:
+		r.add(Check{ID: "linger", Title: "systemd linger", Status: Warn,
+			Detail: "off: user units stop when you log out",
 			Fix:    "loginctl enable-linger $USER"})
 	}
+}
+
+// lingerDir is where logind keeps one file per lingering user.
+var lingerDir = "/var/lib/systemd/linger"
+
+// lingerEnabled reports whether systemd keeps this user's units running
+// after logout. logind marks lingering users with a file in lingerDir;
+// loginctl is the fallback when that directory is not readable.
+func lingerEnabled() (bool, error) {
+	u, err := user.Current()
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(filepath.Join(lingerDir, u.Username)); err == nil {
+		return true, nil
+	}
+	out, err := exec.Command("loginctl", "show-user", u.Username, "--property=Linger", "--value").Output()
+	if err != nil {
+		// loginctl fails for users without a session; the missing file then decides.
+		if _, statErr := os.Stat(lingerDir); statErr == nil {
+			return false, nil
+		}
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) == "yes", nil
 }
 
 func checkDiskEncryption(r *Report, dataDir string) {
