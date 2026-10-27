@@ -28,6 +28,9 @@ func InstallAppBundle() (appPath string, err error) {
 	if err != nil {
 		return "", err
 	}
+	if err := checkBundleOwned(appPath); err != nil {
+		return "", err
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -55,7 +58,7 @@ func InstallAppBundle() (appPath string, err error) {
 	<key>CFBundleExecutable</key>
 	<string>nubilo</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.nubilo.cli</string>
+	<string>`+agentBundleID+`</string>
 	<key>CFBundleName</key>
 	<string>Nubilo</string>
 	<key>CFBundlePackageType</key>
