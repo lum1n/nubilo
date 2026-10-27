@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -95,8 +96,17 @@ func Init(dataDir string, listen string) error {
 	return st.Close()
 }
 
+// ErrNotInitialized means the data dir has no master key: `nubilo init`
+// (or setup) has not run there.
+var ErrNotInitialized = errors.New("server data dir not initialized")
+
 func Open(dataDir string) (*Runtime, error) {
 	p := config.Paths(dataDir)
+	// Check before anything below writes config.json or a TLS certificate,
+	// so a read-only command such as `status` never recreates a data dir.
+	if _, err := os.Stat(p.MasterKey); errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %s (run nubilo init)", ErrNotInitialized, dataDir)
+	}
 	cfg, err := config.Load(p.Config)
 	if err != nil {
 		if !os.IsNotExist(err) {
