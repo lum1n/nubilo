@@ -304,7 +304,7 @@ public actor PhotoBackupEngine {
             row.status = BackupState.done.rawValue
             row.lastError = nil
             run.committed += 1
-        } catch NubiloError.http(status: 507, _) {
+        } catch NubiloError.http(507, _) {
             // Over quota: keep the upload and retry once space is freed or the
             // limit raised, without counting it as a failure.
             row.status = BackupState.uploaded.rawValue

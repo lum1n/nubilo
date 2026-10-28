@@ -31,6 +31,9 @@ struct PeopleView: View {
                 NavigationLink { AppPasswordsView() } label: {
                     Label("App Passwords", systemImage: "key")
                 }
+                NavigationLink { WebSignInView() } label: {
+                    Label("Sign In on the Web", systemImage: "globe")
+                }
                 if let storage = model.me?.storage {
                     LabeledContent("Storage used") {
                         Text("\(storage.bytes.usage(of: storage.quotaBytes)) in \(storage.objects) items")

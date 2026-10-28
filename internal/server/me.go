@@ -615,7 +615,8 @@ func (s *Server) handleHomePage(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>%[1]s</title><style>body{font:17px -apple-system,system-ui,sans-serif;max-width:32em;margin:3em auto;padding:0 1em}</style></head>
 <body><h1>%[1]s</h1><p>This is a Nubilo server. Devices connect to it with the Nubilo app.</p>
-<p>To add a device, ask an admin for an invite and scan it with the Nubilo app, or open the invite link on the device.</p></body></html>`, name)
+<p>To add a device, ask an admin for an invite and scan it with the Nubilo app, or open the invite link on the device.</p>
+<p><a href="/web/">Open Nubilo on the web</a></p></body></html>`, name)
 }
 
 func htmlEscape(s string) string {

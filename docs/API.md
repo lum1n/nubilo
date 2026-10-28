@@ -146,3 +146,19 @@ Accounts created before multi-user support keep using `/caldav/user/calendars/<n
 ## Storage quotas
 
 `users.quota_bytes` (0 = no limit) caps the size of live objects in collections a user owns, whoever writes them: a write into a shared read-write folder counts against its owner. Shrinking writes and deletes are always allowed. A blob-backed object counts at least its stored blob size, whatever `size` the client sends. Over quota, `/sync/v1/push` answers the item with `"error": "quota exceeded"`, WebDAV/CalDAV/CardDAV PUT answers 507, and `POST /api/v1/photos` and `/photos/commit` answer 507. `GET /api/v1/me` returns `storage: {objects, bytes, quota_bytes}`.
+
+## Web sign-in and the web app
+
+The browser app is served at `/web/` (static files at `/web/assets/`). Sign-in is approved from a paired app; see SECURITY.md §15f.
+
+| Call | Auth | Result |
+|---|---|---|
+| `POST /web/api/login` | none (`X-Nubilo-Web: 1`) | 201 `{code:"ABCD-EFGH", expires_at, link:"nubilo://web-login?url=…&code=…", qr_png}`; sets the browser-secret cookie |
+| `GET /web/api/login` | browser-secret cookie | `{status:"pending"\|"approved"\|"expired"}`; on `approved` sets the `nubilo_web` session cookie |
+| `POST /web/api/logout` | session | 204 |
+| `GET /api/v1/me/web-login?code=…` | signed app | `{code, user_agent, ip, created_at, expires_at}`; 404 unknown or expired |
+| `POST /api/v1/me/web-login {"code"}` | signed app (role `client`) | 204; 404 unknown, expired or already used |
+| `GET /api/v1/me/web-sessions` | signed | `{sessions:[{id, device_id, user_agent, ip, created_at, last_seen, expires_at}]}` |
+| `DELETE /api/v1/me/web-sessions/{id}` | signed | 204 |
+
+With a session cookie (and `X-Nubilo-Web: 1` plus a same-origin `Origin` on non-GET), `/web/api/` mirrors the app API for the approving device: `me`, `collections`, `objects`, `object`, `collection`, `collection/update`, `collection/delete`, `push`, `blob/{hash}` (PUT), `photos` (GET/POST), `photos/{id}[/original|/preview|/thumb]`, `albums`, `albums/{id}/items`, and `files/{object id}` (GET, download as an attachment).

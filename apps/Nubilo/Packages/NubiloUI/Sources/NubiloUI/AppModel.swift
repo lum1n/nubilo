@@ -11,6 +11,8 @@ public final class AppModel {
     public private(set) var me: Me?
     /// A setup link that arrived through a `nubilo://` URL; onboarding picks it up.
     public var pendingLink: SetupLink?
+    /// A web sign-in code from an opened `nubilo://web-login` link.
+    public var pendingWebSignIn: String?
     /// An app-level problem shown as an alert (bad deep link, revoked device).
     public var alert: String?
 
@@ -94,6 +96,18 @@ public final class AppModel {
 
     /// Handles `nubilo://setup?…` links (and https join links passed in).
     public func handle(url: URL) {
+        if url.host()?.lowercased() == "web-login" {
+            guard server != nil else {
+                alert = "Set up this device first, then scan the code again."
+                return
+            }
+            guard let link = WebSignInLink(parsing: url.absoluteString) else {
+                alert = "That sign-in link is not valid."
+                return
+            }
+            pendingWebSignIn = link.code
+            return
+        }
         if let server {
             alert = "This device is already set up with \(server.baseURL.host() ?? "a server"). Sign out first to use another invite."
             return
