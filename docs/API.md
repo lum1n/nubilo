@@ -72,9 +72,13 @@ The older code flow (`POST /api/v1/pair/begin {code,name,public_key}` then `pair
 | Request | Response |
 | --- | --- |
 | `GET /api/v1/collections` | `{"collections":[{…collection, "owner","owner_user_id","root_id","access":"owner"\|"rw"\|"ro","shares":[…] (owners, roots only)}]}` |
-| `GET /api/v1/collections/{id}/shares` | `{"shares":[{"collection_id","principal_type":"user","principal_id","username","access","created_by","created_at"}]}` (owner only) |
-| `PUT /api/v1/collections/{id}/shares {"username"\|"principal_id","access":"ro"\|"rw"}` | the updated list |
-| `DELETE /api/v1/collections/{id}/shares?username=…` | the updated list |
+| `GET /api/v1/collections/{id}/shares` | `{"shares":[{"collection_id","principal_type":"user"\|"group","principal_id","username"?,"group_name"?,"access","created_by","created_at"}]}` (owner only) |
+| `PUT /api/v1/collections/{id}/shares {"principal_type"?:"user"\|"group","username"\|"group_name"\|"principal_id","access":"ro"\|"rw"}` | the updated list |
+| `DELETE /api/v1/collections/{id}/shares?username=…` (or `principal_type=group&principal_id=…` / `group_name=…`) | the updated list |
+| `GET /api/v1/groups` | `{"groups":[{"id","name","created_at","members":[user ids]}]}` (any user, for share pickers) |
+| `POST /api/v1/admin/groups {"name","members"?}` | group (409 name taken, case-insensitive; 404 unknown member) |
+| `PATCH /api/v1/admin/groups/{id} {"name"?,"members"?}` | group; `members` replaces the list |
+| `DELETE /api/v1/admin/groups/{id}` | 204; shares made to the group are deleted |
 
 Only top-level collections can be shared; everything below inherits the share.
 

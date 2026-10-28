@@ -447,17 +447,34 @@ type shareReq struct {
 	PrincipalType string `json:"principal_type"`
 	PrincipalID   string `json:"principal_id"`
 	Username      string `json:"username"`
+	GroupName     string `json:"group_name"`
 	Access        string `json:"access"`
 }
 
-// principal resolves a share request to a user id (by id or username).
-func (s *Server) principal(ctx context.Context, req shareReq) (string, error) {
-	if req.PrincipalType == "" {
-		req.PrincipalType = "user"
+// principal resolves a share request to a principal type and id: a user (by
+// id or username) or a group (by id or name).
+func (s *Server) principal(ctx context.Context, req shareReq) (string, string, error) {
+	switch req.PrincipalType {
+	case "", "user":
+		id, err := s.userPrincipal(ctx, req)
+		return "user", id, err
+	case "group":
+		if req.PrincipalID == "" && req.GroupName != "" {
+			g, err := s.IDs.GetGroupByName(ctx, req.GroupName)
+			if err != nil {
+				return "", "", err
+			}
+			return "group", g.ID, nil
+		}
+		if _, err := s.IDs.GetGroup(ctx, req.PrincipalID); err != nil {
+			return "", "", err
+		}
+		return "group", req.PrincipalID, nil
 	}
-	if req.PrincipalType != "user" {
-		return "", fmt.Errorf("unsupported principal type")
-	}
+	return "", "", fmt.Errorf("unsupported principal type")
+}
+
+func (s *Server) userPrincipal(ctx context.Context, req shareReq) (string, error) {
 	if req.PrincipalID == "" && req.Username != "" {
 		u, err := s.IDs.GetUserByName(ctx, req.Username)
 		if err != nil {
@@ -481,20 +498,20 @@ func (s *Server) handleSharesPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	uid, err := s.principal(r.Context(), req)
+	ptype, pid, err := s.principal(r.Context(), req)
 	if err != nil {
-		http.Error(w, "unknown user", http.StatusBadRequest)
+		http.Error(w, "unknown user or group", http.StatusBadRequest)
 		return
 	}
 	by := dev.UserID
 	if by == "" {
 		by = dev.ID
 	}
-	if err := s.Engine.SetShare(r.Context(), c.ID, "user", uid, req.Access, by); err != nil {
+	if err := s.Engine.SetShare(r.Context(), c.ID, ptype, pid, req.Access, by); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	s.Audit.Event(r.Context(), dev.ID, "share.set", map[string]any{"collection": c.ID, "principal": uid, "access": req.Access})
+	s.Audit.Event(r.Context(), dev.ID, "share.set", map[string]any{"collection": c.ID, "principal_type": ptype, "principal": pid, "access": req.Access})
 	s.handleSharesGet(w, r)
 }
 
@@ -503,23 +520,24 @@ func (s *Server) handleSharesDelete(w http.ResponseWriter, r *http.Request) {
 	if c == nil {
 		return
 	}
-	req := shareReq{PrincipalType: r.URL.Query().Get("principal_type"), PrincipalID: r.URL.Query().Get("principal_id"), Username: r.URL.Query().Get("username")}
-	if req.PrincipalID == "" && req.Username == "" {
+	q := r.URL.Query()
+	req := shareReq{PrincipalType: q.Get("principal_type"), PrincipalID: q.Get("principal_id"), Username: q.Get("username"), GroupName: q.Get("group_name")}
+	if req.PrincipalID == "" && req.Username == "" && req.GroupName == "" {
 		if err := s.readJSON(r, &req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 	}
-	uid, err := s.principal(r.Context(), req)
+	ptype, pid, err := s.principal(r.Context(), req)
 	if err != nil {
-		http.Error(w, "unknown user", http.StatusBadRequest)
+		http.Error(w, "unknown user or group", http.StatusBadRequest)
 		return
 	}
-	if err := s.Engine.RemoveShare(r.Context(), c.ID, "user", uid); err != nil {
+	if err := s.Engine.RemoveShare(r.Context(), c.ID, ptype, pid); err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
 	}
-	s.Audit.Event(r.Context(), dev.ID, "share.remove", map[string]any{"collection": c.ID, "principal": uid})
+	s.Audit.Event(r.Context(), dev.ID, "share.remove", map[string]any{"collection": c.ID, "principal_type": ptype, "principal": pid})
 	s.handleSharesGet(w, r)
 }
 

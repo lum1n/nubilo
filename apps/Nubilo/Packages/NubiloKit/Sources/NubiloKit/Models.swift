@@ -78,7 +78,17 @@ public struct Share: Codable, Sendable, Hashable {
     public var principalType: String
     public var principalId: String
     public var username: String?
+    public var groupName: String?
     public var access: String
+}
+
+/// A named set of users; sharing with it shares with every member.
+/// (Not `Group`, which would shadow SwiftUI's view.)
+public struct UserGroup: Codable, Sendable, Identifiable, Hashable {
+    public var id: String
+    public var name: String
+    /// User IDs.
+    public var members: [String]
 }
 
 public struct CollectionInfo: Codable, Sendable, Identifiable, Hashable {

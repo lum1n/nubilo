@@ -13,6 +13,9 @@ struct PeopleView: View {
                     NavigationLink { MembersView() } label: {
                         Label("Members", systemImage: "person.2")
                     }
+                    NavigationLink { GroupsView() } label: {
+                        Label("Groups", systemImage: "person.3")
+                    }
                     NavigationLink { InviteView() } label: {
                         Label("Invite Someone", systemImage: "qrcode")
                     }

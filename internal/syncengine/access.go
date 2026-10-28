@@ -45,23 +45,35 @@ func ScopeOf(dev *identity.Device) Scope {
 
 func (s Scope) All() bool { return s.all }
 
+// shareMatchSQL matches shares (alias s) made to one user directly or to a
+// group they belong to. It takes the user ID twice.
+const shareMatchSQL = `((s.principal_type = 'user' AND s.principal_id = ?)
+	OR (s.principal_type = 'group' AND s.principal_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = ?)))`
+
+// shareAccessSQL is the access a share grants: 2 for rw, 1 for ro.
+const shareAccessSQL = `CASE s.access WHEN 'rw' THEN 2 ELSE 1 END`
+
 // accessFilterSQL limits rows of alias c (collections) to those visible to
-// one user. It takes the user ID twice.
+// one user. It takes the user ID three times (userArgs).
 const accessFilterSQL = `(c.owner_user_id = ? OR (EXISTS (
-	SELECT 1 FROM shares s WHERE s.collection_id = COALESCE(c.root_id, c.id) AND s.principal_type = 'user' AND s.principal_id = ?)
+	SELECT 1 FROM shares s WHERE s.collection_id = COALESCE(c.root_id, c.id) AND ` + shareMatchSQL + `)
 	AND EXISTS (SELECT 1 FROM users ou WHERE ou.id = c.owner_user_id AND ou.status = 'active')))`
 
-// accessExprSQL evaluates to the authz.Access of one user on alias c. It takes the user ID twice.
+// accessExprSQL evaluates to the authz.Access of one user on alias c: the
+// best of their direct and group shares. It takes the user ID three times.
 const accessExprSQL = `(CASE WHEN c.owner_user_id = ? THEN 3 ELSE COALESCE((
-	SELECT CASE s.access WHEN 'rw' THEN 2 ELSE 1 END FROM shares s JOIN users ou ON ou.id = c.owner_user_id AND ou.status = 'active'
-	WHERE s.collection_id = COALESCE(c.root_id, c.id) AND s.principal_type = 'user' AND s.principal_id = ?), 0) END)`
+	SELECT MAX(` + shareAccessSQL + `) FROM shares s JOIN users ou ON ou.id = c.owner_user_id AND ou.status = 'active'
+	WHERE s.collection_id = COALESCE(c.root_id, c.id) AND ` + shareMatchSQL + `), 0) END)`
+
+// userArgs repeats userID for accessFilterSQL and accessExprSQL.
+func userArgs(userID string) []any { return []any{userID, userID, userID} }
 
 // filter returns a WHERE fragment over alias c (collections) and its args.
 func (s Scope) filter() (string, []any) {
 	if s.all {
 		return "1=1", nil
 	}
-	return accessFilterSQL, []any{s.UserID, s.UserID}
+	return accessFilterSQL, userArgs(s.UserID)
 }
 
 // accessExpr returns a SELECT expression for the caller's authz.Access on alias c.
@@ -69,7 +81,7 @@ func (s Scope) accessExpr() (string, []any) {
 	if s.all {
 		return "3", nil
 	}
-	return accessExprSQL, []any{s.UserID, s.UserID}
+	return accessExprSQL, userArgs(s.UserID)
 }
 
 type querier interface {
@@ -140,20 +152,19 @@ func accessQ(q querier, userID, collectionID string) (authz.Access, error) {
 	if err := q.QueryRow(`SELECT status FROM users WHERE id = ?`, owner).Scan(&ownerStatus); err != nil || ownerStatus != identity.UserActive {
 		return authz.AccessNone, nil
 	}
-	var access string
-	err = q.QueryRow(`
-		SELECT access FROM shares WHERE collection_id = ? AND principal_type = 'user' AND principal_id = ?
-	`, root, userID).Scan(&access)
-	if errors.Is(err, sql.ErrNoRows) {
-		return authz.AccessNone, nil
-	}
+	var best sql.NullInt64
+	err = q.QueryRow(`SELECT MAX(`+shareAccessSQL+`) FROM shares s WHERE s.collection_id = ? AND `+shareMatchSQL,
+		root, userID, userID).Scan(&best)
 	if err != nil {
 		return authz.AccessNone, err
 	}
-	if access == "rw" {
+	switch best.Int64 {
+	case 2:
 		return authz.AccessWrite, nil
+	case 1:
+		return authz.AccessRead, nil
 	}
-	return authz.AccessRead, nil
+	return authz.AccessNone, nil
 }
 
 // CollectionsRev changes whenever the set of collections visible in scope,
@@ -176,14 +187,15 @@ type Share struct {
 	PrincipalType string `json:"principal_type"`
 	PrincipalID   string `json:"principal_id"`
 	Username      string `json:"username,omitempty"`
+	GroupName     string `json:"group_name,omitempty"`
 	Access        string `json:"access"`
 	CreatedBy     string `json:"created_by"`
 	CreatedAt     int64  `json:"created_at"`
 }
 
-// SetShare grants (or changes) a user's access to a root collection.
+// SetShare grants (or changes) a user's or group's access to a root collection.
 func (e *Engine) SetShare(ctx context.Context, collectionID, principalType, principalID, access, createdBy string) error {
-	if principalType != "user" {
+	if principalType != "user" && principalType != "group" {
 		return ErrShare
 	}
 	if access != "ro" && access != "rw" {
@@ -196,11 +208,15 @@ func (e *Engine) SetShare(ctx context.Context, collectionID, principalType, prin
 	if c.DeletedAt != nil || c.ParentID != "" {
 		return ErrShare
 	}
-	if principalID == c.OwnerUserID {
+	if principalType == "user" && principalID == c.OwnerUserID {
 		return ErrShare
 	}
+	table := "users"
+	if principalType == "group" {
+		table = "groups"
+	}
 	var n int
-	if err := e.Store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id = ?`, principalID).Scan(&n); err != nil {
+	if err := e.Store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE id = ?`, principalID).Scan(&n); err != nil {
 		return err
 	}
 	if n == 0 {
@@ -242,8 +258,9 @@ func touchCollectionTx(tx *sql.Tx, id string) error {
 
 func (e *Engine) ListShares(ctx context.Context, collectionID string) ([]Share, error) {
 	rows, err := e.Store.DB.QueryContext(ctx, `
-		SELECT s.collection_id, s.principal_type, s.principal_id, COALESCE(u.username, ''), s.access, s.created_by, s.created_at
+		SELECT s.collection_id, s.principal_type, s.principal_id, COALESCE(u.username, ''), COALESCE(g.name, ''), s.access, s.created_by, s.created_at
 		FROM shares s LEFT JOIN users u ON s.principal_type = 'user' AND u.id = s.principal_id
+		LEFT JOIN groups g ON s.principal_type = 'group' AND g.id = s.principal_id
 		WHERE s.collection_id = ? ORDER BY s.created_at
 	`, collectionID)
 	if err != nil {
@@ -253,7 +270,7 @@ func (e *Engine) ListShares(ctx context.Context, collectionID string) ([]Share, 
 	out := []Share{}
 	for rows.Next() {
 		var s Share
-		if err := rows.Scan(&s.CollectionID, &s.PrincipalType, &s.PrincipalID, &s.Username, &s.Access, &s.CreatedBy, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.CollectionID, &s.PrincipalType, &s.PrincipalID, &s.Username, &s.GroupName, &s.Access, &s.CreatedBy, &s.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -318,7 +335,7 @@ func (e *Engine) BlobReadable(ctx context.Context, userID, hash string) (bool, e
 			WHERE lower(m.key) IN ('preview_hash', 'thumb_hash', 'live_pair_hash') AND lower(m.value) = ?))
 		  AND `+accessFilterSQL+`
 		LIMIT 1
-	`, hash, hash, userID, userID).Scan(&n)
+	`, append([]any{hash, hash}, userArgs(userID)...)...).Scan(&n)
 	return n > 0, err
 }
 

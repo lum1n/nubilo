@@ -8,14 +8,38 @@ struct ShareAlbumView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var users: [User] = []
+    @State private var groups: [UserGroup] = []
     /// username → "ro" | "rw"
     @State private var access: [String: String] = [:]
+    /// group id → "ro" | "rw"
+    @State private var groupAccess: [String: String] = [:]
     @State private var loading = true
     @State private var error: String?
 
     var body: some View {
         NavigationStack {
             Form {
+                if !groups.isEmpty {
+                    Section {
+                        ForEach(groups) { group in
+                            Picker(selection: binding(for: group)) {
+                                Text("Not shared").tag("")
+                                Text("Can view").tag("ro")
+                                Text("Can add photos").tag("rw")
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text(group.name)
+                                    Text("\(group.members.count) member\(group.members.count == 1 ? "" : "s")")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Groups")
+                    } footer: {
+                        Text("Everyone in the group gets this access, including people added later.")
+                    }
+                }
                 Section {
                     ForEach(users) { user in
                         Picker(selection: binding(for: user)) {
@@ -37,7 +61,7 @@ struct ShareAlbumView: View {
             .overlay {
                 if loading {
                     ProgressView()
-                } else if users.isEmpty {
+                } else if users.isEmpty && groups.isEmpty {
                     ContentUnavailableView("Nobody to share with", systemImage: "person.2",
                                            description: Text("Invite people under People first."))
                 }
@@ -62,14 +86,38 @@ struct ShareAlbumView: View {
         )
     }
 
+    private func binding(for group: UserGroup) -> Binding<String> {
+        Binding(
+            get: { groupAccess[group.id] ?? "" },
+            set: { level in Task { await update(group, to: level) } }
+        )
+    }
+
+    private func update(_ group: UserGroup, to level: String) async {
+        guard let client = model.client else { return }
+        let previous = groupAccess[group.id]
+        groupAccess[group.id] = level.isEmpty ? nil : level
+        do {
+            let shares = level.isEmpty
+                ? try await client.unshare(collection: album.id, groupID: group.id)
+                : try await client.share(collection: album.id, groupID: group.id, access: level)
+            apply(shares)
+        } catch {
+            groupAccess[group.id] = previous
+            self.error = describe(error)
+        }
+    }
+
     private func load() async {
         guard let client = model.client else { return }
         defer { loading = false }
         do {
             async let directory = client.userDirectory()
             async let shares = client.shares(collection: album.id)
+            async let allGroups = client.groups()
             let me = model.me?.user.id
             users = try await directory.filter { $0.id != me }
+            groups = try await allGroups
             apply(try await shares)
         } catch {
             self.error = describe(error)
@@ -93,9 +141,15 @@ struct ShareAlbumView: View {
 
     private func apply(_ shares: [Share]) {
         var out: [String: String] = [:]
+        var byGroup: [String: String] = [:]
         for share in shares {
-            if let name = share.username { out[name] = share.access }
+            if share.principalType == "group" {
+                byGroup[share.principalId] = share.access
+            } else if let name = share.username {
+                out[name] = share.access
+            }
         }
         access = out
+        groupAccess = byGroup
     }
 }

@@ -22,6 +22,7 @@ type migration struct {
 var migrations = []migration{
 	{Version: 2, Name: "multi-user", Up: migrateV2},
 	{Version: 3, Name: "quotas", Up: migrateV3},
+	{Version: 4, Name: "groups", Up: migrateV4},
 }
 
 // LatestSchemaVersion is the version Migrate brings a database to.
@@ -321,4 +322,23 @@ func recountBlobRefs(ctx context.Context, tx *sql.Tx) error {
 // migrateV3 adds a storage quota per user; 0 means no limit.
 func migrateV3(ctx context.Context, tx *sql.Tx) error {
 	return addColumn(ctx, tx, "users", "quota_bytes", "INTEGER NOT NULL DEFAULT 0")
+}
+
+// migrateV4 adds groups of users; shares with principal_type 'group' grant
+// every member access.
+func migrateV4(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS groups (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+			created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS group_members (
+			group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+			user_id TEXT NOT NULL REFERENCES users(id),
+			PRIMARY KEY (group_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS group_members_user ON group_members(user_id);
+	`)
+	return err
 }

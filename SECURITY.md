@@ -209,7 +209,7 @@ Actions: `sync.read`, `sync.write`, `dav.read`, `dav.write`, `device.list`, `dev
 
 Users and roles (schema v2): every device belongs to one user. Users are `admin` or `member`; a device of an admin user (other than an app password) may use the admin API. Disabling a user revokes all their devices and app passwords. The last active admin cannot be demoted or disabled. The per-device `permissions.collections` list from v1 is no longer consulted.
 
-Collection access: each collection has an owner and a root (`root_id`; children inherit both). A user's access is `owner` if they own it, else the share on its root (`ro` or `rw`), else none. Shares exist only on roots.
+Collection access: each collection has an owner and a root (`root_id`; children inherit both). A user's access is `owner` if they own it, else the best share on its root (`ro` or `rw`) made to them directly or to a group they belong to, else none. Shares exist only on roots. Only admins create groups and change their members; any owner may share a root with any group, and deleting a group deletes its shares. Group membership is evaluated on every request, so removing someone from a group ends their access at once.
 
 ### 5.1 Multi-user isolation invariants
 

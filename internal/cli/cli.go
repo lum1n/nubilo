@@ -74,6 +74,8 @@ func Main(args []string) int {
 		return runDevices(g, rest)
 	case "users":
 		return runUsers(g, rest)
+	case "groups":
+		return runGroups(g, rest)
 	case "relay":
 		return runRelay(g, rest)
 	case "verify":
@@ -178,6 +180,11 @@ Usage:
   nubilo users disable|enable USERNAME
   nubilo users role USERNAME admin|member
   nubilo users quota USERNAME SIZE        storage limit, e.g. 50G; 0 removes it
+  nubilo groups [list]
+  nubilo groups add NAME [USERNAME...]
+  nubilo groups members NAME [USERNAME...] replaces the members
+  nubilo groups rename NAME NEWNAME
+  nubilo groups delete NAME               also removes shares made to it
   nubilo users invite [--role admin|member] [--for USERNAME] [--ttl HOURS] [--uses N]
   nubilo pair [--wait] [--role agent|client] [--user USERNAME]
   nubilo pair --server URL --code XXXXX-XXXXX --name NAME [--insecure]
