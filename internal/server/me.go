@@ -227,6 +227,16 @@ func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
 	}
+	// Sign with the publicly trusted certificate when the server holds one,
+	// so the device shows the profile as Verified; otherwise it stays
+	// unsigned as before.
+	if cert, _, err := profile.SigningCert(s.Cfg); err == nil {
+		if signed, err := profile.Sign(body, cert); err != nil {
+			s.Log.Warn("profile_sign", "err", err.Error())
+		} else {
+			body = signed
+		}
+	}
 	// The payload holds a plaintext password; keep it encrypted at rest and
 	// only until first download or expiry.
 	enc, err := ncrypto.EncryptBlob(s.Store.BlobKey, body)

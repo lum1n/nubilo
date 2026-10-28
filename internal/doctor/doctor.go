@@ -18,6 +18,7 @@ import (
 	"nubilo/internal/config"
 	"nubilo/internal/identity"
 	"nubilo/internal/integrity"
+	"nubilo/internal/profile"
 	"nubilo/internal/service"
 )
 
@@ -91,6 +92,7 @@ func Server(ctx context.Context, dataDir string, opt Options) (Report, error) {
 	checkDiskEncryption(&r, dataDir)
 	checkServerService(&r)
 	checkPublic(ctx, &r, cfg)
+	checkProfileSigning(&r, cfg, dataDir)
 
 	rt, err := app.Open(dataDir)
 	if err != nil {
@@ -286,6 +288,18 @@ func checkTLS(r *Report, cfg config.Config) {
 		r.add(Check{ID: "apple_tls", Title: "iPhone CalDAV/CardDAV TLS", Status: Warn,
 			Detail: "Apple clients need a trusted cert (self-signed will fail)",
 			Fix:    "nubilo setup --mode tailscale (or relay/proxy/direct), or install tls.crt on the phone"})
+	}
+}
+
+// checkProfileSigning reports whether the .mobileconfig profiles the server
+// hands out are signed (shown as Verified on the device).
+func checkProfileSigning(r *Report, cfg config.Config, dataDir string) {
+	cfg.DataDir = dataDir
+	if _, src, err := profile.SigningCert(cfg); err == nil {
+		r.add(Check{ID: "profile_signing", Title: "Calendar/Contacts profile", Status: OK, Detail: "signed with the " + src})
+	} else {
+		r.add(Check{ID: "profile_signing", Title: "Calendar/Contacts profile", Status: Info,
+			Detail: "unsigned (devices show it as Unverified): " + err.Error()})
 	}
 }
 

@@ -62,7 +62,7 @@ The older code flow (`POST /api/v1/pair/begin {code,name,public_key}` then `pair
 | `DELETE /api/v1/me/passwords/{id}` | `{"revoked":id}` |
 | `POST /api/v1/me/profile {"services":["caldav","carddav"]}` | 201 `{"url","expires_at","password_id"}` — open `url` in Safari within 15 minutes; it downloads once |
 | `POST /api/v1/me/device-invite` | 201 `{"id","code","url","setup_url","expires_at","role","max_uses"}` — adds a device to the caller's own account: single use, expires in 1 hour; the redeemer's username is ignored. App-password (dav) devices get 403 |
-| `GET /api/v1/profile/{token}` | `application/x-apple-aspen-config` (no auth; single use) |
+| `GET /api/v1/profile/{token}` | `application/x-apple-aspen-config` (no auth; single use). CMS-signed (DER) when the server holds a trusted certificate (ACME in relay/direct mode, Tailscale); otherwise the plain XML plist |
 | `GET /api/v1/devices` | own devices `[{"id","name","role","user_id","created_at","last_seen","revoked"}]`; admins add `?all=1` |
 | `POST /api/v1/devices/{id}/revoke`, `/rename {"name"}` | own devices (admins: any) |
 | `GET /api/v1/users` | `{"users":[{"id","username","display_name"}]}` active users, for share pickers |

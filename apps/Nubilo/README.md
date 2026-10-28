@@ -178,7 +178,9 @@ invite QR code to scan with the iPhone.
   background sync. Backup runs while the app is open, in `BGProcessingTask`
   windows iOS chooses (often at night on power), and as background uploads.
   Force-quitting the app stops all of it until the next launch.
-- **Profiles are unsigned**, so iOS and macOS label them "Unverified". The
+- **Profiles are signed only when the server holds a trusted certificate**
+  (relay, direct or Tailscale mode). In proxy mode and on a home-network-only
+  server they are unsigned, so iOS and macOS label them "Unverified". The
   profile link works once and expires after 15 minutes.
 - **No way to ask the server whether an invite creates an account**, so the
   join form always asks for a username and the server ignores it for invites

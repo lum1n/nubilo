@@ -67,4 +67,4 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 
 - Hands-on phone/Finder restore drills remain operator actions; `nubilo doctor` surfaces the checklist in product.
 - Corporate credentials never leave the Mac. `nubilo agent` runs in the foreground on any OS; only its always-on install is macOS-only. GPS never lands in SQLite. Originals are never mutated.
-- iOS/macOS app (`apps/Nubilo`): onboarding by QR, CalDAV/CardDAV profile install, best-effort photo backup, gallery and shared albums, managing people and devices, Files app integration on iPhone/iPad. No Android app. Signed profiles are later work.
+- iOS/macOS app (`apps/Nubilo`): onboarding by QR, CalDAV/CardDAV profile install, best-effort photo backup, gallery and shared albums, managing people and devices, Files app integration on iPhone/iPad. No Android app. Profiles are signed when the server holds a trusted certificate (relay, direct, Tailscale); proxy and LAN-only servers hand them out unsigned.
