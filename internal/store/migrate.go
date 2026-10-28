@@ -23,6 +23,7 @@ var migrations = []migration{
 	{Version: 2, Name: "multi-user", Up: migrateV2},
 	{Version: 3, Name: "quotas", Up: migrateV3},
 	{Version: 4, Name: "groups", Up: migrateV4},
+	{Version: 5, Name: "web login", Up: migrateV5},
 }
 
 // LatestSchemaVersion is the version Migrate brings a database to.
@@ -339,6 +340,37 @@ func migrateV4(ctx context.Context, tx *sql.Tx) error {
 			PRIMARY KEY (group_id, user_id)
 		);
 		CREATE INDEX IF NOT EXISTS group_members_user ON group_members(user_id);
+	`)
+	return err
+}
+
+// migrateV5 adds browser sign-in approved from a paired device: pending
+// logins (code shown in the browser) and the sessions they become.
+func migrateV5(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS web_logins (
+			id TEXT PRIMARY KEY,
+			code TEXT NOT NULL UNIQUE,
+			browser_hash BLOB NOT NULL,
+			user_agent TEXT NOT NULL,
+			ip TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			approved_by TEXT,
+			approved_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS web_sessions (
+			id TEXT PRIMARY KEY,
+			hash BLOB NOT NULL,
+			user_id TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			user_agent TEXT NOT NULL,
+			ip TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			last_seen INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS web_sessions_user ON web_sessions(user_id);
 	`)
 	return err
 }

@@ -42,7 +42,9 @@ type Server struct {
 	pairOK    *ipLimiter
 	sigFail   *ipLimiter
 	redeemLim *ipLimiter
-	davAuth   *dav.Auth
+	// webLoginLim limits browser sign-in starts per IP.
+	webLoginLim *ipLimiter
+	davAuth     *dav.Auth
 
 	mu    sync.Mutex
 	extra []*http.Server // public listeners (direct, relay)
@@ -51,18 +53,19 @@ type Server struct {
 
 func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Authenticator, eng *syncengine.Engine, al *audit.Logger, log *slog.Logger, serverPub ed25519.PublicKey) *Server {
 	s := &Server{
-		Cfg:       cfg,
-		Store:     st,
-		IDs:       ids,
-		Auth:      a,
-		Engine:    eng,
-		Audit:     al,
-		Log:       log,
-		ServerPub: serverPub,
-		pairLim:   newIPLimiter(cfg.Pairing.BeginsPerHour, time.Hour),
-		pairOK:    newIPLimiter(cfg.Pairing.CompletesPerHour, time.Hour),
-		sigFail:   newIPLimiter(30, time.Minute),
-		redeemLim: newIPLimiter(5, time.Hour),
+		Cfg:         cfg,
+		Store:       st,
+		IDs:         ids,
+		Auth:        a,
+		Engine:      eng,
+		Audit:       al,
+		Log:         log,
+		ServerPub:   serverPub,
+		pairLim:     newIPLimiter(cfg.Pairing.BeginsPerHour, time.Hour),
+		pairOK:      newIPLimiter(cfg.Pairing.CompletesPerHour, time.Hour),
+		sigFail:     newIPLimiter(30, time.Minute),
+		redeemLim:   newIPLimiter(5, time.Hour),
+		webLoginLim: newIPLimiter(30, time.Hour),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/pair/begin", s.handlePairBegin)
@@ -71,6 +74,7 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("GET /api/v1/profile/{token}", s.handleProfileDownload)
 	mux.HandleFunc("GET /join", s.handleJoinPage)
 	mux.HandleFunc("GET /{$}", s.handleHomePage)
+	s.webRoutes(mux)
 	mux.HandleFunc("GET /api/v1/status", s.authed(s.handleStatus))
 	mux.HandleFunc("GET /api/v1/me", s.authed(s.handleMe))
 	mux.HandleFunc("GET /api/v1/me/passwords", s.authed(s.handleMyPasswords))
