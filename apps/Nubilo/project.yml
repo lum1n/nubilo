@@ -18,6 +18,10 @@ options:
     iOS: "17.0"
     macOS: "14.0"
   createIntermediateGroups: true
+  # XcodeGen writes platformFilter = maccatalyst for `macOS`, and ignores
+  # platformFilters on target dependencies. Xcode only honors the array form
+  # with `macos`; without it the Mac extension is embedded in the iOS build.
+  postGenCommand: sed -i '' 's/platformFilter = maccatalyst;/platformFilters = (macos, );/' Nubilo.xcodeproj/project.pbxproj
 
 packages:
   NubiloKit:
@@ -48,13 +52,13 @@ targets:
       # Nubilo in the Files app (iPhone and iPad).
       - target: NubiloFiles
         embed: true
-        platformFilters: [iOS]
+        platformFilter: iOS
       # Nubilo in Finder (Mac). Same sources, separate target: an extension
       # target has one platform, and the Mac one needs the App Sandbox and
       # team-prefixed app group the iOS one does not.
       - target: NubiloFilesMac
         embed: true
-        platformFilters: [macOS]
+        platformFilter: macOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.nubilo.app
