@@ -44,7 +44,9 @@ type Server struct {
 	redeemLim *ipLimiter
 	// webLoginLim limits browser sign-in starts per IP.
 	webLoginLim *ipLimiter
-	davAuth     *dav.Auth
+	// webApproveLim limits code lookups and approvals per device.
+	webApproveLim *ipLimiter
+	davAuth       *dav.Auth
 
 	mu    sync.Mutex
 	extra []*http.Server // public listeners (direct, relay)
@@ -53,19 +55,20 @@ type Server struct {
 
 func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Authenticator, eng *syncengine.Engine, al *audit.Logger, log *slog.Logger, serverPub ed25519.PublicKey) *Server {
 	s := &Server{
-		Cfg:         cfg,
-		Store:       st,
-		IDs:         ids,
-		Auth:        a,
-		Engine:      eng,
-		Audit:       al,
-		Log:         log,
-		ServerPub:   serverPub,
-		pairLim:     newIPLimiter(cfg.Pairing.BeginsPerHour, time.Hour),
-		pairOK:      newIPLimiter(cfg.Pairing.CompletesPerHour, time.Hour),
-		sigFail:     newIPLimiter(30, time.Minute),
-		redeemLim:   newIPLimiter(5, time.Hour),
-		webLoginLim: newIPLimiter(30, time.Hour),
+		Cfg:           cfg,
+		Store:         st,
+		IDs:           ids,
+		Auth:          a,
+		Engine:        eng,
+		Audit:         al,
+		Log:           log,
+		ServerPub:     serverPub,
+		pairLim:       newIPLimiter(cfg.Pairing.BeginsPerHour, time.Hour),
+		pairOK:        newIPLimiter(cfg.Pairing.CompletesPerHour, time.Hour),
+		sigFail:       newIPLimiter(30, time.Minute),
+		redeemLim:     newIPLimiter(5, time.Hour),
+		webLoginLim:   newIPLimiter(30, time.Hour),
+		webApproveLim: newIPLimiter(20, 10*time.Minute),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/pair/begin", s.handlePairBegin)

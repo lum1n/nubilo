@@ -24,6 +24,7 @@ var migrations = []migration{
 	{Version: 3, Name: "quotas", Up: migrateV3},
 	{Version: 4, Name: "groups", Up: migrateV4},
 	{Version: 5, Name: "web login", Up: migrateV5},
+	{Version: 6, Name: "quota charge", Up: migrateV6},
 }
 
 // LatestSchemaVersion is the version Migrate brings a database to.
@@ -372,5 +373,16 @@ func migrateV5(ctx context.Context, tx *sql.Tx) error {
 		);
 		CREATE INDEX IF NOT EXISTS web_sessions_user ON web_sessions(user_id);
 	`)
+	return err
+}
+
+// migrateV6 records what each object costs its owner toward the quota
+// (size, metadata and extra blobs; syncengine charge). Existing objects are
+// charged their size and metadata.
+func migrateV6(ctx context.Context, tx *sql.Tx) error {
+	if err := addColumn(ctx, tx, "objects", "charged", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE objects SET charged = MAX(size, 0) + COALESCE(length(metadata), 0)`)
 	return err
 }

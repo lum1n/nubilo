@@ -414,10 +414,12 @@ type Usage struct {
 	Bytes   int64 `json:"bytes"`
 }
 
-// UserUsage returns live object counts and bytes per owning user.
+// UserUsage returns live object counts and bytes per owning user. Bytes are
+// what counts toward quotas (objects.charged: data, metadata and photo
+// renditions).
 func (e *Engine) UserUsage(ctx context.Context) (map[string]Usage, error) {
 	rows, err := e.Store.DB.QueryContext(ctx, `
-		SELECT COALESCE(c.owner_user_id, ''), COUNT(o.id), COALESCE(SUM(o.size), 0)
+		SELECT COALESCE(c.owner_user_id, ''), COUNT(o.id), CAST(MIN(TOTAL(o.charged), 9.2e18) AS INTEGER)
 		FROM objects o JOIN collections c ON c.id = o.collection_id
 		WHERE o.deleted_at IS NULL AND c.deleted_at IS NULL
 		GROUP BY c.owner_user_id

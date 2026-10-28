@@ -146,7 +146,7 @@ Accounts created before multi-user support keep using `/caldav/user/calendars/<n
 
 ## Storage quotas
 
-`users.quota_bytes` (0 = no limit) caps the size of live objects in collections a user owns, whoever writes them: a write into a shared read-write folder counts against its owner. Shrinking writes and deletes are always allowed. A blob-backed object counts at least its stored blob size, whatever `size` the client sends. Over quota, `/sync/v1/push` answers the item with `"error": "quota exceeded"`, WebDAV/CalDAV/CardDAV PUT answers 507, and `POST /api/v1/photos` and `/photos/commit` answer 507. `GET /api/v1/me` returns `storage: {objects, bytes, quota_bytes}`.
+`users.quota_bytes` (0 = no limit) caps what live objects in collections a user owns cost (`objects.charged`), whoever writes them: a write into a shared read-write folder counts against its owner. An object costs its data, its metadata, and every blob its metadata names (photo previews, thumbnails, Live Photo movies). A blob-backed object's `size` is always set to its stored blob size; other objects need `0 ≤ size ≤ max blob size` (else `"invalid size"`), and metadata is capped at 256 KiB (`"metadata too large"`). Shrinking writes and deletes are always allowed. Schema v6 charges existing objects their size plus metadata. Over quota, `/sync/v1/push` answers the item with `"error": "quota exceeded"`, WebDAV/CalDAV/CardDAV PUT answers 507, and `POST /api/v1/photos` and `/photos/commit` answer 507. `GET /api/v1/me` returns `storage: {objects, bytes, quota_bytes}`.
 
 ## Web sign-in and the web app
 

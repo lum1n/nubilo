@@ -421,10 +421,15 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 			res.Error = err.Error()
 			return res, nil
 		}
-		if err := fixSize(tx, &in); err != nil {
+		charged, bad, err := e.charge(tx, &in)
+		if err != nil {
 			return res, err
 		}
-		if ok, err := quotaAllows(tx, colOwner, in.Size); err != nil {
+		if bad != "" {
+			res.Error = bad
+			return res, nil
+		}
+		if ok, err := quotaAllows(tx, colOwner, charged); err != nil {
 			return res, err
 		} else if !ok {
 			res.Error = ErrQuotaExceeded
@@ -432,9 +437,9 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 		}
 		now := store.NowMS()
 		if _, err := tx.Exec(`
-			INSERT INTO objects(id, collection_id, kind, revision, content_hash, metadata_hash, blob_id, size, origin_device, metadata, created_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, in.ObjectID, in.CollectionID, nonempty(in.Kind, "file"), in.ContentHash, in.MetadataHash, nullIfEmpty(in.BlobID), in.Size, dev.ID, string(in.Metadata), now, now); err != nil {
+			INSERT INTO objects(id, collection_id, kind, revision, content_hash, metadata_hash, blob_id, size, charged, origin_device, metadata, created_at, updated_at)
+			VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, in.ObjectID, in.CollectionID, nonempty(in.Kind, "file"), in.ContentHash, in.MetadataHash, nullIfEmpty(in.BlobID), in.Size, charged, dev.ID, string(in.Metadata), now, now); err != nil {
 			return res, err
 		}
 		if err := e.Store.IncBlobRef(tx, in.BlobID); err != nil {
@@ -488,10 +493,19 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 			res.Error = err.Error()
 			return res, nil
 		}
-		if err := fixSize(tx, &in); err != nil {
+		charged, bad, err := e.charge(tx, &in)
+		if err != nil {
 			return res, err
 		}
-		if ok, err := quotaAllows(tx, colOwner, in.Size-obj.Size); err != nil {
+		if bad != "" {
+			res.Error = bad
+			return res, nil
+		}
+		var oldCharged int64
+		if err := tx.QueryRow(`SELECT charged FROM objects WHERE id = ?`, in.ObjectID).Scan(&oldCharged); err != nil {
+			return res, err
+		}
+		if ok, err := quotaAllows(tx, colOwner, charged-oldCharged); err != nil {
 			return res, err
 		} else if !ok {
 			res.Error = ErrQuotaExceeded
@@ -501,9 +515,9 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 		newRev := obj.Revision + 1
 		oldBlob := obj.BlobID
 		if _, err := tx.Exec(`
-			UPDATE objects SET collection_id=?, revision=?, content_hash=?, metadata_hash=?, blob_id=?, size=?, origin_device=?, metadata=?, updated_at=?
+			UPDATE objects SET collection_id=?, revision=?, content_hash=?, metadata_hash=?, blob_id=?, size=?, charged=?, origin_device=?, metadata=?, updated_at=?
 			WHERE id=?
-		`, in.CollectionID, newRev, in.ContentHash, in.MetadataHash, nullIfEmpty(in.BlobID), in.Size, dev.ID, string(in.Metadata), now, in.ObjectID); err != nil {
+		`, in.CollectionID, newRev, in.ContentHash, in.MetadataHash, nullIfEmpty(in.BlobID), in.Size, charged, dev.ID, string(in.Metadata), now, in.ObjectID); err != nil {
 			return res, err
 		}
 		if oldBlob != in.BlobID {

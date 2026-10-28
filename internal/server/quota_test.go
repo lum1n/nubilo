@@ -13,8 +13,8 @@ func TestQuotaAPI(t *testing.T) {
 	if code, _ := f.alice.do(http.MethodPatch, "/api/v1/admin/users/"+f.alice.dev.UserID, map[string]any{"quota_bytes": 0}); code != http.StatusForbidden {
 		t.Fatalf("member set quota: %d", code)
 	}
-	u := f.admin.json(http.MethodPatch, "/api/v1/admin/users/"+f.alice.dev.UserID, map[string]any{"quota_bytes": 8}, http.StatusOK)
-	if u["quota_bytes"].(float64) != 8 {
+	u := f.admin.json(http.MethodPatch, "/api/v1/admin/users/"+f.alice.dev.UserID, map[string]any{"quota_bytes": 40}, http.StatusOK)
+	if u["quota_bytes"].(float64) != 40 {
 		t.Fatalf("patch %v", u)
 	}
 	if code, _ := f.admin.do(http.MethodPatch, "/api/v1/admin/users/"+f.alice.dev.UserID, map[string]any{"quota_bytes": -1}); code != http.StatusBadRequest {
@@ -28,13 +28,14 @@ func TestQuotaAPI(t *testing.T) {
 	if s := pushStatus(pushCreate(f.alice, files, h, 5)); s != "ok" {
 		t.Fatalf("within quota: %s", s)
 	}
-	_, h = putBlob(f.alice, []byte("abcde"))
-	if s := pushStatus(pushCreate(f.alice, files, h, 5)); s != "error:quota exceeded" {
+	_, h = putBlob(f.alice, []byte("abcdefghijklmnopqrstuvwxyz"))
+	if s := pushStatus(pushCreate(f.alice, files, h, 26)); s != "error:quota exceeded" {
 		t.Fatalf("past quota: %s", s)
 	}
 	me := f.alice.json(http.MethodGet, "/api/v1/me", nil, http.StatusOK)
 	st := me["storage"].(map[string]any)
-	if st["quota_bytes"].(float64) != 8 || st["bytes"].(float64) != 5 {
+	// 5 bytes of data plus the 16 bytes of {"name":"x.txt"}.
+	if st["quota_bytes"].(float64) != 40 || st["bytes"].(float64) != 21 {
 		t.Fatalf("me storage %v", st)
 	}
 

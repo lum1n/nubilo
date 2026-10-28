@@ -30,8 +30,10 @@ import (
 var webFS embed.FS
 
 const (
-	webSessionCookie = "nubilo_web"
-	webLoginCookie   = "nubilo_web_login"
+	// __Host- cookies must be Secure, host-only and Path=/, so a sibling
+	// subdomain cannot plant one (login CSRF by cookie tossing).
+	webSessionCookie = "__Host-nubilo_web"
+	webLoginCookie   = "__Host-nubilo_web_login"
 	webCSP           = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
 )
 
@@ -154,7 +156,7 @@ func (s *Server) webSession(h http.HandlerFunc) http.HandlerFunc {
 		}
 		sess, dev, err := s.IDs.AuthenticateWebSession(r.Context(), c.Value)
 		if err != nil {
-			clearCookie(w, webSessionCookie, "/web/")
+			clearCookie(w, webSessionCookie, "/")
 			http.Error(w, "signed out", http.StatusUnauthorized)
 			return
 		}
@@ -187,7 +189,7 @@ func (s *Server) handleWebLoginStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
 	}
-	setCookie(w, webLoginCookie, secret, "/web/api/login", identity.WebLoginTTL)
+	setCookie(w, webLoginCookie, secret, "/", identity.WebLoginTTL)
 	link := "nubilo://web-login?" + url.Values{"url": {s.baseURL(r)}, "code": {l.Code}}.Encode()
 	png, _ := qr.PNGDataURL(link, 256)
 	s.writeJSON(w, http.StatusCreated, map[string]any{"code": l.Code, "expires_at": l.ExpiresAt, "link": link, "qr_png": png})
@@ -202,13 +204,13 @@ func (s *Server) handleWebLoginPoll(w http.ResponseWriter, r *http.Request) {
 	token, sess, err := s.IDs.PollWebLogin(r.Context(), c.Value)
 	switch {
 	case err != nil:
-		clearCookie(w, webLoginCookie, "/web/api/login")
+		clearCookie(w, webLoginCookie, "/")
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "expired"})
 	case token == "":
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "pending"})
 	default:
-		clearCookie(w, webLoginCookie, "/web/api/login")
-		setCookie(w, webSessionCookie, token, "/web/", identity.WebSessionMaxLife)
+		clearCookie(w, webLoginCookie, "/")
+		setCookie(w, webSessionCookie, token, "/", identity.WebSessionMaxLife)
 		s.Audit.Event(r.Context(), sess.DeviceID, "web.signin", map[string]any{"session": sess.ID, "ip": sess.IP})
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "approved"})
 	}
@@ -220,7 +222,7 @@ func (s *Server) handleWebLogout(w http.ResponseWriter, r *http.Request) {
 			_ = s.IDs.EndWebSession(r.Context(), "", sess.ID)
 		}
 	}
-	clearCookie(w, webSessionCookie, "/web/")
+	clearCookie(w, webSessionCookie, "/")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -264,7 +266,12 @@ func (s *Server) handleWebDownload(w http.ResponseWriter, r *http.Request) {
 // --- app side ---
 
 func (s *Server) handleWebLoginInfo(w http.ResponseWriter, r *http.Request) {
-	if userDevice(w, r) == nil {
+	dev := userDevice(w, r)
+	if dev == nil {
+		return
+	}
+	if !s.webApproveLim.Allow(dev.ID) {
+		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
 	l, err := s.IDs.PendingWebLogin(r.Context(), r.URL.Query().Get("code"))
@@ -291,8 +298,13 @@ func (s *Server) handleWebLoginApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "only the Nubilo app can approve web sign-in", http.StatusForbidden)
 		return
 	}
+	if !s.webApproveLim.Allow(dev.ID) {
+		http.Error(w, "too many attempts", http.StatusTooManyRequests)
+		return
+	}
 	if err := s.IDs.ApproveWebLogin(r.Context(), dev, req.Code); err != nil {
 		if errors.Is(err, identity.ErrWebLogin) {
+			s.Audit.Event(r.Context(), dev.ID, "web.approve_fail", nil)
 			http.Error(w, "unknown or expired code", http.StatusNotFound)
 			return
 		}

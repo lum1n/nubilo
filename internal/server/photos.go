@@ -139,9 +139,29 @@ func (s *Server) servePhoto(w http.ResponseWriter, r *http.Request, rendition st
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Type", mime)
+	// The MIME type comes from client metadata. Serve only media types a
+	// browser shows without running anything, and sandbox the response, so a
+	// "photo" shared by another user can never act as a page or script on
+	// this origin (the web app at /web/ uses these handlers).
+	w.Header().Set("Content-Type", safeMediaType(mime))
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("ETag", `"`+obj.ContentHash+`"`)
 	http.ServeContent(w, r, obj.ID+"-"+rendition, time.UnixMilli(obj.UpdatedAt), bytes.NewReader(body))
+}
+
+// safeMediaType passes through raster image and video types and turns
+// everything else (HTML, JavaScript, SVG, XML, ...) into octet-stream.
+func safeMediaType(t string) string {
+	t = strings.ToLower(strings.TrimSpace(strings.SplitN(t, ";", 2)[0]))
+	switch t {
+	case "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif", "image/avif",
+		"image/tiff", "image/bmp", "image/x-adobe-dng", "image/x-canon-cr2", "image/x-canon-cr3",
+		"image/x-nikon-nef", "image/x-sony-arw", "image/x-fuji-raf", "image/x-panasonic-rw2", "image/x-olympus-orf",
+		"video/mp4", "video/quicktime", "video/x-m4v", "video/webm", "video/3gpp", "video/mpeg":
+		return t
+	}
+	return "application/octet-stream"
 }
 
 func photoJSON(o *syncengine.Object) map[string]any {

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"nubilo/internal/auth"
 	ncrypto "nubilo/internal/crypto"
 	"nubilo/internal/identity"
 )
@@ -109,7 +111,7 @@ func TestWebLogin(t *testing.T) {
 	if s := b.poll(); s != "approved" {
 		t.Fatalf("poll %s", s)
 	}
-	if _, ok := b.cookies["nubilo_web"]; !ok {
+	if _, ok := b.cookies["__Host-nubilo_web"]; !ok {
 		t.Fatal("no session cookie")
 	}
 	c, out := b.do(http.MethodGet, "/web/api/me", "", nil)
@@ -139,7 +141,7 @@ func TestWebLogin(t *testing.T) {
 	res := pushCreate(f.alice, aliceFiles, h, 25)
 	objID := res["results"].([]any)[0].(map[string]any)["object_id"].(string)
 	req, _ := http.NewRequest(http.MethodGet, f.ts.URL+"/web/api/files/"+objID, nil)
-	req.AddCookie(&http.Cookie{Name: "nubilo_web", Value: b.cookies["nubilo_web"]})
+	req.AddCookie(&http.Cookie{Name: "__Host-nubilo_web", Value: b.cookies["__Host-nubilo_web"]})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -201,4 +203,45 @@ func TestWebLoginOnlyAppsApprove(t *testing.T) {
 	if len(f.bob.json(http.MethodGet, "/api/v1/me/web-sessions", nil, http.StatusOK)["sessions"].([]any)) != 0 {
 		t.Fatal("session survived logout")
 	}
+}
+
+// A "photo" whose metadata claims text/html must never be served as a page
+// or script on the server's origin (security review 2026-10-28).
+func TestPhotoMIMEIsNotTrusted(t *testing.T) {
+	f := startFamily(t)
+	lib, err := f.eng.EnsureNamedCollection(context.Background(), f.alice.dev.UserID, "photos", "Photos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, h := putBlob(f.alice, []byte("<script>alert(document.cookie)</script>"))
+	res := f.alice.json(http.MethodPost, "/sync/v1/push", map[string]any{
+		"idempotency_key": nonce(),
+		"changes": []map[string]any{{
+			"object_id": newULID(), "collection_id": lib.ID, "op": "create", "kind": "photo",
+			"content_hash": h, "blob_id": h, "size": 39, "metadata": map[string]string{"name": "x.html", "mime": "text/html"},
+		}},
+	}, http.StatusOK)
+	id := res["results"].([]any)[0].(map[string]any)["object_id"].(string)
+	for _, r := range []string{"original", "preview", "thumb"} {
+		req, _ := http.NewRequest(http.MethodGet, f.ts.URL+"/api/v1/photos/"+id+"/"+r, nil)
+		req.Header.Set("Authorization", authHeader(f.alice, http.MethodGet, "/api/v1/photos/"+id+"/"+r))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s %d", r, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "application/octet-stream" {
+			t.Fatalf("%s served as %q", r, ct)
+		}
+		if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "sandbox") {
+			t.Fatalf("%s not sandboxed", r)
+		}
+	}
+}
+
+func authHeader(s *signer, method, path string) string {
+	return auth.SignRequest(s.priv, s.dev.ID, method, path, nil, time.Now().UnixMilli(), nonce())
 }
