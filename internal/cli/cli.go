@@ -177,6 +177,7 @@ Usage:
   nubilo users add USERNAME [--name "Display Name"] [--role admin|member]
   nubilo users disable|enable USERNAME
   nubilo users role USERNAME admin|member
+  nubilo users quota USERNAME SIZE        storage limit, e.g. 50G; 0 removes it
   nubilo users invite [--role admin|member] [--for USERNAME] [--ttl HOURS] [--uses N]
   nubilo pair [--wait] [--role agent|client] [--user USERNAME]
   nubilo pair --server URL --code XXXXX-XXXXX --name NAME [--insecure]

@@ -49,7 +49,7 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 ## Integrity / sync
 
 - Failed `apply_change` no longer advances the journal cursor.
-- Multi-user since schema v2: users, per-collection ownership, read-only/read-write shares of top-level collections, isolated journal/blobs/photos/DAV (SECURITY.md §5.1). Groups, quotas and per-user web logins are not implemented yet; the admin console acts as a chosen user.
+- Multi-user since schema v2: users, per-collection ownership, read-only/read-write shares of top-level collections, isolated journal/blobs/photos/DAV (SECURITY.md §5.1). Per-user storage quotas (schema v3; `nubilo users quota`, app Members → Storage Limit) count live objects in collections the user owns. Groups and per-user web logins are not implemented yet; the admin console acts as a chosen user.
 
 ## Security / ops
 

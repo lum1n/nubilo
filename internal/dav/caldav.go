@@ -294,13 +294,7 @@ func (b *CalDAV) PutCalendarObject(ctx context.Context, path string, calendar *i
 		return nil, err
 	}
 	if res[0].Status != "ok" {
-		if res[0].Status == "conflict" {
-			return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, errors.New("conflict"))
-		}
-		if res[0].Error == syncengine.ErrMirrorReadOnly {
-			return nil, webdav.NewHTTPError(http.StatusForbidden, errors.New(res[0].Error))
-		}
-		return nil, webdav.NewHTTPError(http.StatusConflict, errors.New(res[0].Error))
+		return nil, pushError(res[0])
 	}
 	obj, err := b.Engine.GetObject(ctx, in.ObjectID)
 	if err != nil {

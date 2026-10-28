@@ -21,7 +21,11 @@ type migration struct {
 
 var migrations = []migration{
 	{Version: 2, Name: "multi-user", Up: migrateV2},
+	{Version: 3, Name: "quotas", Up: migrateV3},
 }
+
+// LatestSchemaVersion is the version Migrate brings a database to.
+var LatestSchemaVersion = migrations[len(migrations)-1].Version
 
 // SchemaVersion returns the highest applied schema version.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
@@ -312,4 +316,9 @@ func recountBlobRefs(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+// migrateV3 adds a storage quota per user; 0 means no limit.
+func migrateV3(ctx context.Context, tx *sql.Tx) error {
+	return addColumn(ctx, tx, "users", "quota_bytes", "INTEGER NOT NULL DEFAULT 0")
 }

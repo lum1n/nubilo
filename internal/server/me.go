@@ -59,6 +59,12 @@ func (s *Server) baseURL(r *http.Request) string {
 	return "https://" + r.Host
 }
 
+// myStorage is the caller's usage plus their quota (0 = no limit).
+type myStorage struct {
+	syncengine.Usage
+	QuotaBytes int64 `json:"quota_bytes"`
+}
+
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	dev := userDevice(w, r)
 	if dev == nil {
@@ -78,7 +84,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"user":    u,
 		"device":  toDeviceRow(dev),
-		"storage": usage[u.ID],
+		"storage": myStorage{Usage: usage[u.ID], QuotaBytes: u.QuotaBytes},
 		"urls": map[string]string{
 			"caldav":  base + profile.PrincipalPath("/caldav", u.Username),
 			"carddav": base + profile.PrincipalPath("/carddav", u.Username),

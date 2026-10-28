@@ -20,9 +20,10 @@ import (
 )
 
 var (
-	ErrNotPhoto  = errors.New("photos: not a photo object")
-	ErrNoUser    = errors.New("photos: device has no user")
-	ErrForbidden = errors.New("photos: forbidden")
+	ErrNotPhoto      = errors.New("photos: not a photo object")
+	ErrQuotaExceeded = errors.New("photos: quota exceeded")
+	ErrNoUser        = errors.New("photos: device has no user")
+	ErrForbidden     = errors.New("photos: forbidden")
 )
 
 type Service struct {
@@ -170,6 +171,9 @@ func (s Service) ingestPrepared(ctx context.Context, dev *identity.Device, prep 
 		msg := "push rejected"
 		if len(res) > 0 && res[0].Error != "" {
 			msg = res[0].Error
+		}
+		if msg == syncengine.ErrQuotaExceeded {
+			return nil, ErrQuotaExceeded
 		}
 		return nil, fmt.Errorf("photos: %s", msg)
 	}

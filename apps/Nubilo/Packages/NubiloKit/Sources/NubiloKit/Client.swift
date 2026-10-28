@@ -243,6 +243,11 @@ public final class NubiloClient: Sendable {
         return try await call("PATCH", "/api/v1/admin/users/\(id)", json: body)
     }
 
+    /// Sets a user's storage limit; 0 removes it.
+    public func setQuota(_ id: String, bytes: Int64) async throws -> User {
+        try await call("PATCH", "/api/v1/admin/users/\(id)", json: ["quota_bytes": bytes])
+    }
+
     public func invites() async throws -> [Invite] {
         try await call("GET", "/api/v1/admin/invites", as: Wrapped<[Invite]>.self).value("invites")
     }

@@ -292,10 +292,7 @@ func (b *CardDAV) PutAddressObject(ctx context.Context, path string, card vcard.
 		return nil, err
 	}
 	if res[0].Status != "ok" {
-		if res[0].Status == "conflict" {
-			return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, errors.New("conflict"))
-		}
-		return nil, webdav.NewHTTPError(http.StatusConflict, errors.New(res[0].Error))
+		return nil, pushError(res[0])
 	}
 	obj, err := b.Engine.GetObject(ctx, in.ObjectID)
 	if err != nil {

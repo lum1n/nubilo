@@ -16,6 +16,7 @@ var (
 	ErrUserDisabled = errors.New("identity: user disabled")
 	ErrUserRole     = errors.New("identity: invalid user role")
 	ErrLastAdmin    = errors.New("identity: cannot remove the last active admin")
+	ErrQuota        = errors.New("identity: invalid quota")
 )
 
 type UserRole string
@@ -37,6 +38,9 @@ type User struct {
 	Role        UserRole `json:"role"`
 	Status      string   `json:"status"`
 	CreatedAt   int64    `json:"created_at"`
+	// QuotaBytes caps the bytes of live objects in collections the user owns;
+	// 0 means no limit.
+	QuotaBytes int64 `json:"quota_bytes"`
 }
 
 func (u *User) Active() bool { return u != nil && u.Status == UserActive }
@@ -142,12 +146,12 @@ func (s *Service) userCreated(ctx context.Context, u *User) error {
 	return s.OnUserCreated(ctx, u)
 }
 
-const userCols = `id, username, display_name, role, status, created_at`
+const userCols = `id, username, display_name, role, status, created_at, quota_bytes`
 
 func scanUser(sc scanner) (*User, error) {
 	var u User
 	var role string
-	if err := sc.Scan(&u.ID, &u.Username, &u.DisplayName, &role, &u.Status, &u.CreatedAt); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &u.DisplayName, &role, &u.Status, &u.CreatedAt, &u.QuotaBytes); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -180,6 +184,23 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 		out = append(out, *u)
 	}
 	return out, rows.Err()
+}
+
+// SetUserQuota sets the storage quota of a user in bytes; 0 removes it.
+func (s *Service) SetUserQuota(ctx context.Context, id string, quota int64) error {
+	if quota < 0 {
+		return ErrQuota
+	}
+	return s.Store.WithWrite(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE users SET quota_bytes = ? WHERE id = ?`, quota, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 }
 
 // SetUserStatus enables or disables a user. Disabling also revokes every

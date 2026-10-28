@@ -92,6 +92,10 @@ func (s *Server) handlePhotosUpload(w http.ResponseWriter, r *http.Request) {
 		name = strings.TrimSpace(r.Header.Get("X-Nubilo-Name"))
 	}
 	obj, err := s.photos().Ingest(r.Context(), dev, body, name, nil)
+	if errors.Is(err, photos.ErrQuotaExceeded) {
+		http.Error(w, "quota exceeded", http.StatusInsufficientStorage)
+		return
+	}
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -203,6 +207,10 @@ func (s *Server) handlePhotosCommit(w http.ResponseWriter, r *http.Request) {
 	})
 	if errors.Is(err, photos.ErrForbidden) {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if errors.Is(err, photos.ErrQuotaExceeded) {
+		http.Error(w, "quota exceeded", http.StatusInsufficientStorage)
 		return
 	}
 	if err != nil {

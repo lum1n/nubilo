@@ -39,6 +39,7 @@ Setup ends with an admin invite QR code: scan it with the Nubilo app to become t
 ./nubilo users invite --role member        # QR code + https://<domain>/join#<code>
 ./nubilo users list
 ./nubilo users disable USERNAME            # revokes all their devices and app passwords
+./nubilo users quota USERNAME 50G          # storage limit; 0 removes it
 ```
 
 The same is available in the admin console (`nubilo ui`, Users tab) and in the app. Data commands take `--user USERNAME` (default: the owner admin), e.g. `nubilo --user anna calendars list`.

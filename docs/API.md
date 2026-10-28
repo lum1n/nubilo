@@ -104,7 +104,7 @@ Backup loop for a phone: hash each asset → `photos/check` in batches → for e
 | --- | --- |
 | `GET /api/v1/admin/users` | `{"users":[user + "devices","objects","bytes"]}` |
 | `POST /api/v1/admin/users {"username","display_name","role"}` | 201 user |
-| `PATCH /api/v1/admin/users/{id} {"role"?,"status":"active"\|"disabled"?,"display_name"?}` | user (409 when it would remove the last admin) |
+| `PATCH /api/v1/admin/users/{id} {"role"?,"status":"active"\|"disabled"?,"display_name"?,"quota_bytes"?}` | user (409 when it would remove the last admin; `quota_bytes` 0 removes the limit) |
 | `GET /api/v1/admin/invites` | `{"invites":[…]}` redeemable invites |
 | `POST /api/v1/admin/invites {"role","user_id"?,"ttl_hours"?,"max_uses"?}` | 201 `{"id","code","url","setup_url","expires_at","role","max_uses"}` |
 | `DELETE /api/v1/admin/invites/{id}` | `{"revoked":id}` |
@@ -138,3 +138,7 @@ A collection whose metadata has `"mirror": true` (the Mac calendar mirror) accep
 | `/dav/shared/<owner>/<name>/…` | file roots shared with the user |
 
 Accounts created before multi-user support keep using `/caldav/user/calendars/<name>/`.
+
+## Storage quotas
+
+`users.quota_bytes` (0 = no limit) caps the size of live objects in collections a user owns, whoever writes them: a write into a shared read-write folder counts against its owner. Shrinking writes and deletes are always allowed. A blob-backed object counts at least its stored blob size, whatever `size` the client sends. Over quota, `/sync/v1/push` answers the item with `"error": "quota exceeded"`, WebDAV/CalDAV/CardDAV PUT answers 507, and `POST /api/v1/photos` and `/photos/commit` answer 507. `GET /api/v1/me` returns `storage: {objects, bytes, quota_bytes}`.

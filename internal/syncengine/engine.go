@@ -421,6 +421,15 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 			res.Error = err.Error()
 			return res, nil
 		}
+		if err := fixSize(tx, &in); err != nil {
+			return res, err
+		}
+		if ok, err := quotaAllows(tx, colOwner, in.Size); err != nil {
+			return res, err
+		} else if !ok {
+			res.Error = ErrQuotaExceeded
+			return res, nil
+		}
 		now := store.NowMS()
 		if _, err := tx.Exec(`
 			INSERT INTO objects(id, collection_id, kind, revision, content_hash, metadata_hash, blob_id, size, origin_device, metadata, created_at, updated_at)
@@ -477,6 +486,15 @@ func (e *Engine) applyOne(tx *sql.Tx, dev *identity.Device, idem string, in Chan
 		}
 		if err := e.ensureExtraBlobs(tx, dev, colOwner, newExtraBlobs(obj.Metadata, in.Metadata)); err != nil {
 			res.Error = err.Error()
+			return res, nil
+		}
+		if err := fixSize(tx, &in); err != nil {
+			return res, err
+		}
+		if ok, err := quotaAllows(tx, colOwner, in.Size-obj.Size); err != nil {
+			return res, err
+		} else if !ok {
+			res.Error = ErrQuotaExceeded
 			return res, nil
 		}
 		now := store.NowMS()

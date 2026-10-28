@@ -30,7 +30,7 @@ struct PeopleView: View {
                 }
                 if let storage = model.me?.storage {
                     LabeledContent("Storage used") {
-                        Text("\(storage.bytes.byteString) in \(storage.objects) items")
+                        Text("\(storage.bytes.usage(of: storage.quotaBytes)) in \(storage.objects) items")
                     }
                 }
             }

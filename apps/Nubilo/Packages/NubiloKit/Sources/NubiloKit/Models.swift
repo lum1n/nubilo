@@ -17,6 +17,8 @@ public struct User: Codable, Sendable, Identifiable, Hashable {
     public var role: String?
     public var status: String?
     public var createdAt: Int64?
+    /// Storage limit in bytes; 0 or nil means none.
+    public var quotaBytes: Int64?
 
     public var isAdmin: Bool { role == "admin" }
 }
@@ -34,6 +36,8 @@ public struct DeviceInfo: Codable, Sendable, Identifiable, Hashable {
 public struct Storage: Codable, Sendable, Hashable {
     public var objects: Int
     public var bytes: Int64
+    /// Storage limit in bytes; 0 or nil means none.
+    public var quotaBytes: Int64?
 }
 
 public struct Me: Codable, Sendable {
@@ -140,6 +144,8 @@ public struct AdminUser: Codable, Sendable, Identifiable, Hashable {
     public var devices: Int
     public var objects: Int
     public var bytes: Int64
+    /// Storage limit in bytes; 0 or nil means none.
+    public var quotaBytes: Int64?
 }
 
 public struct Invite: Codable, Sendable, Identifiable, Hashable {

@@ -30,10 +30,44 @@ struct MembersView: View {
                 Button("Disable", role: .destructive) { Task { await update(user, status: "disabled") } }
             }
         }
+        Menu("Storage Limit") {
+            ForEach(Self.quotaChoices, id: \.bytes) { choice in
+                Button {
+                    Task { await setQuota(user, bytes: choice.bytes) }
+                } label: {
+                    if (user.quotaBytes ?? 0) == choice.bytes {
+                        Label(choice.title, systemImage: "checkmark")
+                    } else {
+                        Text(choice.title)
+                    }
+                }
+            }
+        }
         if user.role == "admin" {
             Button("Make Member") { Task { await update(user, role: "member") } }
         } else {
             Button("Make Admin") { Task { await update(user, role: "admin") } }
+        }
+    }
+
+    private static let quotaChoices: [(title: String, bytes: Int64)] = [
+        ("No Limit", 0),
+        ("10 GB", 10_000_000_000),
+        ("50 GB", 50_000_000_000),
+        ("100 GB", 100_000_000_000),
+        ("250 GB", 250_000_000_000),
+        ("500 GB", 500_000_000_000),
+        ("1 TB", 1_000_000_000_000),
+    ]
+
+    private func setQuota(_ user: AdminUser, bytes: Int64) async {
+        guard let client = model.client else { return }
+        do {
+            _ = try await client.setQuota(user.id, bytes: bytes)
+            await load()
+            if user.id == model.me?.user.id { await model.refreshMe() }
+        } catch {
+            self.error = describe(error)
         }
     }
 
@@ -78,7 +112,7 @@ struct MemberRow: View {
                     Text("Disabled").font(.caption).foregroundStyle(.red)
                 }
             }
-            Text("@\(user.username) · \(user.devices) device\(user.devices == 1 ? "" : "s") · \(user.bytes.byteString)")
+            Text("@\(user.username) · \(user.devices) device\(user.devices == 1 ? "" : "s") · \(user.bytes.usage(of: user.quotaBytes))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
