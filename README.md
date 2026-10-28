@@ -119,8 +119,6 @@ Server host must be reachable (Tailscale IP or hostname), not `127.0.0.1`.
 - Same host; `--scope carddav`
 - Discovery: `/.well-known/carddav`
 
-**Web** — open `https://<server>/web/` in any browser and approve the code from the Nubilo app (People → Sign In on the Web, or scan it). Photos, albums and files, no password.
-
 **Files** — with the Nubilo app installed, open the Files app → Browse → Nubilo. Other WebDAV clients (Finder: Go → Connect to Server) use `https://<host>:8443/dav/` with a `--scope webdav` app password.
 
 **Photos (no app)** — pick one:

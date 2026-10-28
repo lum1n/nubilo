@@ -148,9 +148,7 @@ Accounts created before multi-user support keep using `/caldav/user/calendars/<n
 
 `internal/server/webui` is embedded and served at `/web/`: `index.html` for every `/web/…` page path, other files at `/web/assets/<file>`. Plain ES modules, no build step, no third-party code. The CSP (`script-src 'self'; style-src 'self'`, images from `self`, `blob:`, `data:`) rules out inline scripts, inline styles and `style=""`, so the app styles only through `app.css` and sets nothing inline.
 
-Sign-in: `POST /web/api/login` → 201 `{"code","expires_at","link","qr_png"}`, then `GET /web/api/login` every 2 s → `{"status":"pending"|"approved"|"expired"}`; approval sets the `nubilo_web` session cookie (HttpOnly, Secure, SameSite=Strict, path `/web/`). `POST /web/api/logout` → 204. The app approves with `POST /api/v1/me/web-login {"code"}` (client devices only).
-
-Session routes act as the approving device and reuse the app handlers: `GET /web/api/me`, `GET /web/api/collections`, `POST /web/api/objects`, `POST /web/api/object`, `POST /web/api/collection`, `POST /web/api/collection/update`, `POST /web/api/collection/delete`, `POST /web/api/push`, `PUT /web/api/blob/{hash}`, `GET /web/api/files/{id}` (download as an attachment, always `application/octet-stream`), `GET|POST /web/api/photos`, `GET /web/api/photos/{id}[/original|/preview|/thumb]`, `GET /web/api/albums`, `GET /web/api/albums/{id}/items`. Every non-GET request must send `X-Nubilo-Web: 1` from the same origin; a 401 means the session ended.
+Sign-in and the session routes are listed under "Web sign-in and the web app" below.
 
 A file upload from the browser hashes the file (SHA-256), `PUT`s the blob, then pushes `{"op":"create","kind":"file","object_id":<new ULID>,"content_hash":hash,"blob_id":hash,"size","metadata":{"name","mime"}}`, or an `update` with `base_revision` when a file of that name exists, as a WebDAV PUT does. Renames push an `update` that changes only `metadata.name`; deletes push `delete` with `base_revision`.
 
