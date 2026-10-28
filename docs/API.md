@@ -128,7 +128,7 @@ Folder calls (used by the iOS Files app integration; same rules as WebDAV: top-l
 | `POST` | `/sync/v1/collection` | `{"kind", "name", "parent_id"?, "metadata"?}` → find or create |
 | `POST` | `/sync/v1/collection/update` | `{"id", "name"?, "parent_id"?}` (`""` = top level) → rename and/or move |
 | `POST` | `/sync/v1/collection/delete` | `{"id"}` → deletes subfolders and objects (journaled), then the folder |
-| `POST` | `/sync/v1/thumb` | `{"id", "size"?}` → `image/jpeg` thumbnail of a readable file object, longer side `size` rounded up to 64/128/256/512/1024 (default 256). JPEG, PNG, GIF, WebP, BMP and TIFF; 415 for anything else (including HEIC), 404 when not readable, 413 above `max_blob_bytes`. Images over 64 MP are not decoded (415). Made on demand and kept in a 32 MB in-memory cache keyed by content hash and size. |
+| `POST` | `/sync/v1/thumb` | `{"id", "size"?}` → `image/jpeg` thumbnail of a readable file object, longer side `size` rounded up to 64/128/256/512/1024 (default 256). JPEG, PNG, GIF, WebP, BMP and TIFF, judged first by the file's name (or `mime` without an extension), then by decoding; 415 for anything else (including HEIC), 404 when not readable, 413 above `max_blob_bytes`. Images over 64 MP are not decoded (415). Made on demand and kept in a 32 MB in-memory cache keyed by content hash and size. |
 
 A collection whose metadata has `"mirror": true` (the Mac calendar mirror) accepts object writes only from the device in `"mirror_device"`, which the server sets when a device turns `mirror` on.
 

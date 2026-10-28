@@ -196,6 +196,19 @@ final class LiveFilesTests: XCTestCase {
         let body = try await fs.contents(of: note)
         XCTAssertEqual(String(decoding: body, as: UTF8.self), "hello")
 
+        // Thumbnails: a JPEG for a PNG, none for text.
+        let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGM4IScHRwzEcQCxYxBBO0tjggAAAABJRU5ErkJggg=="))
+        let pic = try await fs.createFile(named: "dot.png", in: docs.id, data: png, mime: "image/png")
+        XCTAssertTrue(pic.hasThumbnail)
+        XCTAssertFalse(note.hasThumbnail)
+        let thumb = try await fs.thumbnail(of: pic.id, size: 128)
+        XCTAssertEqual(Array(thumb.prefix(2)), [0xFF, 0xD8], "a JPEG")
+        do {
+            _ = try await fs.thumbnail(of: note.id, size: 128)
+            XCTFail("thumbnail of a text file")
+        } catch FilesError.noThumbnail {}
+        try await fs.delete(pic)
+
         var changes = try await fs.changes(since: start)
         XCTAssertTrue(changes.updated.contains { $0.id == docs.id }, "new folder in changes")
         XCTAssertTrue(changes.updated.contains { $0.id == note.id }, "new file in changes")

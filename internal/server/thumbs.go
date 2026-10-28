@@ -2,9 +2,12 @@ package server
 
 import (
 	"container/list"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"path"
 	"strconv"
+	"strings"
 	"sync"
 
 	"nubilo/internal/authz"
@@ -76,7 +79,7 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 	if hash == "" {
 		hash = obj.ContentHash
 	}
-	if obj.Kind != "file" || hash == "" {
+	if obj.Kind != "file" || hash == "" || !maybeImage(obj.Metadata) {
 		http.Error(w, "not an image", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -117,6 +120,26 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(jpg)
+}
+
+// thumbFormats are the image formats photos.Thumbnail decodes, as file
+// extensions and image/* MIME subtypes.
+var thumbFormats = map[string]bool{"jpg": true, "jpeg": true, "png": true, "gif": true, "webp": true, "bmp": true, "tif": true, "tiff": true}
+
+// maybeImage decides from a file's name (or, without an extension, its MIME
+// type) whether it is worth loading the blob: videos and documents are
+// refused without reading them.
+func maybeImage(meta json.RawMessage) bool {
+	var m struct {
+		Name string `json:"name"`
+		MIME string `json:"mime"`
+	}
+	_ = json.Unmarshal(meta, &m)
+	if ext := strings.TrimPrefix(path.Ext(m.Name), "."); ext != "" {
+		return thumbFormats[strings.ToLower(ext)]
+	}
+	sub, ok := strings.CutPrefix(strings.ToLower(m.MIME), "image/")
+	return ok && thumbFormats[sub]
 }
 
 var (

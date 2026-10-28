@@ -36,6 +36,22 @@ public struct RemoteItem: Equatable, Sendable {
     public var collectionID: String? { kind == .folder ? String(id.dropFirst(2)) : nil }
     public var objectID: String? { kind == .file ? String(id.dropFirst(2)) : nil }
 
+    /// Extensions of images the server makes thumbnails of (not HEIC or RAW).
+    public static let thumbnailExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff"]
+
+    /// True for files the server can make a thumbnail of, by name or MIME type.
+    public var hasThumbnail: Bool {
+        guard kind == .file, size > 0 else { return false }
+        return Self.mayHaveThumbnail(name: name, mime: mime)
+    }
+
+    public static func mayHaveThumbnail(name: String, mime: String?) -> Bool {
+        let ext = (name as NSString).pathExtension.lowercased()
+        if !ext.isEmpty { return thumbnailExtensions.contains(ext) }
+        guard let mime = mime?.lowercased(), mime.hasPrefix("image/") else { return false }
+        return thumbnailExtensions.contains(String(mime.dropFirst("image/".count)))
+    }
+
     public static func folderID(_ collectionID: String) -> String { "c:" + collectionID }
     public static func fileID(_ objectID: String) -> String { "o:" + objectID }
 
@@ -74,6 +90,9 @@ public enum FilesError: Error, LocalizedError, Equatable {
     case readOnly
     /// The server predates the folder calls (`/sync/v1/objects` and friends).
     case serverTooOld
+    /// The server makes no thumbnail of this file (not an image it decodes,
+    /// or a server without thumbnails).
+    case noThumbnail
 
     public var errorDescription: String? {
         switch self {
@@ -82,6 +101,7 @@ public enum FilesError: Error, LocalizedError, Equatable {
         case .filesNeedAFolder: return "Put files into a folder, such as Files."
         case .readOnly: return "This folder is shared with you read-only."
         case .serverTooOld: return "The Nubilo server needs an update for the Files app."
+        case .noThumbnail: return "There is no preview of this file."
         }
     }
 }
@@ -185,6 +205,31 @@ public struct FilesSession: Sendable {
     public func contents(of item: RemoteItem) async throws -> Data {
         guard let hash = item.blobID ?? (item.contentHash.isEmpty ? nil : item.contentHash) else { return Data() }
         return try await client.blob(hash)
+    }
+
+    /// A JPEG thumbnail of file item `id` ("o:<object id>"), `size` pixels
+    /// on the longer side (the server rounds up).
+    public func thumbnail(of id: String, size: Int) async throws -> Data {
+        guard id.hasPrefix("o:") else { throw FilesError.noThumbnail }
+        do {
+            return try await client.thumbnail(objectID: String(id.dropFirst(2)), size: size)
+        } catch let e as NubiloError {
+            throw Self.thumbnailError(e)
+        }
+    }
+
+    /// Maps a thumbnail call's HTTP error; an older server without the call
+    /// answers its router's "404 page not found" or 405.
+    static func thumbnailError(_ e: NubiloError) -> Error {
+        switch e.status {
+        case 404:
+            if case let .http(_, message) = e, message.contains("page not found") { return FilesError.noThumbnail }
+            return FilesError.notFound
+        case 405, 413, 415:
+            return FilesError.noThumbnail
+        default:
+            return e
+        }
     }
 
     public func createFolder(named name: String, in parentID: String) async throws -> RemoteItem {

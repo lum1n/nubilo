@@ -62,6 +62,12 @@ func TestFileThumbnails(t *testing.T) {
 	if code, _ := alice.do(http.MethodPost, "/sync/v1/thumb", map[string]any{"id": txt}); code != http.StatusUnsupportedMediaType {
 		t.Fatalf("text thumb: %d", code)
 	}
+	broken := pushNamed(alice, files, "broken.png", []byte("not a picture either"))
+	for i := 0; i < 2; i++ { // the second answer comes from the cache
+		if code, _ := alice.do(http.MethodPost, "/sync/v1/thumb", map[string]any{"id": broken}); code != http.StatusUnsupportedMediaType {
+			t.Fatalf("undecodable png: %d", code)
+		}
+	}
 	if code, _ := alice.do(http.MethodPost, "/sync/v1/thumb", map[string]any{"id": newULID()}); code != http.StatusNotFound {
 		t.Fatalf("missing object: %d", code)
 	}

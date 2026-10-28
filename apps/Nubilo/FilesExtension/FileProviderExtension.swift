@@ -2,13 +2,18 @@ import FileProvider
 import UniformTypeIdentifiers
 import NubiloKit
 
-/// The Nubilo location in the Files app: the user's own and shared folders,
+/// The Nubilo location in the Files app (iOS) and Finder (macOS; the same
+/// sources build the NubiloFilesMac target): the user's own and shared folders,
 /// read and written through the signed sync API with the app's device key
 /// (shared through the Keychain; see SharedCredentials).
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     private let domain: NSFileProviderDomain
     private let lock = NSLock()
     private var cached: FilesSession?
+    /// Whether listed files have a thumbnail on the server, by item id, so
+    /// the system's thumbnail requests for documents and videos are answered
+    /// without a server call.
+    private var thumbnailable: [String: Bool] = [:]
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
@@ -45,6 +50,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         return mapped
     }
 
+    fileprivate func remember(_ items: [RemoteItem]) {
+        lock.lock()
+        defer { lock.unlock() }
+        if thumbnailable.count > 50_000 { thumbnailable.removeAll() }
+        for item in items where item.kind == .file {
+            thumbnailable[item.id] = item.hasThumbnail
+        }
+    }
+
+    fileprivate func knownThumbnailable(_ id: String) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return thumbnailable[id]
+    }
+
     func item(for identifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest,
               completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 1)
@@ -55,7 +75,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 return
             }
             do {
-                completionHandler(FileProviderItem(try await session().item(identifier.rawValue)), nil)
+                let item = try await session().item(identifier.rawValue)
+                remember([item])
+                completionHandler(FileProviderItem(item), nil)
             } catch {
                 completionHandler(nil, failed(error, identifier))
             }
@@ -178,16 +200,73 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
-        FileProviderEnumerator(container: containerItemIdentifier, session: { [weak self] in
+        // No server-side trash: Finder deletes right away instead of
+        // moving to a trash this location does not have.
+        if containerItemIdentifier == .trashContainer {
+            throw NSError.fileProviderErrorForNonExistentItem(withIdentifier: containerItemIdentifier)
+        }
+        return FileProviderEnumerator(container: containerItemIdentifier, session: { [weak self] in
             guard let self else { throw NSFileProviderError(.notAuthenticated) }
             return try self.session()
         }, mapError: { [weak self] error, id in
             self?.failed(error, id) ?? fileProviderError(error, id)
+        }, seen: { [weak self] items in
+            self?.remember(items)
         })
     }
 
     private func remoteID(_ identifier: NSFileProviderItemIdentifier) -> String {
         identifier == .rootContainer ? RemoteItem.rootID : identifier.rawValue
+    }
+}
+
+/// Thumbnails of image files, made by the server (POST /sync/v1/thumb).
+extension FileProviderExtension: NSFileProviderThumbnailing {
+    func fetchThumbnails(for itemIdentifiers: [NSFileProviderItemIdentifier], requestedSize size: CGSize,
+                         perThumbnailCompletionHandler: @escaping (NSFileProviderItemIdentifier, Data?, Error?) -> Void,
+                         completionHandler: @escaping (Error?) -> Void) -> Progress {
+        let progress = Progress(totalUnitCount: Int64(itemIdentifiers.count))
+        // The size is in pixels; the server rounds up to its next rendition.
+        let pixels = max(1, Int(max(size.width, size.height).rounded(.up)))
+        let task = Task {
+            let s: FilesSession
+            do {
+                s = try session()
+            } catch {
+                completionHandler(failed(error, .rootContainer))
+                return
+            }
+            for id in itemIdentifiers {
+                if Task.isCancelled { break }
+                // Folders, the top level and listed non-images have none:
+                // nil data and no error shows the generic icon.
+                guard id.rawValue.hasPrefix("o:"), knownThumbnailable(id.rawValue) != false else {
+                    perThumbnailCompletionHandler(id, nil, nil)
+                    progress.completedUnitCount += 1
+                    continue
+                }
+                do {
+                    let data = try await s.thumbnail(of: id.rawValue, size: pixels)
+                    perThumbnailCompletionHandler(id, data, nil)
+                } catch FilesError.noThumbnail {
+                    remember(id.rawValue, thumbnail: false)
+                    perThumbnailCompletionHandler(id, nil, nil)
+                } catch {
+                    if Task.isCancelled { break }
+                    perThumbnailCompletionHandler(id, nil, failed(error, id))
+                }
+                progress.completedUnitCount += 1
+            }
+            completionHandler(Task.isCancelled ? CocoaError(.userCancelled) as Error : nil)
+        }
+        progress.cancellationHandler = { task.cancel() }
+        return progress
+    }
+
+    private func remember(_ id: String, thumbnail: Bool) {
+        lock.lock()
+        thumbnailable[id] = thumbnail
+        lock.unlock()
     }
 }
 

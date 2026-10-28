@@ -69,4 +69,42 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(missing, ["a", "b"])
         XCTAssertEqual(t.seen.last?.value(forHTTPHeaderField: "Authorization"), "Bearer nbu_x")
     }
+
+    func testThumbnailRequest() async throws {
+        let t = FakeTransport()
+        let c = NubiloClient(baseURL: URL(string: "https://cloud.example.com")!, signer: RequestSigner(deviceID: "D1", key: Ed25519Key()), transport: t)
+        let req = try c.thumbnailRequest(objectID: "OBJ", size: 180)
+        XCTAssertEqual(req.httpMethod, "POST")
+        XCTAssertEqual(req.url?.path, "/sync/v1/thumb")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(req.httpBody.map { String(decoding: $0, as: UTF8.self) }, #"{"id":"OBJ","size":180}"#)
+        XCTAssertTrue(req.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Nubilo-Sig v1 device=D1,") ?? false)
+
+        let fs = FilesSession(client: c)
+        t.routes["POST /sync/v1/thumb"] = (200, "\u{FF}jpeg")
+        let data = try await fs.thumbnail(of: "o:OBJ", size: 64)
+        XCTAssertEqual(data, Data("\u{FF}jpeg".utf8))
+        for (status, body, want) in [(415, "not an image", FilesError.noThumbnail), (404, "not found", .notFound),
+                                     (404, "404 page not found", .noThumbnail), (413, "too large", .noThumbnail)] {
+            t.routes["POST /sync/v1/thumb"] = (status, body)
+            do {
+                _ = try await fs.thumbnail(of: "o:OBJ", size: 64)
+                XCTFail("\(status) accepted")
+            } catch let e as FilesError {
+                XCTAssertEqual(e, want, "\(status) \(body)")
+            }
+        }
+        do {
+            _ = try await fs.thumbnail(of: "c:FOLDER", size: 64)
+            XCTFail("folder thumbnail")
+        } catch FilesError.noThumbnail {}
+    }
+
+    func testThumbnailCandidates() {
+        XCTAssertTrue(RemoteItem.mayHaveThumbnail(name: "IMG_1.JPG", mime: nil))
+        XCTAssertTrue(RemoteItem.mayHaveThumbnail(name: "scan", mime: "image/png"))
+        XCTAssertFalse(RemoteItem.mayHaveThumbnail(name: "IMG_2.HEIC", mime: "image/heic"))
+        XCTAssertFalse(RemoteItem.mayHaveThumbnail(name: "notes.txt", mime: "image/png"))
+        XCTAssertFalse(RemoteItem.mayHaveThumbnail(name: "clip", mime: "video/mp4"))
+    }
 }

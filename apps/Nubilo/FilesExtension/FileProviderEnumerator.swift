@@ -8,12 +8,16 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
     private let container: NSFileProviderItemIdentifier
     private let session: () throws -> FilesSession
     private let mapError: (Error, NSFileProviderItemIdentifier) -> Error
+    /// Told about listed items (the extension remembers which have thumbnails).
+    private let seen: ([RemoteItem]) -> Void
 
     init(container: NSFileProviderItemIdentifier, session: @escaping () throws -> FilesSession,
-         mapError: @escaping (Error, NSFileProviderItemIdentifier) -> Error) {
+         mapError: @escaping (Error, NSFileProviderItemIdentifier) -> Error,
+         seen: @escaping ([RemoteItem]) -> Void = { _ in }) {
         self.container = container
         self.session = session
         self.mapError = mapError
+        self.seen = seen
     }
 
     func invalidate() {}
@@ -22,6 +26,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
         let container = container
         let session = session
         let mapError = mapError
+        let seen = seen
         Task {
             do {
                 // The working set is everything: after an expired anchor the
@@ -32,6 +37,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 } else {
                     items = try await session().children(of: container == .rootContainer ? RemoteItem.rootID : container.rawValue)
                 }
+                seen(items)
                 observer.didEnumerate(items.map(FileProviderItem.init))
                 observer.finishEnumerating(upTo: nil)
             } catch {
@@ -44,6 +50,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
         let container = container
         let session = session
         let mapError = mapError
+        let seen = seen
         Task {
             guard container == .workingSet else {
                 observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
@@ -56,6 +63,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
             do {
                 let changes = try await session().changes(since: previous)
                 if !changes.updated.isEmpty {
+                    seen(changes.updated)
                     observer.didUpdate(changes.updated.map(FileProviderItem.init))
                 }
                 if !changes.deleted.isEmpty {
