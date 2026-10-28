@@ -116,3 +116,23 @@ func TestPublicURL(t *testing.T) {
 		t.Fatalf("non-ts.net name: %v", err)
 	}
 }
+
+func TestFunnelListenLoopbackOnly(t *testing.T) {
+	c := config.Defaults(t.TempDir())
+	c.Public.Tailscale = config.TailscaleConfig{Enabled: true, Name: "box.tail1234.ts.net", Port: 443}
+	for addr, ok := range map[string]bool{
+		"127.0.0.1:8444":     true,
+		"[::1]:8444":         true,
+		"localhost:8444":     true,
+		"0.0.0.0:8444":       false,
+		":8444":              false,
+		"192.168.1.2:8444":   false,
+		"127.0.0.1":          false,
+		config.DefaultListen: false,
+	} {
+		c.Public.Tailscale.FunnelListen = addr
+		if err := c.Validate(); (err == nil) != ok {
+			t.Errorf("funnel_listen %q: %v", addr, err)
+		}
+	}
+}

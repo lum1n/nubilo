@@ -446,6 +446,7 @@ In **proxy** mode the relay runs on a host whose provider proxy (exe.dev) termin
 - The server runs the `tailscale` CLI: `status --json` at setup and in doctor, `cert` at start and daily. Letting a non-root user fetch certificates means making it the tailscaled operator (`tailscale set --operator`), which also lets that user change other tailscaled settings.
 - The name is published in Certificate Transparency logs when the certificate is issued.
 - With Funnel forwarding raw TCP (docs/RELAY.md), the internet reaches the listener with TLS still ending at home, but every public client appears as `127.0.0.1`, so per-IP rate limits and the audit log cannot tell clients apart.
+- With `public.tailscale.funnel_listen` and `tailscale funnel --proxy-protocol 1`, the server takes the client address from tailscaled's PROXY v1 header on that listener only. Config refuses a non-loopback address for it, so only processes on this host can reach it and set the header; a local process could still spoof client IPs for rate limits and logs, but not authenticate. Connections without a header naming a TCP4/TCP6 client are dropped there, so nothing on that listener passes as loopback (the admin token stays loopback-only).
 
 ## 15b. Invites, upload tokens and configuration profiles
 
