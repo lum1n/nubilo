@@ -126,6 +126,39 @@ final class LiveCalendarMirrorTests: XCTestCase {
         XCTAssertEqual(run.calendars.map(\.pushed), [0, 0])
         live = try await c.liveObjects(collectionID: work.id)
         XCTAssertEqual(live.count, 1)
+
+        // A repeating meeting copied as single occurrences (an older app), then as one series: the singles go.
+        let utc = TimeZone(identifier: "UTC")!
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = utc
+        let first = cal.startOfDay(for: now).addingTimeInterval(10 * 3600)
+        let rule = MirrorRecurrence(frequency: .daily, count: 3)
+        func occurrence(_ i: Int, series: Bool) -> MirrorEvent {
+            let s = first.addingTimeInterval(Double(i) * 86400)
+            return MirrorEvent(key: "S@" + ICSWriter.utc(s), title: "Daily", start: s, end: s.addingTimeInterval(900), timeZone: utc,
+                               seriesID: series ? "S" : nil, occurrenceDate: s, recurrence: series ? [rule] : [],
+                               seriesStart: series ? first : nil)
+        }
+        let kept = fake.events["ex"] ?? []
+        fake.events["ex"] = kept + (0..<3).map { occurrence($0, series: false) }
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.calendars.first?.pushed, 3)
+        fake.events["ex"] = kept + (0..<3).map { occurrence($0, series: true) }
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.errors, [])
+        XCTAssertEqual(run.calendars.first?.pushed, 1)
+        XCTAssertEqual(run.calendars.first?.deleted, 3)
+        live = try await c.liveObjects(collectionID: work.id)
+        XCTAssertEqual(live.count, 2)
+        XCTAssertTrue(live.values.contains { $0.uid == MirrorSeries.objects(for: fake.events["ex"]!, from: now, to: now)
+                .first { $0.seriesID == "S" }?.uid })
+
+        // Lost state again: the series object is adopted by UID.
+        try? FileManager.default.removeItem(at: stateURL)
+        engine = CalendarMirrorEngine(stateURL: stateURL)
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.calendars.first?.pushed, 0)
+        XCTAssertEqual(run.calendars.first?.deleted, 0)
     }
 }
 

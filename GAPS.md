@@ -22,7 +22,7 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 | Reminders (`VTODO`) | Done | VTODO-only calendar collections |
 | Calendar color (`calendar-color` PROPPATCH) | Done | Stored in collection metadata; returned on PROPFIND |
 | Sharing a calendar or address book with another user | Done | Read-only or read-write shares (SECURITY.md §5.1) |
-| Calendar mirror (Mac → server, read-only elsewhere) | Done | Nubilo Mac app reads EventKit and writes the chosen calendars to server calendars marked `"mirror": true`; only the owning device may write them. Occurrences from −30 to +365 days as separate events (no RRULE), so repeating meetings are not shown as series. Runs only while the app runs. No reminders or contacts |
+| Calendar mirror (Mac → server, read-only elsewhere) | Done | Nubilo Mac app reads EventKit and writes the chosen calendars to server calendars marked `"mirror": true`; only the owning device may write them. Events from −30 to +365 days; repeating meetings as series (RRULE with EXDATE and RECURRENCE-ID overrides), falling back to one event per occurrence for rules that cannot be written faithfully (week-of-year or day-of-year rules, yearly weekday rules without a month, or a rule that does not reproduce EventKit's occurrences). Outside the window the phone expands the bare rule, so occurrences moved or cancelled there are not known. Runs only while the app runs. No reminders or contacts |
 | Inline binary attachments | Open | Would bloat blobs; URI ATTACH only |
 | Moving data out of iCloud | Manual | Export from iCloud (or drag the calendars into the Nubilo account on the Mac) |
 

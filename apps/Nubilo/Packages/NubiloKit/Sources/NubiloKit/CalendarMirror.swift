@@ -8,9 +8,14 @@ import FoundationNetworking
 // calendars marked "mirror". Other devices see them read-only through their
 // CalDAV account; the server refuses their edits. Nothing is written back.
 //
-// Every occurrence in the window becomes its own event. Rebuilding repeat
-// rules would need EventKit internals to find deleted and moved instances;
-// for a read-only copy, individual occurrences are always right.
+// EventKit hands over each occurrence in the window (-30..+365 days). A
+// repeating event becomes one object per series (MirrorSeries): the rule as
+// an RRULE, occurrences the rule makes but EventKit no longer lists as EXDATE,
+// and moved or edited occurrences as RECURRENCE-ID overrides. The rule is
+// checked against what EventKit returned; when it cannot be written as an
+// RRULE, or does not reproduce those occurrences, that series falls back to
+// one event per occurrence. Outside the window the phone expands the bare
+// rule, so deletions and moves there are not known.
 
 /// A calendar in the Mac's Calendar app.
 public struct MirrorCalendarInfo: Hashable, Sendable, Identifiable {
@@ -53,9 +58,59 @@ public struct MirrorAlarm: Hashable, Sendable {
     }
 }
 
+/// One day of the week in a repeat rule.
+public struct MirrorWeekday: Hashable, Sendable {
+    /// 1 = Sunday … 7 = Saturday (EKWeekday numbering).
+    public var weekday: Int
+    /// 0 = every such day in the period; n or -n = the nth (from the end).
+    public var week: Int
+
+    public init(_ weekday: Int, week: Int = 0) {
+        self.weekday = weekday
+        self.week = week
+    }
+}
+
+/// A repeat rule (EKRecurrenceRule, without EventKit).
+public struct MirrorRecurrence: Hashable, Sendable {
+    public enum Frequency: String, Sendable { case daily = "DAILY", weekly = "WEEKLY", monthly = "MONTHLY", yearly = "YEARLY" }
+
+    public var frequency: Frequency
+    public var interval: Int
+    public var daysOfTheWeek: [MirrorWeekday]
+    public var daysOfTheMonth: [Int]
+    public var monthsOfTheYear: [Int]
+    public var weeksOfTheYear: [Int]
+    public var daysOfTheYear: [Int]
+    public var setPositions: [Int]
+    /// 1 = Sunday … 7 = Saturday; 0 = not set.
+    public var firstDayOfTheWeek: Int
+    /// Number of occurrences, or nil.
+    public var count: Int?
+    /// Last possible start, or nil.
+    public var until: Date?
+
+    public init(frequency: Frequency, interval: Int = 1, daysOfTheWeek: [MirrorWeekday] = [], daysOfTheMonth: [Int] = [],
+                monthsOfTheYear: [Int] = [], weeksOfTheYear: [Int] = [], daysOfTheYear: [Int] = [], setPositions: [Int] = [],
+                firstDayOfTheWeek: Int = 0, count: Int? = nil, until: Date? = nil) {
+        self.frequency = frequency
+        self.interval = interval
+        self.daysOfTheWeek = daysOfTheWeek
+        self.daysOfTheMonth = daysOfTheMonth
+        self.monthsOfTheYear = monthsOfTheYear
+        self.weeksOfTheYear = weeksOfTheYear
+        self.daysOfTheYear = daysOfTheYear
+        self.setPositions = setPositions
+        self.firstDayOfTheWeek = firstDayOfTheWeek
+        self.count = count
+        self.until = until
+    }
+}
+
 /// One occurrence of an event.
 public struct MirrorEvent: Hashable, Sendable {
-    /// Stable per occurrence (the event's identity plus its original date).
+    /// Stable per occurrence: `seriesID + "@" + original date` for repeating
+    /// events, so a series object can find and replace their old copies.
     public var key: String
     public var title: String
     public var notes: String?
@@ -64,7 +119,7 @@ public struct MirrorEvent: Hashable, Sendable {
     public var start: Date
     public var end: Date
     public var allDay: Bool
-    /// Time zone for all-day dates; nil means the Mac's.
+    /// Time zone for all-day dates and repeat rules; nil means the Mac's.
     public var timeZone: TimeZone?
     /// CONFIRMED, TENTATIVE or CANCELLED.
     public var status: String?
@@ -73,11 +128,28 @@ public struct MirrorEvent: Hashable, Sendable {
     public var attendees: [MirrorPerson]
     public var alarms: [MirrorAlarm]
     public var lastModified: Date?
+    /// The series this occurrence belongs to (calendarItemExternalIdentifier), or nil.
+    public var seriesID: String?
+    /// The occurrence's original start (EKEvent.occurrenceDate), or nil.
+    public var occurrenceDate: Date?
+    /// The series' repeat rules; empty for a single event.
+    public var recurrence: [MirrorRecurrence]
+    /// Moved or edited apart from its series (EKEvent.isDetached).
+    public var detached: Bool
+    /// Original start of the series' first occurrence, when known.
+    public var seriesStart: Date?
 
     public init(key: String, title: String, notes: String? = nil, location: String? = nil, url: String? = nil,
                 start: Date, end: Date, allDay: Bool = false, timeZone: TimeZone? = nil, status: String? = nil,
                 busy: Bool = true, organizer: MirrorPerson? = nil, attendees: [MirrorPerson] = [],
-                alarms: [MirrorAlarm] = [], lastModified: Date? = nil) {
+                alarms: [MirrorAlarm] = [], lastModified: Date? = nil, seriesID: String? = nil,
+                occurrenceDate: Date? = nil, recurrence: [MirrorRecurrence] = [], detached: Bool = false,
+                seriesStart: Date? = nil) {
+        self.seriesID = seriesID
+        self.occurrenceDate = occurrenceDate
+        self.recurrence = recurrence
+        self.detached = detached
+        self.seriesStart = seriesStart
         self.key = key
         self.title = title
         self.notes = notes
@@ -96,7 +168,9 @@ public struct MirrorEvent: Hashable, Sendable {
     }
 
     /// The UID and object name on the server, derived from `key`.
-    public var uid: String { "nubilo-mirror-" + String(sha256Hex(Data(key.utf8)).prefix(32)) }
+    public var uid: String { Self.uid(forKey: key) }
+
+    static func uid(forKey key: String) -> String { "nubilo-mirror-" + String(sha256Hex(Data(key.utf8)).prefix(32)) }
 }
 
 /// Reads the Mac's calendars (EventKit in the app, a fake in tests).
@@ -110,31 +184,47 @@ public protocol CalendarReading: Sendable {
 public enum ICSWriter {
     /// A VCALENDAR with one VEVENT, CRLF line endings, lines folded at 75 octets.
     public static func calendar(for e: MirrorEvent) -> String {
+        document(vevent(e, uid: e.uid, timing: timing(e)))
+    }
+
+    /// Wraps components in a VCALENDAR: CRLF line endings, lines folded at 75 octets.
+    static func document(_ body: [String]) -> String {
+        let lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Nubilo//Calendar mirror//EN", "CALSCALE:GREGORIAN"]
+            + body + ["END:VCALENDAR"]
+        return lines.map(fold).joined(separator: "\r\n") + "\r\n"
+    }
+
+    /// DTSTART and DTEND: DATE values for all-day events, UTC otherwise.
+    static func timing(_ e: MirrorEvent) -> [String] {
+        if e.allDay {
+            let (first, last, cal) = allDayRange(e)
+            return ["DTSTART;VALUE=DATE:" + day(first, cal), "DTEND;VALUE=DATE:" + day(last, cal)]
+        }
+        return ["DTSTART:" + utc(e.start), "DTEND:" + utc(max(e.end, e.start))]
+    }
+
+    /// First day and the day after the last, in the event's time zone.
+    static func allDayRange(_ e: MirrorEvent) -> (Date, Date, Calendar) {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = e.timeZone ?? .current
+        let first = cal.startOfDay(for: e.start)
+        var last = cal.startOfDay(for: e.end)
+        // EventKit ends all-day events at 23:59:59 of the last day; DTEND is exclusive.
+        if last < e.end || last <= first {
+            last = cal.date(byAdding: .day, value: 1, to: last) ?? last
+        }
+        return (first, last, cal)
+    }
+
+    /// One VEVENT; `timing` holds its DTSTART, DTEND and any RRULE, EXDATE or RECURRENCE-ID.
+    static func vevent(_ e: MirrorEvent, uid: String, timing: [String]) -> [String] {
         var lines = [
-            "BEGIN:VCALENDAR",
-            "VERSION:2.0",
-            "PRODID:-//Nubilo//Calendar mirror//EN",
-            "CALSCALE:GREGORIAN",
             "BEGIN:VEVENT",
-            "UID:" + e.uid,
+            "UID:" + uid,
             // Stable, so an unchanged event hashes the same on every run.
             "DTSTAMP:" + utc(e.lastModified ?? Date(timeIntervalSince1970: 0)),
         ]
-        if e.allDay {
-            var cal = Calendar(identifier: .gregorian)
-            cal.timeZone = e.timeZone ?? .current
-            let first = cal.startOfDay(for: e.start)
-            var last = cal.startOfDay(for: e.end)
-            // EventKit ends all-day events at 23:59:59 of the last day; DTEND is exclusive.
-            if last < e.end || last <= first {
-                last = cal.date(byAdding: .day, value: 1, to: last) ?? last
-            }
-            lines.append("DTSTART;VALUE=DATE:" + day(first, cal))
-            lines.append("DTEND;VALUE=DATE:" + day(last, cal))
-        } else {
-            lines.append("DTSTART:" + utc(e.start))
-            lines.append("DTEND:" + utc(max(e.end, e.start)))
-        }
+        lines += timing
         lines.append("SUMMARY:" + text(e.title.isEmpty ? "Busy" : e.title))
         if let v = e.location, !v.isEmpty { lines.append("LOCATION:" + text(v)) }
         if let v = e.notes, !v.isEmpty { lines.append("DESCRIPTION:" + text(v)) }
@@ -156,8 +246,8 @@ public enum ICSWriter {
             }
             lines += ["BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:" + text(e.title.isEmpty ? "Reminder" : e.title), trigger, "END:VALARM"]
         }
-        lines += ["END:VEVENT", "END:VCALENDAR"]
-        return lines.map(fold).joined(separator: "\r\n") + "\r\n"
+        lines.append("END:VEVENT")
+        return lines
     }
 
     public static func utc(_ d: Date) -> String {
@@ -288,11 +378,13 @@ public actor CalendarMirrorEngine {
         var hash: String
         var revision: UInt64
         var start: Date
+        /// End of a series' last occurrence (distantFuture when it never ends); nil for one occurrence.
+        var last: Date?
     }
 
     struct CalendarState: Codable, Equatable {
         var collectionID: String
-        var entries: [String: Entry] = [:] // by MirrorEvent.key
+        var entries: [String: Entry] = [:] // by MirrorObject.key
     }
 
     struct State: Codable, Equatable {
@@ -378,14 +470,15 @@ public actor CalendarMirrorEngine {
         }
         // A failed listing throws; it must never look like "everything was deleted".
         let events = try await reader.events(calendarID: sel.calendarID, from: from, to: to)
+        let objects = MirrorSeries.objects(for: events, from: from, to: to)
         if cs.entries.isEmpty {
             // No local state (first run, or this Mac lost it): adopt what the
             // server copy already has, matched by UID, instead of duplicating it.
             let live = try await client.liveObjects(collectionID: col.id)
-            let keyByUID = Dictionary(events.map { ($0.uid, $0) }, uniquingKeysWith: { a, _ in a })
+            let byUID = Dictionary(objects.map { ($0.uid, $0) }, uniquingKeysWith: { a, _ in a })
             for obj in live.values {
-                if let uid = obj.uid, let e = keyByUID[uid] {
-                    cs.entries[e.key] = Entry(objectID: obj.objectId, hash: obj.contentHash, revision: obj.revision, start: e.start)
+                if let uid = obj.uid, let o = byUID[uid] {
+                    cs.entries[o.key] = Entry(objectID: obj.objectId, hash: obj.contentHash, revision: obj.revision, start: o.start, last: o.last)
                 } else if !events.isEmpty {
                     // Left over from an earlier copy: no longer on the Mac.
                     cs.entries["orphan:" + obj.objectId] = Entry(objectID: obj.objectId, hash: obj.contentHash, revision: obj.revision, start: from)
@@ -398,24 +491,34 @@ public actor CalendarMirrorEngine {
         var pending: [String: Entry] = [:] // object id → entry once its push succeeds
         var keyByObject: [String: String] = [:]
         var seen = Set<String>()
-        for e in events {
-            guard seen.insert(e.key).inserted else { continue }
-            let ics = Data(ICSWriter.calendar(for: e).utf8)
+        var seriesObjects = Set<String>() // series written as one object
+        for o in objects {
+            guard seen.insert(o.key).inserted else { continue }
+            if let s = o.seriesID { seriesObjects.insert(s) }
+            let ics = Data(o.ics.utf8)
             let hash = sha256Hex(ics)
-            let old = cs.entries[e.key]
+            let old = cs.entries[o.key]
             if let old, old.hash == hash { continue }
             _ = try await client.putBlob(ics)
             let objectID = old?.objectID ?? ULID.make()
             changes.append(.put(objectID: objectID, collectionID: col.id, kind: "event", baseRevision: old?.revision,
                                 blob: hash, size: ics.count,
-                                metadata: ["name": e.uid + ".ics", "uid": e.uid, "comp": "VEVENT"]))
-            pending[objectID] = Entry(objectID: objectID, hash: hash, revision: old?.revision ?? 0, start: e.start)
-            keyByObject[objectID] = e.key
+                                metadata: ["name": o.uid + ".ics", "uid": o.uid, "comp": "VEVENT"]))
+            pending[objectID] = Entry(objectID: objectID, hash: hash, revision: old?.revision ?? 0, start: o.start, last: o.last)
+            keyByObject[objectID] = o.key
+        }
+        // An entry is gone when it is not listed although it reaches into the
+        // window. Older single occurrences of a series now written as one
+        // object go too, or the phone would show them twice.
+        func stale(_ key: String, _ entry: Entry) -> Bool {
+            if seen.contains(key) { return false }
+            if let at = key.lastIndex(of: "@"), seriesObjects.contains(String(key[..<at])) { return true }
+            return entry.start <= to && (entry.last ?? entry.start) >= from
         }
         // EventKit lists nothing while access is off or an account is still
         // loading; keep the copy rather than emptying it.
         if !(events.isEmpty && !cs.entries.isEmpty) {
-            for (key, entry) in cs.entries where !seen.contains(key) && entry.start >= from && entry.start <= to {
+            for (key, entry) in cs.entries where stale(key, entry) {
                 changes.append(.delete(objectID: entry.objectID, collectionID: col.id, baseRevision: entry.revision))
                 keyByObject[entry.objectID] = key
             }

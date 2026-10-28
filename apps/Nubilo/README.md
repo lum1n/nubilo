@@ -136,8 +136,10 @@ only this Mac reaches (a work Exchange account): the chosen calendars are
 copied one way to server calendars marked as mirrors, which other devices
 see read-only (the server lets only this device write them). `MacCalendarMirror`
 runs `CalendarMirrorEngine` (NubiloKit) 30 s after `EKEventStoreChanged` and
-every 15 minutes; each occurrence from −30 to +365 days becomes its own
-event (`ICSWriter`), state is in Application Support
+every 15 minutes; events from −30 to +365 days are copied, a repeating
+event as one series (`MirrorSeries`: RRULE, EXDATE, RECURRENCE-ID
+overrides) or, when its rule cannot be written faithfully, as one event
+per occurrence (`ICSWriter`); state is in Application Support
 (`calendar-mirror.json`), and a Mac that lost it adopts the server copy by
 UID instead of duplicating it. Needs Calendar full access
 (`NSCalendarsFullAccessUsageDescription`, calendars entitlement).

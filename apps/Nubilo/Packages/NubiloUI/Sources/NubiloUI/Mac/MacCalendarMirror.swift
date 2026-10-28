@@ -23,7 +23,18 @@ final class EventKitCalendarReader: CalendarReading, @unchecked Sendable {
             throw NubiloError.http(status: 404, message: "This calendar is no longer on the Mac.")
         }
         let predicate = store.predicateForEvents(withStart: from, end: to, calendars: [cal])
-        return store.events(matching: predicate).map(Self.mirrorEvent)
+        var firstStarts: [String: Date] = [:] // series → its first occurrence's original start
+        return store.events(matching: predicate).map { e in
+            var m = Self.mirrorEvent(e)
+            if let series = m.seriesID, !m.recurrence.isEmpty, !e.isDetached {
+                if firstStarts[series] == nil, let id = e.eventIdentifier, let first = store.event(withIdentifier: id) {
+                    // For a repeating event this is its first occurrence.
+                    firstStarts[series] = first.occurrenceDate ?? first.startDate
+                }
+                m.seriesStart = firstStarts[series]
+            }
+            return m
+        }
     }
 
     static func mirrorEvent(_ e: EKEvent) -> MirrorEvent {
@@ -31,6 +42,10 @@ final class EventKitCalendarReader: CalendarReading, @unchecked Sendable {
         // stays put when a single occurrence is moved.
         let series = e.calendarItemExternalIdentifier ?? e.calendarItemIdentifier
         let occurrence = e.occurrenceDate ?? e.startDate ?? Date(timeIntervalSince1970: 0)
+        // A rule EventKit has no counterpart for here leaves the series as single occurrences.
+        let rules = e.hasRecurrenceRules ? (e.recurrenceRules ?? []) : []
+        let recurrence = rules.compactMap(Self.recurrence)
+        let repeating = !rules.isEmpty && recurrence.count == rules.count
         let status: String? = switch e.status {
         case .confirmed: "CONFIRMED"
         case .tentative: "TENTATIVE"
@@ -54,7 +69,35 @@ final class EventKitCalendarReader: CalendarReading, @unchecked Sendable {
             alarms: (e.alarms ?? []).map { a in
                 a.absoluteDate.map { MirrorAlarm(date: $0) } ?? MirrorAlarm(offset: a.relativeOffset)
             },
-            lastModified: e.lastModifiedDate)
+            lastModified: e.lastModifiedDate,
+            seriesID: repeating || e.isDetached ? series : nil,
+            occurrenceDate: e.occurrenceDate,
+            recurrence: repeating ? recurrence : [],
+            detached: e.isDetached)
+    }
+
+    static func recurrence(_ r: EKRecurrenceRule) -> MirrorRecurrence? {
+        let frequency: MirrorRecurrence.Frequency
+        switch r.frequency {
+        case .daily: frequency = .daily
+        case .weekly: frequency = .weekly
+        case .monthly: frequency = .monthly
+        case .yearly: frequency = .yearly
+        @unknown default: return nil
+        }
+        let ints = { (v: [NSNumber]?) in (v ?? []).map(\.intValue) }
+        return MirrorRecurrence(
+            frequency: frequency,
+            interval: r.interval,
+            daysOfTheWeek: (r.daysOfTheWeek ?? []).map { MirrorWeekday($0.dayOfTheWeek.rawValue, week: $0.weekNumber) },
+            daysOfTheMonth: ints(r.daysOfTheMonth),
+            monthsOfTheYear: ints(r.monthsOfTheYear),
+            weeksOfTheYear: ints(r.weeksOfTheYear),
+            daysOfTheYear: ints(r.daysOfTheYear),
+            setPositions: ints(r.setPositions),
+            firstDayOfTheWeek: r.firstDayOfTheWeek,
+            count: r.recurrenceEnd.flatMap { $0.occurrenceCount > 0 ? $0.occurrenceCount : nil },
+            until: r.recurrenceEnd?.endDate)
     }
 
     static func person(_ p: EKParticipant) -> MirrorPerson? {
