@@ -38,8 +38,9 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 
 ## Files
 
-- iPhone and iPad: Nubilo is a location in the Files app (File Provider extension in the app, signed sync API, no app password). Browse, open, add, edit, rename, move and delete files and folders, including folders shared with you (read-only ones are locked). Changes made elsewhere show up when Files refreshes (the app also asks it to when it comes to the foreground). Not yet: thumbnails, Camera Upload ingestion through Files (WebDAV only), offline pinning beyond what iOS keeps.
-- Finder (and other WebDAV clients) can mount `/dav/` (nested folders, file + collection COPY, MOVE across folders).
+- iPhone and iPad: Nubilo is a location in the Files app (File Provider extension in the app, signed sync API, no app password). Browse, open, add, edit, rename, move and delete files and folders, including folders shared with you (read-only ones are locked). Changes made elsewhere show up when Files refreshes (the app also asks it to when it comes to the foreground). Image files show thumbnails made by the server (JPEG, PNG, GIF, WebP, BMP, TIFF; HEIC, RAW and video have none yet). Not yet: Camera Upload ingestion through Files (WebDAV only), offline pinning beyond what iOS keeps.
+- Mac: the same File Provider extension puts Nubilo in Finder's sidebar (macOS File Provider, files download on open, thumbnails as above). Built and signed in Xcode only; not yet tried on a Mac. Not yet: trash (deletes are immediate), keeping files downloaded (pinning).
+- Finder without the app (and other WebDAV clients) can mount `/dav/` (nested folders, file + collection COPY, MOVE across folders).
 - Mac agent can sync selected local folders: `nubilo agent files add PATH`, `files on`. Nested dirs become nested collections; pull writes back to disk.
 - Agent configuration UI: `nubilo agent ui` (loopback, same look as `nubilo ui`) for folder selection and setup; CLI selection remains.
 - `nubilo ui` can upload into a files collection; files browser drills into nested subfolders (agent syncs nested dirs as child collections).
@@ -67,4 +68,4 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 
 - Hands-on phone/Finder restore drills remain operator actions; `nubilo doctor` surfaces the checklist in product.
 - Corporate credentials never leave the Mac. `nubilo agent` runs in the foreground on any OS; only its always-on install is macOS-only. GPS never lands in SQLite. Originals are never mutated.
-- iOS/macOS app (`apps/Nubilo`): onboarding by QR, CalDAV/CardDAV profile install, best-effort photo backup, gallery and shared albums, managing people and devices, Files app integration on iPhone/iPad. No Android app. Profiles are signed when the server holds a trusted certificate (relay, direct, Tailscale); proxy and LAN-only servers hand them out unsigned.
+- iOS/macOS app (`apps/Nubilo`): onboarding by QR, CalDAV/CardDAV profile install, best-effort photo backup, gallery and shared albums, managing people and devices, Files app integration on iPhone/iPad and in Finder on the Mac. No Android app. Profiles are signed when the server holds a trusted certificate (relay, direct, Tailscale); proxy and LAN-only servers hand them out unsigned.

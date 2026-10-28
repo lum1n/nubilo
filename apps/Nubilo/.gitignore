@@ -2,6 +2,7 @@
 Nubilo.xcodeproj/
 App/Info.plist
 FilesExtension/Info.plist
+FilesExtension/Info-macOS.plist
 # Per-developer signing settings (see README)
 project.local.yml
 # SwiftPM

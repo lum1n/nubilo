@@ -60,7 +60,14 @@ public struct KeychainKeyStore: KeyStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: tag,
         ]
-        if let accessGroup { q[kSecAttrAccessGroup as String] = accessGroup }
+        if let accessGroup {
+            q[kSecAttrAccessGroup as String] = accessGroup
+            #if os(macOS)
+            // Access groups only exist in the data protection keychain on
+            // macOS; the legacy file keychain ignores them.
+            q[kSecUseDataProtectionKeychain as String] = true
+            #endif
+        }
         return q
     }
 

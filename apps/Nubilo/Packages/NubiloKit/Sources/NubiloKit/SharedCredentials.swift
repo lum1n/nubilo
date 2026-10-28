@@ -66,12 +66,19 @@ public struct SharedCredentials: Sendable {
     }
 
     private func query() -> [String: Any] {
-        [
+        var q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: Self.account,
             kSecAttrAccessGroup as String: accessGroup,
         ]
+        #if os(macOS)
+        // The Finder extension reads these: access groups need the data
+        // protection keychain on macOS (and the keychain-access-groups
+        // entitlement, which needs a provisioning profile).
+        q[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        return q
     }
 }
 #endif

@@ -45,10 +45,16 @@ targets:
     dependencies:
       - package: NubiloKit
       - package: NubiloUI
-      # Nubilo in the Files app (iPhone and iPad only).
+      # Nubilo in the Files app (iPhone and iPad).
       - target: NubiloFiles
         embed: true
         platformFilters: [iOS]
+      # Nubilo in Finder (Mac). Same sources, separate target: an extension
+      # target has one platform, and the Mac one needs the App Sandbox and
+      # team-prefixed app group the iOS one does not.
+      - target: NubiloFilesMac
+        embed: true
+        platformFilters: [macOS]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.nubilo.app
@@ -130,7 +136,7 @@ targets:
       - path: FilesExtension
         excludes:
           - "*.entitlements"
-          - Info.plist
+          - "Info*.plist"
     dependencies:
       - package: NubiloKit
     settings:
@@ -151,6 +157,40 @@ targets:
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).FileProviderExtension
           NSExtensionFileProviderSupportsEnumeration: true
           NSExtensionFileProviderDocumentGroup: group.dev.nubilo.shared
+
+  # The Finder location (macOS File Provider). Shares FilesExtension/ with
+  # NubiloFiles. macOS app groups use the team-prefixed form
+  # ($(TeamIdentifierPrefix)dev.nubilo.shared), which needs no App Group
+  # registration in the developer portal; the keychain group is the same as
+  # on iOS. Both need a provisioning profile (automatic signing makes one).
+  NubiloFilesMac:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: FilesExtension
+        excludes:
+          - "*.entitlements"
+          - "Info*.plist"
+    dependencies:
+      - package: NubiloKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.nubilo.app.files-mac
+        PRODUCT_NAME: NubiloFilesMac
+        CODE_SIGN_ENTITLEMENTS: FilesExtension/NubiloFilesMac.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+    info:
+      path: FilesExtension/Info-macOS.plist
+      properties:
+        CFBundleDisplayName: Nubilo
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NubiloKeychainGroup: $(AppIdentifierPrefix)dev.nubilo.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).FileProviderExtension
+          NSExtensionFileProviderSupportsEnumeration: true
+          NSExtensionFileProviderDocumentGroup: $(TeamIdentifierPrefix)dev.nubilo.shared
 
 schemes:
   Nubilo:

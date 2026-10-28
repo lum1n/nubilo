@@ -10,6 +10,7 @@ devices. On the Mac it can also run the home server from the menu bar.
 apps/Nubilo
 ├── project.yml              XcodeGen spec (generates Nubilo.xcodeproj)
 ├── App/                     @main app, iOS app delegate, entitlements, asset catalog
+├── FilesExtension/          File Provider extension: Files app (NubiloFiles) and Finder (NubiloFilesMac)
 ├── Design/                  app icon sources (SVG); scripts/render-app-icon.sh renders them
 ├── Packages/NubiloKit/      API client, request signing, onboarding, photo backup engine
 ├── Packages/NubiloUI/       SwiftUI screens and the app model
@@ -44,6 +45,37 @@ then run `xcodegen`. Use `settings: {}` to pick the team in Xcode instead
 (lost on the next `xcodegen`). Signing is automatic. The bundle id is
 `dev.nubilo.app`; change `PRODUCT_BUNDLE_IDENTIFIER` in `project.yml` if that
 id is not available to your team.
+
+**Signing the File Provider extensions.** Two extension targets build from
+`FilesExtension/`: `NubiloFiles` (iOS, `dev.nubilo.app.files`, embedded in
+the iOS app) and `NubiloFilesMac` (macOS, `dev.nubilo.app.files-mac`,
+embedded in the Mac app under `Contents/PlugIns`). If you change the app's
+bundle id, keep the extensions' ids prefixed with it. Automatic signing
+registers the App IDs and creates the provisioning profiles; check in
+Signing & Capabilities that every target shows a profile and no red
+capability. What they need:
+
+| Target | Keychain group | App group | Other |
+| --- | --- | --- | --- |
+| Nubilo (iOS) | `$(AppIdentifierPrefix)dev.nubilo.shared` | `group.dev.nubilo.shared` | |
+| NubiloFiles (iOS) | same | `group.dev.nubilo.shared` | |
+| Nubilo (macOS) | same | `$(TeamIdentifierPrefix)dev.nubilo.shared` | App Sandbox off, Hardened Runtime |
+| NubiloFilesMac | same | `$(TeamIdentifierPrefix)dev.nubilo.shared` | App Sandbox on, outgoing network, Hardened Runtime |
+
+- iOS app groups (`group.…`) must exist in the developer portal; Xcode
+  registers them when the capability is added with automatic signing, or add
+  it under Certificates, Identifiers & Profiles → Identifiers → App Groups and
+  enable it on both iOS App IDs.
+- macOS uses the team-prefixed form, which needs no portal registration and is
+  what `NSExtensionFileProviderDocumentGroup` names in the Mac extension's
+  Info.plist (`FilesExtension/Info-macOS.plist`, generated).
+- The keychain group is shared through the data protection keychain on macOS
+  (`kSecUseDataProtectionKeychain`); the `keychain-access-groups` entitlement
+  makes the Mac app need a provisioning profile, which automatic signing
+  creates for development and for Developer ID ("Direct Distribution"). A Mac
+  build signed to run locally without a team will not launch with it.
+- For Developer ID distribution, notarize the app with the extension inside;
+  the extension is sandboxed and hardened, the app is hardened only.
 
 **The bundled server (macOS).** The Mac app runs the Go `nubilo` binary from
 `Nubilo.app/Contents/Helpers/nubilo`. A post-build step copies it from
@@ -97,19 +129,25 @@ in Safari, the only place iOS installs profiles from. A numbered guide covers
 Settings → Profile Downloaded → Install. Reminders ride on the CalDAV account.
 On the Mac the profile opens in the browser and installs from System Settings.
 
-**Files.** On iPhone and iPad, Nubilo is a location in the Files app: the
-`NubiloFiles` File Provider extension (`FilesExtension/`, a replicated
-`NSFileProviderReplicatedExtension`) lists the user's own and shared folders
+**Files.** On iPhone and iPad, Nubilo is a location in the Files app; on the
+Mac it is a location in Finder's sidebar (under ~/Library/CloudStorage).
+The File Provider extension (`FilesExtension/`, a replicated
+`NSFileProviderReplicatedExtension`, built as `NubiloFiles` for iOS and
+`NubiloFilesMac` for macOS) lists the user's own and shared folders
 and reads and writes files through the signed sync API (`FilesSession` in
 NubiloKit). The app shares its pairing and device key with the extension in
 the Keychain group `$(AppIdentifierPrefix)dev.nubilo.shared`
 (`SharedCredentials`), registers the location after pairing, and signals
 Files to look for changes when it comes to the foreground; the working set
 reports changes from the server journal plus folder renames, moves and
-deletes. Top-level items are folders only (files need a folder). The Files
-screen in the app opens the Files app and still shows the WebDAV address and
-a files-only app password for Finder (Go → Connect to Server) and other
-WebDAV apps.
+deletes. Top-level items are folders only (files need a folder). Image
+files (JPEG, PNG, GIF, WebP, BMP, TIFF; not HEIC) get thumbnails made by the
+server (`POST /sync/v1/thumb`). The Files screen in the app opens the Files
+app (iOS) or the Finder location (Mac, Show in Finder), can register the
+location again and says why it failed, and still shows the WebDAV address
+and a files-only app password for other WebDAV apps. On the Mac, if Nubilo
+is missing from the Finder sidebar, check System Settings → General → Login
+Items & Extensions → File Providers.
 
 **Photos.**
 - *Backup*: asks for Photos access, then shows how many assets are backed up,

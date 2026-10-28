@@ -45,7 +45,7 @@ public final class AppModel {
                 #if canImport(Photos) && canImport(SwiftData)
                 await BackupRuntime.shared.connect(client: client, tlsPin: paired.tlsPin)
                 #endif
-                #if os(iOS) && canImport(FileProvider)
+                #if (os(iOS) || os(macOS)) && canImport(FileProvider)
                 await FilesIntegration.connect(paired, keys: keys)
                 #endif
                 await refreshMe()
@@ -65,7 +65,7 @@ public final class AppModel {
             let fresh = try await client.me()
             me = fresh
             await follow(publicURL: fresh.publicUrl)
-            #if os(iOS) && canImport(FileProvider)
+            #if (os(iOS) || os(macOS)) && canImport(FileProvider)
             // The stored pairing may have gained a TLS pin since activation.
             if let current = store.load() {
                 await FilesIntegration.connect(current, keys: keys)
@@ -119,7 +119,7 @@ public final class AppModel {
         }
     }
 
-    #if os(iOS) && canImport(FileProvider)
+    #if (os(iOS) || os(macOS)) && canImport(FileProvider)
     /// Sets up the Files app location again; returns the problem, if any.
     public func setUpFilesLocation() async -> String? {
         guard let current = store.load() ?? server else { return "This device is not set up yet." }
@@ -139,7 +139,7 @@ public final class AppModel {
         #if os(macOS) && canImport(EventKit)
         await MacCalendarMirror.shared.signedOut()
         #endif
-        #if os(iOS) && canImport(FileProvider)
+        #if (os(iOS) || os(macOS)) && canImport(FileProvider)
         await FilesIntegration.disconnect()
         #endif
         if let server { try? keys.delete(tag: server.keyTag) }
