@@ -114,6 +114,7 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("POST /sync/v1/object", s.authed(s.handleObject))
 	mux.HandleFunc("POST /sync/v1/collection/update", s.authed(s.handleCollectionUpdate))
 	mux.HandleFunc("POST /sync/v1/collection/delete", s.authed(s.handleCollectionDelete))
+	mux.HandleFunc("POST /sync/v1/thumb", s.authed(s.handleThumb))
 	mux.HandleFunc("PUT /sync/v1/blob/{hash}", s.authedUpload(s.handleBlobPut))
 	mux.HandleFunc("GET /sync/v1/blob/{hash}", s.authed(s.handleBlobGet))
 	mux.HandleFunc("GET /api/v1/photos", s.authedAny(s.handlePhotosList))
