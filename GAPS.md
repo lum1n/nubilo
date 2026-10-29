@@ -7,7 +7,7 @@ Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 ## Works today
 
 - CalDAV (calendars and reminders) and CardDAV (contacts) for every device, with app passwords and Apple-trusted TLS.
-- WebDAV files, Mac agent folder sync, photo backup from the Mac and iPhone apps, photo HTTP API and `nubilo ui` gallery + upload.
+- WebDAV files, Mac agent folder sync, photo backup from the Mac and iPhone apps, photo HTTP API, `nubilo ui` gallery + upload, and the browser app at `/web/` (photos and files, signed in from a paired app).
 - Pairing, backup/restore (CLI + UI), enroll/rotate, TLS regen, verify, gc, optional server auto-backup.
 - Always-on user services: `nubilo server install` (Linux systemd `--user` or macOS LaunchAgent), `nubilo agent install` (macOS LaunchAgent running the current binary).
 - Guided setup + doctor: `nubilo setup`, `nubilo agent setup`, `nubilo doctor`, UI health panel; macOS agent keys in Keychain.

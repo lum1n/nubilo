@@ -179,9 +179,14 @@ GPS stays in the encrypted original; it is not stored in SQLite. Derivatives str
 ## Commands
 
 ```text
-nubilo setup | doctor | init | server | ui | status
+nubilo setup | doctor | init | server | ui | status | version
 nubilo server install|uninstall|service
+nubilo users list|add|disable|enable|role|quota|invite
+nubilo groups list|add|members|rename|delete
+nubilo relay init|run|install|uninstall|invite|members|revoke
 nubilo pair | devices | devices revoke|rename|password|enroll|rotate
+nubilo files|calendars|contacts [list|mkdir|create]    # --user USERNAME selects whose data
+nubilo photos [list]
 nubilo agent | agent setup|ui|install|uninstall|service
 nubilo agent files add|remove|list|on|off
 nubilo verify | gc | backup | restore | tls
