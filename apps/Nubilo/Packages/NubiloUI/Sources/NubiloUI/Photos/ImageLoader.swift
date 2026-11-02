@@ -127,6 +127,7 @@ struct RemoteImage: View {
     var contentMode = ContentMode.fill
 
     @Environment(AppModel.self) private var model
+    @Environment(\.photoLoadingPaused) private var paused
     @State private var image: PlatformImage?
     @State private var failed = false
 
@@ -150,16 +151,29 @@ struct RemoteImage: View {
                 Rectangle().fill(.quaternary)
             }
         }
-        .task(id: "\(rendition.rawValue)/\(photo.id)/\(photo.version(of: rendition) ?? "")") {
+        .task(id: "\(rendition.rawValue)/\(photo.id)/\(photo.version(of: rendition) ?? "")/\(paused)") {
             if let hit = ImageLoader.shared.cached(photo, rendition) {
                 image = hit
                 return
             }
-            guard !skipped, let client = model.client else { return }
+            guard !paused, !skipped, let client = model.client else { return }
             let loaded = await ImageLoader.shared.image(photo, rendition, client: client)
             guard !Task.isCancelled else { return }
             image = loaded
             failed = loaded == nil
         }
+    }
+}
+
+private struct PhotoLoadingPausedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Tiles show only images already in memory and fetch nothing, e.g.
+    /// while the timeline scrubber flies the grid past thousands of photos.
+    var photoLoadingPaused: Bool {
+        get { self[PhotoLoadingPausedKey.self] }
+        set { self[PhotoLoadingPausedKey.self] = newValue }
     }
 }
