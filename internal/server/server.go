@@ -54,6 +54,9 @@ type Server struct {
 }
 
 func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Authenticator, eng *syncengine.Engine, al *audit.Logger, log *slog.Logger, serverPub ed25519.PublicKey) *Server {
+	if a != nil {
+		a.Start()
+	}
 	s := &Server{
 		Cfg:           cfg,
 		Store:         st,
@@ -224,6 +227,13 @@ func (s *Server) rejectAuth(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, auth.ErrBodyRead) {
 		s.Log.Info("auth_failed", "err", err.Error(), "path", r.URL.Path)
 		http.Error(w, "incomplete body", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, auth.ErrBusy) || errors.Is(err, auth.ErrSignedBeforeStart) {
+		// The server's state, not the client's credentials: try again.
+		s.Log.Info("auth_retry", "err", err.Error(), "path", r.URL.Path)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "try again", http.StatusServiceUnavailable)
 		return
 	}
 	// Only count intentional auth abuse toward the ban window. Truncated uploads

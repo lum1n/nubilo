@@ -2,7 +2,6 @@ package auth
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -14,7 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"nubilo/internal/identity"
@@ -121,16 +120,35 @@ type Authenticator struct {
 	MaxBody  int64
 	Now      func() time.Time
 
-	// When expired nonces were last deleted (unix ms). Deleting on every
-	// request cost a second database write per request, which adds up when
-	// an app loads hundreds of thumbnails.
-	lastSweep atomic.Int64
+	// Nonces seen in the skew window, in memory. Keeping them in SQLite cost
+	// a synced write per request, and a gallery loading thumbnails sends
+	// hundreds at once: the writes queued past the busy timeout and signed
+	// requests failed with "database is locked".
+	nonceMu   sync.Mutex
+	nonces    map[nonceKey]int64
+	startedAt int64 // unix ms of Start; 0 without it
+	lastSweep int64
 }
 
-// nonceSweepEveryMS is how often expired nonces are deleted. Expired nonces
-// left in the table meanwhile are harmless: their timestamps fail the skew
-// check before the nonce is looked at.
-const nonceSweepEveryMS = 60_000
+type nonceKey struct{ device, nonce string }
+
+const (
+	// nonceSweepEveryMS is how often expired nonces are dropped. Expired
+	// ones kept meanwhile are harmless: their timestamps fail the skew check
+	// before the nonce is looked at.
+	nonceSweepEveryMS = 60_000
+	// maxNonces bounds the cache: at that size new requests are refused
+	// until old nonces expire, rather than growing without limit.
+	maxNonces = 1 << 20
+)
+
+var (
+	ErrBusy = errors.New("auth: too many requests")
+	// ErrSignedBeforeStart: the request was signed before this server
+	// process started remembering nonces (see consumeNonce). Not the
+	// client's fault; signing it again works.
+	ErrSignedBeforeStart = errors.New("auth: request signed before the server started")
+)
 
 func (a *Authenticator) AuthenticateRequest(r *http.Request) (*identity.Device, error) {
 	if tok := r.Header.Get("X-Nubilo-Admin"); tok != "" {
@@ -170,7 +188,7 @@ func (a *Authenticator) AuthenticateRequest(r *http.Request) (*identity.Device, 
 	if !ed25519.Verify(ed25519.PublicKey(dev.PublicKey), msg, h.Sig) {
 		return nil, ErrSignature
 	}
-	if err := a.consumeNonce(r.Context(), h.DeviceID, h.Nonce, h.TS); err != nil {
+	if err := a.consumeNonce(h.DeviceID, h.Nonce, h.TS); err != nil {
 		return nil, err
 	}
 	a.IDs.Touch(r.Context(), dev.ID)
@@ -198,19 +216,59 @@ func (a *Authenticator) adminDevice(r *http.Request, tok string) (*identity.Devi
 	}, nil
 }
 
-func (a *Authenticator) consumeNonce(ctx context.Context, deviceID, nonce string, ts int64) error {
-	_, err := a.Store.DB.ExecContext(ctx, `INSERT INTO nonces(device_id, nonce, ts) VALUES (?, ?, ?)`, deviceID, nonce, ts)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return ErrReplay
-		}
-		return err
-	}
+// Start begins remembering nonces. Call it when the server starts, before it
+// accepts requests: requests signed before then are refused for a while
+// (see consumeNonce). Without it the cache starts at the first request and
+// that guard is off.
+func (a *Authenticator) Start() {
+	a.nonceMu.Lock()
+	defer a.nonceMu.Unlock()
 	now := a.now().UnixMilli()
-	last := a.lastSweep.Load()
-	if now-last >= nonceSweepEveryMS && a.lastSweep.CompareAndSwap(last, now) {
-		_, _ = a.Store.DB.ExecContext(ctx, `DELETE FROM nonces WHERE ts < ?`, now-2*a.SkewMS)
+	a.startLocked(now)
+	if a.startedAt == 0 {
+		a.startedAt = now
 	}
+}
+
+func (a *Authenticator) startLocked(now int64) {
+	if a.nonces == nil {
+		a.nonces = map[nonceKey]int64{}
+		a.lastSweep = now
+	}
+}
+
+// consumeNonce accepts a nonce once per device within the skew window.
+//
+// The cache lives in memory, so a restart forgets it. To keep "once"
+// across restarts, for two skew windows after the first request the server
+// also refuses requests signed before that: every request it accepts then
+// was signed after the cache started, and a request captured before a
+// restart cannot be replayed after it.
+func (a *Authenticator) consumeNonce(deviceID, nonce string, ts int64) error {
+	now := a.now().UnixMilli()
+	a.nonceMu.Lock()
+	defer a.nonceMu.Unlock()
+	a.startLocked(now)
+	if a.startedAt != 0 && now-a.startedAt < 2*a.SkewMS && ts < a.startedAt {
+		return ErrSignedBeforeStart
+	}
+	if now-a.lastSweep >= nonceSweepEveryMS || len(a.nonces) >= maxNonces {
+		cutoff := now - 2*a.SkewMS
+		for k, seen := range a.nonces {
+			if seen < cutoff {
+				delete(a.nonces, k)
+			}
+		}
+		a.lastSweep = now
+	}
+	k := nonceKey{deviceID, nonce}
+	if _, seen := a.nonces[k]; seen {
+		return ErrReplay
+	}
+	if len(a.nonces) >= maxNonces {
+		return ErrBusy
+	}
+	a.nonces[k] = ts
 	return nil
 }
 

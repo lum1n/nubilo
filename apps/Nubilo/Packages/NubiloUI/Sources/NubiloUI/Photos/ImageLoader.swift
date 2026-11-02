@@ -11,9 +11,13 @@ import NubiloKit
 ///   zooming in, only the last few.
 /// - A download nobody waits for any more (its tile scrolled away) is
 ///   cancelled.
+/// - Thumbnails download a few at a time, newest request first, so a fast
+///   scroll asks the server only for what stays on screen.
 @MainActor
 final class ImageLoader {
     static let shared = ImageLoader()
+
+    private let thumbnailGate = FetchGate(limit: 6)
 
     private let cache = NSCache<NSString, PlatformImage>()
     private let originals = NSCache<NSString, PlatformImage>()
@@ -57,8 +61,15 @@ final class ImageLoader {
             flight = running
         } else {
             let max = Self.maxPixels(rendition)
+            // Previews and originals are what the viewer is showing: never
+            // queue them behind thumbnails.
+            let gate = rendition == .thumb ? thumbnailGate : nil
             flight = Flight(task: Task.detached(priority: .userInitiated) {
-                guard let data = try? await client.photoData(photo, rendition: rendition), !Task.isCancelled else { return nil }
+                if let gate, !(await gate.acquire()) { return nil }
+                var data: Data?
+                if !Task.isCancelled { data = try? await client.photoData(photo, rendition: rendition) }
+                if let gate { await gate.release() }
+                guard let data, !Task.isCancelled else { return nil }
                 return Self.decode(data, maxPixels: max)
             })
             inFlight[key] = flight
@@ -115,6 +126,51 @@ final class ImageLoader {
         #else
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         #endif
+    }
+}
+
+/// Lets `limit` downloads run at once. Others wait, and the most recent
+/// waiter goes next: in a scrolling grid that is the tile just shown. A
+/// waiter cancelled before its turn (the tile left the screen) leaves the
+/// queue without touching the network.
+@MainActor
+final class FetchGate {
+    private let limit: Int
+    private var running = 0
+    private var waiting: [(id: UInt64, resume: CheckedContinuation<Bool, Never>)] = []
+    private var nextID: UInt64 = 0
+
+    init(limit: Int) { self.limit = limit }
+
+    /// Waits for a slot. False when cancelled first; then there is nothing
+    /// to release.
+    func acquire() async -> Bool {
+        if Task.isCancelled { return false }
+        if running < limit {
+            running += 1
+            return true
+        }
+        nextID += 1
+        let id = nextID
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { waiting.append((id, $0)) }
+        } onCancel: {
+            Task { @MainActor in self.drop(id) }
+        }
+    }
+
+    /// Frees a slot taken by `acquire`, handing it to the newest waiter.
+    func release() {
+        if let next = waiting.popLast() {
+            next.resume.resume(returning: true)
+        } else {
+            running -= 1
+        }
+    }
+
+    private func drop(_ id: UInt64) {
+        guard let i = waiting.firstIndex(where: { $0.id == id }) else { return }
+        waiting.remove(at: i).resume.resume(returning: false)
     }
 }
 

@@ -188,3 +188,47 @@ func FuzzParseAuthorization(f *testing.F) {
 		_, _ = auth.ParseAuthorization(s)
 	})
 }
+
+func TestNoncesAfterRestart(t *testing.T) {
+	a, dev, priv := harness(t)
+	start := time.Now()
+	clock := start
+	a.Now = func() time.Time { return clock }
+	a.Start()
+	req := func(ts time.Time, nonce string) error {
+		hdr := auth.SignRequest(priv, dev.ID, "GET", "/api/v1/status", nil, ts.UnixMilli(), nonce)
+		r := httptest.NewRequest("GET", "/api/v1/status", nil)
+		r.Header.Set("Authorization", hdr)
+		_, err := a.AuthenticateRequest(r)
+		return err
+	}
+	// Signed before this process started: it may have been accepted by the
+	// previous one, whose nonces are gone.
+	if err := req(start.Add(-time.Second), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"); !errors.Is(err, auth.ErrSignedBeforeStart) {
+		t.Fatalf("signed before start: %v", err)
+	}
+	if auth.CountsTowardFailLimit(auth.ErrSignedBeforeStart) {
+		t.Fatal("a restart must not count against the client")
+	}
+	if err := req(start, "cccccccccccccccccccccccccccccccc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := req(start, "cccccccccccccccccccccccccccccccc"); !errors.Is(err, auth.ErrReplay) {
+		t.Fatalf("replay: %v", err)
+	}
+	// Nothing is written to the database per request.
+	var n int
+	if err := a.Store.DB.QueryRow(`SELECT COUNT(*) FROM nonces`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("nonce rows %d %v", n, err)
+	}
+	// Two windows later every valid timestamp is after the start anyway.
+	clock = start.Add(3 * time.Minute)
+	if err := req(clock.Add(-30*time.Second), "dddddddddddddddddddddddddddddddd"); err != nil {
+		t.Fatal(err)
+	}
+	// Expired nonces are dropped, and stay refused by the skew check.
+	clock = start.Add(10 * time.Minute)
+	if err := req(start, "cccccccccccccccccccccccccccccccc"); !errors.Is(err, auth.ErrSkew) {
+		t.Fatalf("old request: %v", err)
+	}
+}
