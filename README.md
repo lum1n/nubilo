@@ -163,6 +163,18 @@ nubilo status --data-dir ~/.nubilo
 
 UI can create/download backups and restore to an empty **non-live** destination. Restoring onto the running data dir is CLI-only after stop.
 
+### Updates
+
+The server updates itself from signed GitHub releases: by default at night (03:00–05:00, local time), or when an admin presses **Update** in the app or runs `nubilo update install`. It checks the signature, runs the new version's migrations on a copy of the database, backs up the database and wired state to `backups/update-*`, swaps the binary (keeping `nubilo.prev`) and restarts. If the new version is not serving within two minutes (or keeps crashing), it puts the previous binary and data back on its own.
+
+```bash
+nubilo update                      # current, available, last result
+nubilo update check | install      # ask the running server
+nubilo update rollback             # back to the previous version by hand
+```
+
+It won't install on its own when a release changes the relay's wired protocol (update relay and server together, docs/RELAY.md), or when the server runs inside the Mac app (update the app). Releases: push a tag `vX.Y.Z`; `.github/workflows/release.yml` builds, signs and publishes.
+
 ## Photos API
 
 With a signing device or `--scope photos` app password:

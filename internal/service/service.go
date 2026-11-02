@@ -108,6 +108,12 @@ func ProgramArgs(s Spec) []string {
 	return args
 }
 
+// GuardArgs is the update guard run before the service starts: the binary
+// kept from before the last update (Exe + ".prev").
+func GuardArgs(s Spec) []string {
+	return []string{s.Exe + ".prev", "update", "guard", "--data-dir", s.DataDir}
+}
+
 // ValidateSpec checks required absolute paths.
 func ValidateSpec(s Spec) error {
 	if s.Exe == "" || !filepath.IsAbs(s.Exe) {
@@ -182,6 +188,14 @@ func RenderSystemdUnit(s Spec) (string, error) {
 	b.WriteString("Wants=network-online.target\n\n")
 	b.WriteString("[Service]\n")
 	b.WriteString("Type=simple\n")
+	if s.Kind == KindServer || s.Kind == KindRelay {
+		// After an update, the previous binary checks before each start
+		// that the new one came up, and rolls back if it keeps failing
+		// (internal/update). "-": no previous binary, nothing to check.
+		b.WriteString("ExecStartPre=-")
+		b.WriteString(shellJoin(GuardArgs(s)))
+		b.WriteString("\n")
+	}
 	b.WriteString("ExecStart=")
 	b.WriteString(execStart)
 	b.WriteString("\n")

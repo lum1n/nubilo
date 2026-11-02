@@ -21,3 +21,6 @@ func Uninstall(k Kind) error {
 func Status(k Kind) (Info, error) {
 	return Info{Kind: k, Detail: "unsupported on " + runtime.GOOS}, fmt.Errorf("service: always-on status is not supported on %s", runtime.GOOS)
 }
+
+// Refresh is unsupported on this OS.
+func Refresh(s Spec) (bool, error) { return false, nil }

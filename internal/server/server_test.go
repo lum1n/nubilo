@@ -27,6 +27,12 @@ import (
 
 func start(t *testing.T) (*httptest.Server, *identity.Service, *store.Store) {
 	t.Helper()
+	ts, idsvc, st, _ := startServer(t)
+	return ts, idsvc, st
+}
+
+func startServer(t *testing.T) (*httptest.Server, *identity.Service, *store.Store, *server.Server) {
+	t.Helper()
 	ncrypto.Argon2Memory = 8
 	ncrypto.Argon2Time = 1
 	dir := t.TempDir()
@@ -47,7 +53,7 @@ func start(t *testing.T) (*httptest.Server, *identity.Service, *store.Store) {
 	srv := server.New(cfg, st, idsvc, a, eng, &audit.Logger{Store: st, Slog: log}, log, pub)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts, idsvc, st
+	return ts, idsvc, st, srv
 }
 
 func TestUnauthenticatedAPI(t *testing.T) {

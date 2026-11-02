@@ -75,7 +75,15 @@ cp "$BUILT" "$LIB"
 WORK="$TMP/go.work"
 printf 'go 1.26.0\n\nuse (\n\t%s\n\t%s\n)\n' "$ROOT" "$BIND" > "$WORK"
 mkdir -p "$(dirname "$OUT")"
+# The wire protocol: nodes on different ones cannot reach each other, and the
+# updater won't install a release that changes it behind the relay's back.
+PROTOCOL="$(sed -n 's/^pub const PROTOCOL_VERSION: u8 = \([0-9]*\);/\1/p' "$SRC/crates/wired-core/src/proto.rs")"
+LDFLAGS="-X nubilo/internal/wiredx.Commit=$COMMIT -X nubilo/internal/wiredx.Protocol=$PROTOCOL"
+# NUBILO_VERSION (release builds) sets the version the updater compares.
+if [[ -n "${NUBILO_VERSION:-}" ]]; then
+  LDFLAGS="$LDFLAGS -X nubilo/internal/version.String=$NUBILO_VERSION"
+fi
 GOWORK="$WORK" CGO_ENABLED=1 GOOS="$GOOS_T" GOARCH="$GOARCH_T" go build -tags wired -trimpath \
-  -ldflags "-X nubilo/internal/wiredx.Commit=$COMMIT" -o "$OUT" "$ROOT/cmd/nubilo"
-echo "built $OUT ($TARGET, wired ${COMMIT:0:12})"
+  -ldflags "$LDFLAGS" -o "$OUT" "$ROOT/cmd/nubilo"
+echo "built $OUT ($TARGET, wired ${COMMIT:0:12}, protocol $PROTOCOL)"
 "$OUT" version 2>/dev/null || true

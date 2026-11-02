@@ -28,6 +28,7 @@ import (
 	"nubilo/internal/photos"
 	"nubilo/internal/server"
 	"nubilo/internal/service"
+	"nubilo/internal/update"
 	"nubilo/internal/version"
 	"nubilo/internal/wiredx"
 )
@@ -79,6 +80,8 @@ func Main(args []string) int {
 		return runUsers(g, rest)
 	case "groups":
 		return runGroups(g, rest)
+	case "update":
+		return runUpdate(g, rest)
 	case "relay":
 		return runRelay(g, rest)
 	case "verify":
@@ -176,6 +179,7 @@ Usage:
   nubilo agent files remove PATH
   nubilo status [--json]
   nubilo relay init --public-host HOST [--home NAME]   # on the VPS
+  nubilo update [status|check|install|rollback]   # new releases (installs at night by default)
   nubilo relay run|install|uninstall
   nubilo relay invite [--rotate] | members | revoke NAME
   nubilo users [list]
@@ -303,6 +307,14 @@ func runServer(g global, args []string) int {
 	if err != nil {
 		return fatal(err)
 	}
+	// Before anything opens the data: finish a rollback, or count this
+	// start of a freshly installed binary.
+	if restart, err := update.Boot(dir, version.String, time.Now()); err != nil {
+		fmt.Fprintln(os.Stderr, "update:", err)
+	} else if restart {
+		fmt.Fprintln(os.Stderr, "update: rolled back to the previous version; restarting")
+		return exitRestart
+	}
 	rt, err := app.Open(dir)
 	if err != nil {
 		return fatal(err)
@@ -314,20 +326,116 @@ func runServer(g global, args []string) int {
 	srv := server.New(rt.Cfg, rt.Store, rt.IDs, rt.Auth, rt.Engine, rt.Audit, rt.Log, rt.ServerPub)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	restart := make(chan string, 1)
+	srv.Updater = newUpdater(rt, dir, func() { restart <- "update installed" })
+	if srv.Updater != nil {
+		go srv.Updater.Run(ctx)
+		go watchUpdate(ctx, srv, dir, rt, restart)
+	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Run(ctx) }()
-	select {
-	case <-ctx.Done():
+	shutdown := func() {
 		shctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shctx)
+	}
+	select {
+	case <-ctx.Done():
+		shutdown()
 		return 0
+	case why := <-restart:
+		rt.Log.Info("restart", "why", why)
+		shutdown()
+		return exitRestart
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
 			return fatal(err)
 		}
 	}
 	return 0
+}
+
+// exitRestart asks the service manager to start nubilo again (systemd's
+// Restart=on-failure and launchd's KeepAlive both do): after an update, the
+// new binary; after a rollback, the old one.
+const exitRestart = 75
+
+// newUpdater sets up release updates for this server, or nil when this
+// binary cannot replace itself.
+func newUpdater(rt *app.Runtime, dir string, restart func()) *update.Manager {
+	exe, err := service.ResolveExe()
+	if err != nil {
+		rt.Log.Warn("update_disabled", "err", err.Error())
+		return nil
+	}
+	wired := rt.Cfg.Public.Relay.StateDir
+	if wired == "" {
+		wired = config.Paths(dir).Wired
+	}
+	relayProtocol := ""
+	if rt.Cfg.Public.Relay.Invite != "" {
+		relayProtocol = wiredx.Protocol
+	}
+	// Units installed before the updater lack the guard; bring them up to
+	// date (takes effect at the next start).
+	if changed, err := service.Refresh(service.Spec{Kind: service.KindServer, Exe: exe, DataDir: dir}); err != nil {
+		rt.Log.Warn("service_refresh", "err", err.Error())
+	} else if changed {
+		rt.Log.Info("service_refresh", "unit", service.KindServer.UnitName())
+	}
+	return &update.Manager{
+		DataDir: dir,
+		Current: version.String,
+		Source:  update.DefaultSource(),
+		Install: update.Installer{
+			DataDir:  dir,
+			Exe:      exe,
+			WiredDir: wired,
+			Snapshot: func(ctx context.Context, path string) error {
+				_, err := rt.Store.DB.ExecContext(ctx, `VACUUM INTO ?`, path)
+				return err
+			},
+		},
+		RelayProtocol: relayProtocol,
+		Restart:       restart,
+		Log:           rt.Log,
+	}
+}
+
+// watchUpdate finishes an update this binary was just installed by: it
+// must report healthy within update.HealthyWithin, or it goes back to the
+// previous version.
+func watchUpdate(ctx context.Context, srv *server.Server, dir string, rt *app.Runtime, restart chan<- string) {
+	st, err := update.LoadState(dir)
+	if err != nil || st == nil || st.Phase != update.PhaseVerifying || st.To != version.String {
+		return
+	}
+	deadline := time.Now().Add(update.HealthyWithin)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+		if srv.Healthy() && rt.Store.DB.PingContext(ctx) == nil {
+			if err := update.Healthy(dir, version.String, time.Now()); err != nil {
+				rt.Log.Error("update_healthy", "err", err.Error())
+			} else {
+				rt.Log.Info("update_done", "from", st.From, "to", st.To)
+			}
+			return
+		}
+	}
+	why := fmt.Sprintf("%s did not become healthy within %s", st.To, update.HealthyWithin)
+	if srv.Cfg.Public.Relay.Invite != "" && !srv.Healthy() {
+		why += " (it could not join the relay)"
+	}
+	rt.Log.Error("update_rollback", "why", why)
+	if err := update.Rollback(dir, why, time.Now()); err != nil {
+		rt.Log.Error("update_rollback", "err", err.Error())
+		return
+	}
+	restart <- "rolling back"
 }
 
 func runServiceInstall(g global, kind service.Kind, insecure bool) int {
