@@ -97,7 +97,8 @@ type Installer struct {
 	Exe      string // the binary the service runs
 	WiredDir string // wired state, backed up with the database ("" = none)
 	// Snapshot writes a consistent copy of the live database to path
-	// (VACUUM INTO on the open store).
+	// (VACUUM INTO on the open store). Nil for a relay, which has none: the
+	// new binary is then only checked to run on this host.
 	Snapshot func(ctx context.Context, path string) error
 	// Run runs a binary; tests replace it.
 	Run func(ctx context.Context, bin string, args ...string) error
@@ -147,16 +148,19 @@ func (in Installer) Install(ctx context.Context, from string, m Manifest, newBin
 	}
 
 	step(StepInstalling)
-	schema, err := schemaOf(filepath.Join(in.DataDir, "metadata.db"))
-	if err != nil {
-		return err
-	}
+	schema := 0
 	backup := filepath.Join(in.DataDir, "backups", fmt.Sprintf("update-%s-to-%s-%d", from, m.Version, in.now().Unix()))
 	if err := os.MkdirAll(backup, 0o700); err != nil {
 		return err
 	}
-	if err := in.Snapshot(ctx, filepath.Join(backup, "metadata.db")); err != nil {
-		return fmt.Errorf("back up the database: %w", err)
+	if in.Snapshot != nil {
+		var err error
+		if schema, err = schemaOf(filepath.Join(in.DataDir, "metadata.db")); err != nil {
+			return err
+		}
+		if err := in.Snapshot(ctx, filepath.Join(backup, "metadata.db")); err != nil {
+			return fmt.Errorf("back up the database: %w", err)
+		}
 	}
 	if in.WiredDir != "" {
 		if err := copyDir(in.WiredDir, filepath.Join(backup, "wired")); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -188,8 +192,15 @@ func (in Installer) Install(ctx context.Context, from string, m Manifest, newBin
 	return nil
 }
 
-// preflight runs the new binary's migrations on a snapshot of the data.
+// preflight runs the new binary's migrations on a snapshot of the data,
+// or, without a database, just runs it: a binary built for a newer system
+// (glibc) fails here, not after the swap.
 func (in Installer) preflight(ctx context.Context, newBin string) error {
+	if in.Snapshot == nil {
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		return in.run(ctx, newBin, "version")
+	}
 	if err := os.MkdirAll(stateDir(in.DataDir), 0o700); err != nil {
 		return err
 	}

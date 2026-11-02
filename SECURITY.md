@@ -470,7 +470,8 @@ The browser app at `/web/` has no password. The page asks for a sign-in (`POST /
 - The private key is the `NUBILO_RELEASE_KEY` GitHub Actions secret: whoever controls the repository's Actions secrets or release workflow can ship code to every server that updates itself. That trade (automatic releases) was chosen over an offline key. Rotate by shipping the new public key in a release signed with the old one.
 - Installs are admin actions (`/api/v1/admin/update/*`, or the loopback admin token for `nubilo update`). Automatic installs can be turned off.
 - The new binary runs its migrations on a snapshot before it is installed, the database and wired state are backed up first, and a release that is not healthy within two minutes (or crashes three times; the previous binary checks before each start) is rolled back, database included when its schema changed. A rolled-back release is not retried automatically.
-- Test builds can add a signing key and release URL with `-ldflags -X`; release builds don't set them.
+- Relays: a relay installs only when an overlay member (its home server) asks, on the overlay service `nubilo-admin` (members only; wired authenticates and encrypts). A member can only ask for the newest release the relay itself finds and verifies with its own compiled-in keys, never a version or file of its choosing; at worst it picks the time. The relay reports healthy only when a member reconnects within 10 minutes, else it rolls back, so a home server that can't follow a protocol change gets its relay back.
+- Test builds can add a signing key, release URL and shorter relay deadline with `-ldflags -X`; release builds don't set them.
 
 ## 16. Security review gates
 

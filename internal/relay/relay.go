@@ -189,6 +189,12 @@ func Init(dir string, c Config) (string, error) {
 // Run anchors the overlay, forwards the configured ports, and serves the
 // local control socket until ctx ends.
 func Run(ctx context.Context, dir string, log *slog.Logger) error {
+	return RunWith(ctx, dir, log, nil)
+}
+
+// RunWith is Run, calling ready once the anchor and its listeners are up
+// (the updater hooks in there).
+func RunWith(ctx context.Context, dir string, log *slog.Logger, ready func(ctx context.Context, node wiredx.Node)) error {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -248,6 +254,9 @@ func Run(ctx context.Context, dir string, log *slog.Logger) error {
 	}
 	defer ctl.Close()
 	log.Info("relay_ready", "name", node.Name(), "public_host", c.PublicHost)
+	if ready != nil {
+		ready(ctx, node)
+	}
 	var first error
 	select {
 	case <-ctx.Done():
