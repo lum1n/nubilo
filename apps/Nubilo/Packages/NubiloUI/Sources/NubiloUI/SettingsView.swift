@@ -37,6 +37,7 @@ struct SettingsView: View {
                         LabeledContent("This device", value: me.device.name)
                     }
                 }
+                ServerUpdateSection()
             }
             #if os(macOS)
             Section {

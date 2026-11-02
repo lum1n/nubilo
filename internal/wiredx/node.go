@@ -16,6 +16,10 @@ import (
 // reach each other, so the home server and the relay should show the same.
 var Commit = ""
 
+// Protocol is the wired wire-protocol version this binary speaks, set by
+// scripts/build-wired.sh ("" in other builds).
+var Protocol = ""
+
 // ErrUnavailable means this binary was built without wired support.
 var ErrUnavailable = errors.New("wired: not built into this binary (rebuild with -tags wired)")
 

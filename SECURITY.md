@@ -464,6 +464,14 @@ The browser app at `/web/` has no password. The page asks for a sign-in (`POST /
 - XSS: `/web/` pages send a CSP without inline script or style (`script-src 'self'`), `X-Frame-Options: DENY`, `nosniff` and `no-referrer`; file downloads are always `application/octet-stream` attachments, and photo renditions are served only with an allowlisted image/video type (anything else, such as a client-claimed `text/html` or SVG, becomes `application/octet-stream`) plus `Content-Security-Policy: sandbox`, so stored data never renders or runs on the origin.
 - Residual risk: the device-code pattern can be phished — an attacker starts a sign-in and talks a user into approving it. The app shows the browser and IP and warns to approve only a sign-in the user started on a computer in front of them.
 
+## 15g. Self-updates
+
+- A server installs only a release whose `manifest.json` carries an Ed25519 signature from a key compiled into the running binary (`internal/update/key.go`). The manifest pins each platform binary's SHA-256 and size; the download is checked against them before anything runs it. GitHub, a mirror or the network can withhold updates, not substitute them.
+- The private key is the `NUBILO_RELEASE_KEY` GitHub Actions secret: whoever controls the repository's Actions secrets or release workflow can ship code to every server that updates itself. That trade (automatic releases) was chosen over an offline key. Rotate by shipping the new public key in a release signed with the old one.
+- Installs are admin actions (`/api/v1/admin/update/*`, or the loopback admin token for `nubilo update`). Automatic installs can be turned off.
+- The new binary runs its migrations on a snapshot before it is installed, the database and wired state are backed up first, and a release that is not healthy within two minutes (or crashes three times; the previous binary checks before each start) is rolled back, database included when its schema changed. A rolled-back release is not retried automatically.
+- Test builds can add a signing key and release URL with `-ldflags -X`; release builds don't set them.
+
 ## 16. Security review gates
 
 A subsystem is not "production-ready" if any of the following are known:

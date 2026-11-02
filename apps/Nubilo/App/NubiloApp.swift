@@ -50,6 +50,7 @@ struct NubiloApp: App {
         MenuBarExtra("Nubilo", systemImage: "cloud") {
             MenuBarView()
                 .environment(server)
+                .environment(model)
         }
         .menuBarExtraStyle(.window)
         #endif

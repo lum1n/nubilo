@@ -49,7 +49,7 @@ func EdgeHandler(relayBind string, dial func(context.Context) (net.Conn, error),
 			// a connection instead of opening dozens of overlay streams at
 			// once, which made dials to home time out.
 			MaxConnsPerHost: edgeMaxConns,
-			IdleConnTimeout:     90 * time.Second,
+			IdleConnTimeout: 90 * time.Second,
 		},
 		// Stream responses (photo downloads, long polls) as they arrive.
 		FlushInterval: -1,

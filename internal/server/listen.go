@@ -135,6 +135,9 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
+	s.mu.Lock()
+	s.listening = true
+	s.mu.Unlock()
 	go func() {
 		<-ctx.Done()
 		shctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

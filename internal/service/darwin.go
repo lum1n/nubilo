@@ -158,3 +158,7 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// Refresh is a no-op on macOS: the server there runs from inside Nubilo.app
+// and is updated with the app.
+func Refresh(s Spec) (bool, error) { return false, nil }

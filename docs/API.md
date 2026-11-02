@@ -121,6 +121,10 @@ Listings (`photos`, `photos/index`, album `items` and `index`) are gzipped for c
 | `DELETE /api/v1/admin/invites/{id}` | `{"revoked":id}` |
 | `GET /api/v1/admin/stats` | `{"users":[…],"blobs","blob_bytes"}` |
 | `POST /api/v1/admin/devices/{id}/revoke` | `{"revoked":id}` |
+| `GET /api/v1/admin/update` | `{"current","available":{"version","notes","published_at"}\|null,"auto","state":"idle\|checking\|downloading\|preflight\|installing\|restarting","progress"?,"blocked":"why it can't install, or empty","checked_at","next_auto_at","last":{"from","to","result":"updated\|rolled_back\|failed","message","at"}\|null}`; 404 when this server cannot update itself |
+| `POST /api/v1/admin/update/check` | status, after asking for the newest release (502 if the release server can't be reached) |
+| `POST /api/v1/admin/update/install` | 202 status; installs in the background and restarts. Poll `GET` until `current` changes or `last` reports the result (409 with the reason when nothing can be installed) |
+| `PUT /api/v1/admin/update/settings {"auto"}` | status; `auto` installs releases at night (on by default) |
 
 ## Sync (`/sync/v1`, signed)
 

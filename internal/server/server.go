@@ -21,6 +21,7 @@ import (
 	"nubilo/internal/ids"
 	"nubilo/internal/store"
 	"nubilo/internal/syncengine"
+	"nubilo/internal/update"
 	"nubilo/internal/wiredx"
 
 	"github.com/emersion/go-webdav"
@@ -51,6 +52,11 @@ type Server struct {
 	mu    sync.Mutex
 	extra []*http.Server // public listeners (direct, relay)
 	node  wiredx.Node
+	// listening: Run started every listener it could.
+	listening bool
+
+	// Updater installs new releases; nil disables the admin update API.
+	Updater *update.Manager
 }
 
 func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Authenticator, eng *syncengine.Engine, al *audit.Logger, log *slog.Logger, serverPub ed25519.PublicKey) *Server {
@@ -105,6 +111,10 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("POST /api/v1/admin/invites", s.authed(s.handleAdminCreateInvite))
 	mux.HandleFunc("DELETE /api/v1/admin/invites/{id}", s.authed(s.handleAdminRevokeInvite))
 	mux.HandleFunc("GET /api/v1/admin/stats", s.authed(s.handleAdminStats))
+	mux.HandleFunc("GET /api/v1/admin/update", s.authed(s.handleUpdateStatus))
+	mux.HandleFunc("POST /api/v1/admin/update/check", s.authed(s.handleUpdateCheck))
+	mux.HandleFunc("POST /api/v1/admin/update/install", s.authed(s.handleUpdateInstall))
+	mux.HandleFunc("PUT /api/v1/admin/update/settings", s.authed(s.handleUpdateSettings))
 	mux.HandleFunc("POST /api/v1/admin/devices/{id}/revoke", s.authed(s.handleAdminRevokeDevice))
 	mux.HandleFunc("GET /api/v1/devices", s.authed(s.handleDevices))
 	mux.HandleFunc("POST /api/v1/devices/{id}/revoke", s.authed(s.handleRevoke))
@@ -246,6 +256,21 @@ func (s *Server) rejectAuth(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	s.Log.Info("auth_failed", "err", err.Error(), "path", r.URL.Path)
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
+}
+
+// Healthy reports whether the server is serving: listeners up and, with a
+// relay configured, joined to it. A freshly updated binary must get here in
+// time or it is rolled back.
+func (s *Server) Healthy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.listening {
+		return false
+	}
+	if s.Cfg.Public.Relay.Invite != "" && s.node == nil {
+		return false
+	}
+	return true
 }
 
 func deviceFrom(r *http.Request) *identity.Device {

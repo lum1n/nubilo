@@ -210,6 +210,14 @@ scan or AirDrop to the new iPhone or Mac.
 `SMAppService`), and Sign Out, which revokes this device on the server,
 deletes its key and forgets the server and the backup state.
 
+**Server updates (admins).** Settings shows the home server's version, a
+release that is available with its notes, and **Update** (`ServerUpdate.swift`,
+`GET/POST /api/v1/admin/update…`). Installing polls the server through its
+restart and shows the outcome, including an automatic rollback. A toggle turns
+nightly automatic installs on or off. On the Mac the menu bar also shows
+"Update to x.y.z". Hidden for members and on servers without the updater
+(403/404).
+
 **Mac menu bar.** Server status from `nubilo server service`,
 `nubilo --json status` and `nubilo doctor --json`, with failing checks and
 their fixes; Start and Stop install and remove the server LaunchAgent

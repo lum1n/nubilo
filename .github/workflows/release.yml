@@ -1,0 +1,85 @@
+# Publishes a release servers update from (internal/update): push a tag
+# vX.Y.Z. Each platform's nubilo is built with wired at the commit go.mod
+# names; the manifest is signed with NUBILO_RELEASE_KEY and checked against
+# the public key compiled into nubilo before anything is published.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # Older Ubuntu = older glibc = runs on more Linux hosts.
+          - { runner: ubuntu-22.04, os: linux, arch: amd64 }
+          - { runner: ubuntu-22.04-arm, os: linux, arch: arm64 }
+          - { runner: macos-14, os: darwin, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/wired
+          path: wired
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NUBILO_VERSION="$VERSION" WIRED_DIR="$PWD/wired" \
+            scripts/build-wired.sh "dist/nubilo-${{ matrix.os }}-${{ matrix.arch }}"
+          dist/nubilo-${{ matrix.os }}-${{ matrix.arch }} version | grep -q "^$VERSION "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nubilo-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/nubilo-${{ matrix.os }}-${{ matrix.arch }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/wired
+          path: wired
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Manifest
+        env:
+          NUBILO_RELEASE_KEY: ${{ secrets.NUBILO_RELEASE_KEY }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          COMMIT="$(awk '$1 == "github.com/lum1n/wired/bindings/go" { print $2 }' go.mod | grep -oE '[0-9a-f]{12}$')"
+          PROTOCOL="$(git -C wired show "$COMMIT:crates/wired-core/src/proto.rs" | sed -n 's/^pub const PROTOCOL_VERSION: u8 = \([0-9]*\);/\1/p')"
+          # Release notes: the tag's message.
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
+          [ -s notes.md ] || echo "Nubilo $VERSION" > notes.md
+          chmod +x dist/nubilo-*
+          go run ./cmd/nubilo-release manifest -version "$VERSION" \
+            -base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
+            -notes notes.md -wired-protocol "$PROTOCOL" -wired-commit "$COMMIT" -out dist dist/nubilo-*
+          go run ./cmd/nubilo-release verify dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "Nubilo ${GITHUB_REF_NAME#v}" --notes-file notes.md

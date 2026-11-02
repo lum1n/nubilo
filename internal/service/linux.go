@@ -109,3 +109,52 @@ func Status(k Kind) (Info, error) {
 	}
 	return st, nil
 }
+
+// ErrCustomized: the installed unit is not one nubilo wrote, so Refresh
+// leaves it alone.
+var ErrCustomized = fmt.Errorf("service: the installed unit was edited by hand; not updating it")
+
+// Refresh rewrites an installed unit with the current template, without
+// restarting it, if it is what an earlier nubilo wrote (the same template
+// without the update guard). False when not installed or already current.
+func Refresh(s Spec) (bool, error) {
+	path, err := unitPath(s.Kind)
+	if err != nil {
+		return false, err
+	}
+	old, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	body, err := RenderSystemdUnit(s)
+	if err != nil {
+		return false, err
+	}
+	if string(old) == body {
+		return false, nil
+	}
+	// A unit that runs another binary or data directory is not this
+	// server's (a second server, or one started by hand).
+	if !strings.Contains(string(old), "\nExecStart="+shellJoin(append([]string{s.Exe}, ProgramArgs(s)...))+"\n") {
+		return false, nil
+	}
+	guard := "ExecStartPre=-" + shellJoin(GuardArgs(s)) + "\n"
+	if string(old) != strings.Replace(body, guard, "", 1) {
+		return false, ErrCustomized
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		return false, err
+	}
+	return true, daemonReload()
+}
+
+// daemonReload tells systemd about changed units; tests replace it.
+var daemonReload = func() error {
+	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}

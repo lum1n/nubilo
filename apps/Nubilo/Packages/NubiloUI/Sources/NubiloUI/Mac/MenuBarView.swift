@@ -1,15 +1,22 @@
 #if os(macOS)
 import SwiftUI
+import NubiloKit
 
 /// The menu bar window: server and agent health with start/stop and setup.
 public struct MenuBarView: View {
     @Environment(ServerController.self) private var server
+    @Environment(AppModel.self) private var app
     @Environment(\.openWindow) private var openWindow
+    @State private var update = ServerUpdateModel()
 
     public init() {}
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if update.supported, let release = update.status?.available {
+                updateRow(release)
+                Divider()
+            }
             serverSection
             Divider()
             agentSection
@@ -27,6 +34,16 @@ public struct MenuBarView: View {
         .padding()
         .frame(width: 340)
         .task { await server.refresh() }
+        .task(id: app.me?.user.isAdmin) {
+            guard app.me?.user.isAdmin != false else { return }
+            await update.load(client: app.client)
+        }
+        // Update errors go to the menu's one alert.
+        .onChange(of: update.error) { _, message in
+            guard let message else { return }
+            server.message = message
+            update.error = nil
+        }
         .alert("Nubilo", isPresented: Binding(get: { server.message != nil }, set: { if !$0 { server.message = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -79,6 +96,31 @@ public struct MenuBarView: View {
                 if server.busy { ProgressView().controlSize(.small) }
             }
             .disabled(server.busy || server.cli == nil)
+        }
+    }
+
+    /// The home server has an update (admins only).
+    private func updateRow(_ release: ServerUpdateStatus.Release) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(.tint)
+                Text("Update to \(release.version)").font(.headline)
+                Spacer()
+                if update.phaseText != nil {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Update") { Task { await update.install(client: app.client) } }
+                        .disabled(update.status?.blockedReason != nil)
+                }
+            }
+            if let phase = update.phaseText {
+                Text(phase).font(.caption).foregroundStyle(.secondary)
+            } else if let reason = update.status?.blockedReason {
+                Text(reason).font(.caption).foregroundStyle(.orange)
+            } else {
+                Text("For your Nubilo server. Details in Settings.").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
