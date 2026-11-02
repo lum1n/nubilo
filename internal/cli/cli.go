@@ -48,6 +48,9 @@ func Main(args []string) int {
 		wired := "no"
 		if wiredx.Available() {
 			wired = "yes"
+			if c := wiredx.Commit; len(c) >= 12 {
+				wired = c[:12]
+			}
 		}
 		fmt.Printf("%s (wired: %s)\n", version.String, wired)
 		return 0

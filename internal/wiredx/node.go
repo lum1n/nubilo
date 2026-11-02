@@ -11,6 +11,11 @@ import (
 	"net"
 )
 
+// Commit is the wired commit this binary links, set by
+// scripts/build-wired.sh. Nodes on different wired protocol versions cannot
+// reach each other, so the home server and the relay should show the same.
+var Commit = ""
+
 // ErrUnavailable means this binary was built without wired support.
 var ErrUnavailable = errors.New("wired: not built into this binary (rebuild with -tags wired)")
 
