@@ -11,6 +11,9 @@ struct PhotoGrid: View {
 
     @AppStorage("photos.tileSize") private var tileSize = PhotoGrid.tileSizes[1]
     @State private var scroll = TimelineScrollState()
+    /// The scrubber is being dragged: tiles fly past, so they show only
+    /// thumbnails already in memory and load the rest once it lets go.
+    @State private var scrubbing = false
 
     static let tileSizes: [Double] = [56, 96, 140, 200, 280]
 
@@ -34,11 +37,12 @@ struct PhotoGrid: View {
                         }
                     }
                 }
+                .environment(\.photoLoadingPaused, scrubbing)
                 LoadStatus(pager: pager)
             }
             .overlay(alignment: .trailing) {
                 if timeline.months.count > 1 {
-                    TimelineScrubber(timeline: timeline, scroll: scroll) { month in
+                    TimelineScrubber(timeline: timeline, scroll: scroll, scrubbing: $scrubbing) { month in
                         proxy.scrollTo(month.firstDayID, anchor: .top)
                     }
                 }
@@ -230,11 +234,13 @@ private struct JumpMenu: View {
 private struct TimelineScrubber: View {
     let timeline: PhotoTimeline
     let scroll: TimelineScrollState
+    @Binding var scrubbing: Bool
     let jump: (PhotoTimeline.Month) -> Void
 
     @State private var dragged: PhotoTimeline.Month?
     @State private var dragY: CGFloat = 0
     @State private var hovering = false
+    @State private var throttle = ScrubThrottle()
 
     private let inset: CGFloat = 16
     private let handleHeight: CGFloat = 32
@@ -301,6 +307,9 @@ private struct TimelineScrubber: View {
             .coordinateSpace(.named(Self.space))
         }
         .frame(width: 32)
+        // Animate the bubble and year marks coming and going, never the
+        // handle following the finger: that made the label trail behind.
+        .animation(.easeOut(duration: 0.2), value: dragged == nil)
         #if os(iOS)
         .sensoryFeedback(.selection, trigger: dragged?.id)
         #endif
@@ -315,14 +324,41 @@ private struct TimelineScrubber: View {
                 let y = min(max(value.location.y, inset), inset + track)
                 dragY = y
                 guard let month = timeline.month(atFraction: Double((y - inset) / track)) else { return }
+                if !scrubbing { scrubbing = true }
                 if month.id != dragged?.id {
-                    withAnimation(.easeOut(duration: 0.15)) { dragged = month }
-                    jump(month)
+                    dragged = month
+                    throttle.request(month, jump)
                 }
             }
             .onEnded { _ in
-                withAnimation(.easeOut(duration: 0.3)) { dragged = nil }
+                // Land exactly on the month let go on, then load its photos.
+                if let dragged { throttle.request(dragged, jump) }
+                dragged = nil
+                scrubbing = false
             }
+    }
+
+    /// Scrolling the grid lays out and starts loading whatever it lands on,
+    /// which takes longer than a fast drag spends on a month. Jumps go out at
+    /// most every `interval`, always to the month most recently asked for.
+    @MainActor
+    final class ScrubThrottle {
+        private var pending: PhotoTimeline.Month?
+        private var running: Task<Void, Never>?
+        private let interval = Duration.milliseconds(70)
+
+        func request(_ month: PhotoTimeline.Month, _ jump: @escaping (PhotoTimeline.Month) -> Void) {
+            pending = month
+            guard running == nil else { return }
+            running = Task { [weak self] in
+                while let self, let month = self.pending {
+                    self.pending = nil
+                    jump(month)
+                    try? await Task.sleep(for: self.interval)
+                }
+                self?.running = nil
+            }
+        }
     }
 
     private struct YearMark: Identifiable {
