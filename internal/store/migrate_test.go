@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	ncrypto "nubilo/internal/crypto"
@@ -94,7 +95,7 @@ func TestMigrateV1ToV2(t *testing.T) {
 	}
 	defer st.Close()
 	ctx := context.Background()
-	if v, err := st.SchemaVersion(ctx); err != nil || v != 2 {
+	if v, err := st.SchemaVersion(ctx); err != nil || v != 3 {
 		t.Fatalf("version %d %v", v, err)
 	}
 	var owner, role string
@@ -178,7 +179,7 @@ func TestFreshDatabaseHasNoUsers(t *testing.T) {
 	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("fresh db users %d %v", n, err)
 	}
-	if v, _ := st.SchemaVersion(context.Background()); v != 2 {
+	if v, _ := st.SchemaVersion(context.Background()); v != 3 {
 		t.Fatalf("fresh version %d", v)
 	}
 }
@@ -194,5 +195,32 @@ func TestOpenPathWithHash(t *testing.T) {
 	defer st.Close()
 	if _, err := os.Stat(filepath.Join(base, "m.db")); err != nil {
 		t.Fatalf("database not created at the escaped path: %v", err)
+	}
+}
+
+func TestLookupsUseIndexes(t *testing.T) {
+	st := open(t)
+	for query, index := range map[string]string{
+		`SELECT id FROM objects WHERE collection_id = 'c' AND deleted_at IS NULL AND blob_id = 'b'`:                          "objects_collection_blob",
+		`SELECT id FROM objects WHERE collection_id = 'c' AND deleted_at IS NULL AND json_extract(metadata, '$.name') = 'x'`: "objects_collection_name",
+		`SELECT id FROM objects WHERE collection_id = 'c' AND kind = 'k' AND json_extract(metadata, '$.photo_id') = 'p'`:     "objects_photo_id",
+	} {
+		rows, err := st.DB.Query(`EXPLAIN QUERY PLAN ` + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan strings.Builder
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan.WriteString(detail + "\n")
+		}
+		rows.Close()
+		if !strings.Contains(plan.String(), index) {
+			t.Errorf("%s\nplan:\n%s\nwant index %s", query, plan.String(), index)
+		}
 	}
 }

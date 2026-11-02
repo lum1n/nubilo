@@ -109,6 +109,47 @@ public struct Photo: Codable, Sendable, Identifiable, Hashable {
     public var takenAt: Date? { takenAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
 }
 
+public enum PhotoRendition: String, Sendable, CaseIterable {
+    case thumb, preview, original
+}
+
+extension Photo {
+    public var isVideo: Bool { kind == "video" || (mime?.hasPrefix("video/") ?? false) }
+
+    /// The content hash of a rendition, used to version its URL. Without a
+    /// thumbnail or preview the server sends the original instead.
+    public func version(of rendition: PhotoRendition) -> String? {
+        switch rendition {
+        case .thumb: return thumbHash ?? checksum
+        case .preview: return previewHash ?? checksum
+        case .original: return checksum
+        }
+    }
+
+    /// Whether a rendition would download the original because the server
+    /// made no smaller one: a whole video, or a RAW file, for a tile.
+    public func fallsBackToOriginal(_ rendition: PhotoRendition) -> Bool {
+        switch rendition {
+        case .thumb: return thumbHash == nil
+        case .preview: return previewHash == nil
+        case .original: return true
+        }
+    }
+}
+
+/// `GET /api/v1/photos/index` and `/api/v1/albums/{id}/index`.
+public struct PhotoIndex: Codable, Sendable {
+    public var photos: [Photo]
+}
+
+public enum PhotoIndexResult: Sendable {
+    case notModified
+    case photos([Photo], etag: String?)
+}
+
+/// The server predates the photo index; page through the list instead.
+public struct PhotoIndexUnavailable: Error, Equatable {}
+
 public struct PhotoPage: Codable, Sendable {
     public var photos: [Photo]
     public var next: String?

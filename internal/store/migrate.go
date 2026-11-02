@@ -21,6 +21,7 @@ type migration struct {
 
 var migrations = []migration{
 	{Version: 2, Name: "multi-user", Up: migrateV2},
+	{Version: 3, Name: "object lookup indexes", Up: migrateV3},
 }
 
 // SchemaVersion returns the highest applied schema version.
@@ -312,4 +313,16 @@ func recountBlobRefs(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+// migrateV3 indexes the lookups that ran once per photo during backup and
+// scanned the whole library: by blob (photos/check, commit dedupe), by name
+// (commit), and album items by source photo.
+func migrateV3(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS objects_collection_blob ON objects(collection_id, blob_id);
+		CREATE INDEX IF NOT EXISTS objects_collection_name ON objects(collection_id, json_extract(metadata, '$.name'));
+		CREATE INDEX IF NOT EXISTS objects_photo_id ON objects(json_extract(metadata, '$.photo_id'));
+	`)
+	return err
 }

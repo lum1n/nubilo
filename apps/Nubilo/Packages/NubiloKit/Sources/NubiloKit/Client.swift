@@ -37,14 +37,46 @@ public struct URLSessionTransport: HTTPTransport {
 
     public init(session: URLSession = .shared) { self.session = session }
 
+    /// Cancelling the calling task cancels the request: a photo tile that
+    /// scrolls away stops its download.
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        try await withCheckedThrowingContinuation { cont in
-            session.dataTask(with: request) { data, resp, err in
-                if let err { return cont.resume(throwing: err) }
-                guard let http = resp as? HTTPURLResponse else { return cont.resume(throwing: NubiloError.invalidResponse) }
-                cont.resume(returning: (data ?? Data(), http))
-            }.resume()
+        let handle = CancellableTask()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                let task = session.dataTask(with: request) { data, resp, err in
+                    if let err { return cont.resume(throwing: err) }
+                    guard let http = resp as? HTTPURLResponse else { return cont.resume(throwing: NubiloError.invalidResponse) }
+                    cont.resume(returning: (data ?? Data(), http))
+                }
+                handle.set(task)
+                task.resume()
+            }
+        } onCancel: {
+            handle.cancel()
         }
+    }
+}
+
+/// A data task that may be cancelled before it exists.
+private final class CancellableTask: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+    private var cancelled = false
+
+    func set(_ task: URLSessionDataTask) {
+        lock.lock()
+        self.task = task
+        let cancelled = self.cancelled
+        lock.unlock()
+        if cancelled { task.cancel() }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let task = self.task
+        lock.unlock()
+        task?.cancel()
     }
 }
 
@@ -181,6 +213,65 @@ public final class NubiloClient: Sendable {
         try await raw("GET", "/api/v1/photos/\(id)/\(rendition)")
     }
 
+    /// Bytes of a rendition, at a URL that names its content so the URL cache
+    /// may keep it for good (docs/API.md).
+    public func photoData(_ photo: Photo, rendition: PhotoRendition) async throws -> Data {
+        try await raw("GET", Self.renditionPath(photo, rendition))
+    }
+
+    /// `/api/v1/photos/{id}/{rendition}?v=<hash>`; without `v` when the hash
+    /// is unknown. A rendition the server could not make falls back to the
+    /// original, so the original's checksum versions it then.
+    public static func renditionPath(_ photo: Photo, _ rendition: PhotoRendition) -> String {
+        let path = "/api/v1/photos/\(photo.id)/\(rendition.rawValue)"
+        guard let v = photo.version(of: rendition), !v.isEmpty else { return path }
+        return path + "?v=" + v.queryEscaped
+    }
+
+    /// The whole library in one response. Pass the ETag of the copy you
+    /// have; `.notModified` means it is still current.
+    public func photoIndex(etag: String?) async throws -> PhotoIndexResult {
+        try await index("/api/v1/photos/index", etag: etag)
+    }
+
+    /// Every item of an album in one response.
+    public func albumIndex(_ id: String, etag: String?) async throws -> PhotoIndexResult {
+        try await index("/api/v1/albums/\(id)/index", etag: etag)
+    }
+
+    private func index(_ path: String, etag: String?) async throws -> PhotoIndexResult {
+        var req = try request("GET", path)
+        // The ETag is ours to send; a cached 200 would hide a 304.
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        if let etag, !etag.isEmpty { req.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        let (data, resp) = try await transport.send(req)
+        switch resp.statusCode {
+        case 304:
+            return .notModified
+        case 200..<300:
+            let page = try Self.decoder.decode(PhotoIndex.self, from: data)
+            return .photos(page.photos, etag: resp.value(forHTTPHeaderField: "ETag"))
+        case 404:
+            throw PhotoIndexUnavailable()
+        default:
+            let msg = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NubiloError.http(status: resp.statusCode, message: msg)
+        }
+    }
+
+    /// Thumbnail and preview made on this device for a photo the server
+    /// could not decode (HEIC, video). Blobs must be PUT first.
+    @discardableResult
+    public func attachDerivatives(_ photoID: String, thumbBlob: String?, previewBlob: String?) async throws -> Photo {
+        try await call("POST", "/api/v1/photos/\(photoID)/derivatives",
+                       json: Derivatives(thumbBlob: thumbBlob, previewBlob: previewBlob))
+    }
+
+    struct Derivatives: Encodable {
+        var thumbBlob: String?
+        var previewBlob: String?
+    }
+
     public func missingPhotos(hashes: [String], auth: RequestAuth = .signed) async throws -> [String] {
         try await call("POST", "/api/v1/photos/check", json: ["hashes": hashes], auth: auth, as: Wrapped<[String]>.self).value("missing")
     }
@@ -201,13 +292,20 @@ public final class NubiloClient: Sendable {
         public var takenAt: Int64?
         public var localId: String?
         public var liveVideoBlob: String?
+        /// Derivatives made on the device. Servers before the photo index
+        /// reject unknown fields, so leave these nil unless the server is new.
+        public var thumbBlob: String?
+        public var previewBlob: String?
 
-        public init(blobId: String, name: String, takenAt: Int64? = nil, localId: String? = nil, liveVideoBlob: String? = nil) {
+        public init(blobId: String, name: String, takenAt: Int64? = nil, localId: String? = nil, liveVideoBlob: String? = nil,
+                    thumbBlob: String? = nil, previewBlob: String? = nil) {
             self.blobId = blobId
             self.name = name
             self.takenAt = takenAt
             self.localId = localId
             self.liveVideoBlob = liveVideoBlob
+            self.thumbBlob = thumbBlob
+            self.previewBlob = previewBlob
         }
     }
 

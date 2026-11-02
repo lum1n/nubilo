@@ -120,10 +120,26 @@ WebDAV apps.
   Mac there are no background tasks: `MacBackupLoop` runs a pass at launch, a
   minute after Photos.app reports a change, and every 30 minutes while the
   app runs (Settings → Open at Login keeps it running). The charging and
-  mobile-data settings are iOS only.
-- *Library*: a paged grid of the server library with thumbnails (memory cache
-  plus a 500 MB URL cache) and a preview on tap. Select photos to add them to
-  an album.
+  mobile-data settings are iOS only. The server cannot decode HEIC or video,
+  so when a commit comes back without a thumbnail the app makes a 512 px
+  thumbnail and 1280 px preview with PhotoKit (`DerivativeMaker`) and attaches
+  them. Each pass ends by doing the same for photos backed up earlier, newest
+  first, using the photo index to skip those the server already has.
+- *Library*: the server library newest first, grouped by day with pinned
+  headers (`PhotoTimeline` in NubiloKit). Drag the strip on the right edge to
+  scrub through the years, or pick a month from the calendar menu. Pinch the
+  grid (⌘+ / ⌘− on the Mac) for bigger or smaller tiles. The list comes from
+  `GET /api/v1/photos/index` in one response and is cached on disk
+  (`PhotoIndexCache`), so the library shows at once on launch and the server
+  is only asked whether it changed (ETag). Rendition URLs carry the content
+  hash (`?v=`), so the 1 GB URL cache keeps thumbnails without asking again;
+  `ImageLoader` decodes them off the main thread into a 150 MB memory cache
+  and cancels downloads for tiles that scroll away. Videos without a server
+  thumbnail show a placeholder instead of downloading the file. Tapping a photo opens a full-screen
+  viewer: swipe or use the arrow keys to move between photos; pinch,
+  double-tap or ⌘+ / ⌘− to zoom, and the original (scaled to 4096 px) loads
+  once you zoom past 1.5×. Select photos, or a whole day, to add them to an
+  album.
 - *Albums*: own albums and albums shared with the user (owner and access
   shown), album grids, new albums, and sharing an album with other people on the server as
   view-only or can-add.
@@ -183,8 +199,8 @@ invite QR code to scan with the iPhone.
 - **No way to ask the server whether an invite creates an account**, so the
   join form always asks for a username and the server ignores it for invites
   to existing accounts.
-- The gallery lists the library oldest first, as the API pages it; videos
-  show a still only.
+- Servers without the photo index are paged by id (1,000 per request), so
+  there the timeline fills in as pages arrive. Videos show a still only.
 - Moving `Nubilo.app` after starting the server breaks the LaunchAgent,
   which points into the app bundle. Stop and start the server again from the
   menu bar after moving it.

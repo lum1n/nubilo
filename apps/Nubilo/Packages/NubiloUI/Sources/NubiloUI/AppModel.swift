@@ -129,6 +129,7 @@ public final class AppModel {
         await FilesIntegration.disconnect()
         #endif
         if let server { try? keys.delete(tag: server.keyTag) }
+        PhotoIndexCache.removeAll()
         store.clear()
         server = nil
         client = nil

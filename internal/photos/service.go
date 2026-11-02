@@ -75,6 +75,10 @@ type CommitRequest struct {
 	TakenAtMS     int64
 	LocalID       string
 	LiveVideoBlob string
+	// JPEGs the client made, used when the server cannot decode the
+	// original (HEIC, video). Uploaded like the original.
+	ThumbBlob   string
+	PreviewBlob string
 }
 
 // Commit ingests an already-uploaded blob (PUT /sync/v1/blob) into the
@@ -103,6 +107,16 @@ func (s Service) Commit(ctx context.Context, dev *identity.Device, req CommitReq
 	if err != nil {
 		return nil, err
 	}
+	if len(prep.Thumb) == 0 && req.ThumbBlob != "" {
+		if prep.Thumb, err = s.clientDerivative(ctx, dev.UserID, req.ThumbBlob, MaxThumbSide); err != nil {
+			return nil, err
+		}
+	}
+	if len(prep.Preview) == 0 && req.PreviewBlob != "" {
+		if prep.Preview, err = s.clientDerivative(ctx, dev.UserID, req.PreviewBlob, MaxPreviewSide); err != nil {
+			return nil, err
+		}
+	}
 	if req.TakenAtMS > 0 && prep.Meta.TakenAtMS == 0 {
 		prep.Meta.TakenAtMS = req.TakenAtMS
 	}
@@ -112,7 +126,16 @@ func (s Service) Commit(ctx context.Context, dev *identity.Device, req CommitReq
 			prep.Meta.Kind = "live"
 		}
 	}
-	return s.ingestPrepared(ctx, dev, prep, nil, req.LocalID)
+	obj, err := s.ingestPrepared(ctx, dev, prep, nil, req.LocalID)
+	if err != nil || (req.ThumbBlob == "" && req.PreviewBlob == "") {
+		return obj, err
+	}
+	// The photo was already in the library (a retry, or a reinstalled app):
+	// give it the derivatives it lacks.
+	if m := ParseMeta(obj.Metadata); (m.ThumbHash == "" && req.ThumbBlob != "") || (m.PreviewHash == "" && req.PreviewBlob != "") {
+		return s.AttachDerivatives(ctx, dev, obj.ID, req.ThumbBlob, req.PreviewBlob)
+	}
+	return obj, nil
 }
 
 func (s Service) ingestPrepared(ctx context.Context, dev *identity.Device, prep Prepared, albums []string, localID string) (*syncengine.Object, error) {
@@ -256,8 +279,19 @@ func (s Service) Get(ctx context.Context, dev *identity.Device, id string) (*syn
 }
 
 func (s Service) Blob(obj *syncengine.Object, which string) (mime string, body []byte, err error) {
+	hash, mime, err := RenditionBlob(obj, which)
+	if err != nil {
+		return "", nil, err
+	}
+	body, err = s.Store.GetBlobPlaintext(hash)
+	return mime, body, err
+}
+
+// RenditionBlob returns the blob that holds a rendition of obj, and its
+// MIME type. A missing thumbnail or preview falls back to the original.
+func RenditionBlob(obj *syncengine.Object, which string) (hash, mime string, err error) {
 	m := ParseMeta(obj.Metadata)
-	hash := obj.BlobID
+	hash = obj.BlobID
 	mime = m.MIME
 	if mime == "" {
 		mime = "application/octet-stream"
@@ -283,17 +317,16 @@ func (s Service) Blob(obj *syncengine.Object, which string) (mime string, body [
 		hash = m.LivePairHash
 		mime = "video/quicktime"
 	default:
-		return "", nil, fmt.Errorf("photos: unknown rendition")
+		return "", "", fmt.Errorf("photos: unknown rendition")
 	}
 	if hash == "" {
-		return "", nil, syncengine.ErrNotFound
+		return "", "", syncengine.ErrNotFound
 	}
 	// Serve only blobs this object holds a counted reference to.
 	if hash != obj.BlobID && !slices.Contains(store.MetadataBlobIDs(obj.Metadata), strings.ToLower(hash)) {
-		return "", nil, syncengine.ErrNotFound
+		return "", "", syncengine.ErrNotFound
 	}
-	body, err = s.Store.GetBlobPlaintext(hash)
-	return mime, body, err
+	return strings.ToLower(hash), mime, nil
 }
 
 func PublicMeta(m Meta) map[string]any {

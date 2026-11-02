@@ -111,7 +111,7 @@ struct AlbumDetailView: View {
             }
         }
         .navigationTitle(album.name)
-        .navigationDestination(for: Photo.self) { PhotoPreviewView(photo: $0) }
+        .navigationDestination(for: Photo.self) { PhotoViewer(photos: pager?.photos ?? [], start: $0) }
         .toolbar {
             if album.isOwned {
                 ToolbarItem(placement: .primaryAction) {
@@ -127,14 +127,19 @@ struct AlbumDetailView: View {
             ShareAlbumView(album: album)
         }
         .task {
-            guard pager == nil, let client = model.client else { return }
-            let id = album.id
-            let pager = PhotoPager { after in
-                let page = try await client.albumItems(id, after: after, limit: 200)
-                return (page.items, page.next)
+            if pager == nil, let client = model.client {
+                let id = album.id
+                pager = PhotoPager(
+                    fetch: { after in
+                        let page = try await client.albumItems(id, after: after, limit: 1000)
+                        return (page.items, page.next)
+                    },
+                    index: { etag in try await client.albumIndex(id, etag: etag) },
+                    cache: .standard(for: client),
+                    cacheKey: PhotoIndexCache.albumKey(id)
+                )
             }
-            self.pager = pager
-            await pager.loadMore()
+            pager?.start()
         }
     }
 }
