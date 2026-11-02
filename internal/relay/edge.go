@@ -13,6 +13,11 @@ import (
 	"nubilo/internal/wiredx"
 )
 
+// edgeMaxConns caps connections from the edge to the home server. Each
+// request in flight holds one (a large backup upload for minutes), so it
+// leaves room for those while stopping a burst of thousands.
+const edgeMaxConns = 64
+
 // EdgeHandler serves the one port a TLS-terminating proxy (exe.dev) forwards
 // to: /relay and /ping go to the local wired relay (peers reach the overlay
 // through it), everything else to the home server's overlay web service
@@ -40,6 +45,10 @@ func EdgeHandler(relayBind string, dial func(context.Context) (net.Conn, error),
 		Transport: &http.Transport{
 			DialContext:         func(ctx context.Context, _, _ string) (net.Conn, error) { return dial(ctx) },
 			MaxIdleConnsPerHost: 32,
+			// A burst (a gallery loading a screen of thumbnails) waits for
+			// a connection instead of opening dozens of overlay streams at
+			// once, which made dials to home time out.
+			MaxConnsPerHost: edgeMaxConns,
 			IdleConnTimeout:     90 * time.Second,
 		},
 		// Stream responses (photo downloads, long polls) as they arrive.

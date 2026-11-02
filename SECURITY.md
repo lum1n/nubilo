@@ -157,7 +157,7 @@ Server checks, in order:
 
 1. Header parses.
 2. `|now - ts| ≤ 60s` (configurable, default 60).
-3. Nonce has not been seen for that device (replay cache, TTL 2× window).
+3. Nonce has not been seen for that device (replay cache in memory, TTL 2× window). The cache does not survive a restart, so for 2× window after the server starts it also refuses requests signed before the start (503, try again): every request it accepts was signed while the cache was running, so a request captured before a restart cannot be replayed after it.
 4. Device exists and `revoked_at IS NULL`.
 5. Signature verifies against the stored public key.
 6. Body size ≤ configured maximum.

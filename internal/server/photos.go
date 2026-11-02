@@ -144,6 +144,11 @@ func (s *Server) servePhoto(w http.ResponseWriter, r *http.Request, rendition st
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	// A gallery scrolled past this tile already: don't read and decrypt a
+	// blob (for photos without a thumbnail, the whole original) for nobody.
+	if r.Context().Err() != nil {
+		return
+	}
 	mime, body, err := s.photos().Blob(obj, rendition)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
