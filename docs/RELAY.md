@@ -91,6 +91,19 @@ Hosts like exe.dev give a VM one HTTPS name (`<vm>.exe.xyz`) whose proxy termina
 
 Without inbound UDP on the VM, traffic flows on wired's relay path (through the proxy's WebSocket) rather than a direct path; that is expected.
 
+## Upgrading wired
+
+The relay and the home server must link the same wired protocol version: a node on another version can join as a member but gets no path (`nubilo relay members` shows `path=none`, and the relay logs `dial web@home: timed out`). `scripts/build-wired.sh` builds the wired commit in `go.mod`, and `nubilo version` prints it (`wired: ca45dfbf1544`); compare it on both machines.
+
+When `go.mod` moves to a wired release with a new protocol version, upgrade both together, relay first:
+
+1. Back up the wired state on both: `~/.nubilo-relay/wired` on the relay, `~/.nubilo/wired` at home. The first start on the new version rewrites it in a format the old version cannot read.
+2. Stop the relay, install the new binary, start it.
+3. Install the new binary at home and restart. A home server that started while the relay was on the old version also retries on its own (5 s, backing off to 5 min) and joins once the relay is upgraded.
+4. `nubilo relay members` on the relay shows `home` with `path=direct` or `path=relay`.
+
+Rolling back means the old binaries and the backed-up wired state on both.
+
 ## Tailscale
 
 Every device that should reach the server joins your tailnet (the Tailscale app on the iPhone and the Mac). The server keeps listening on its LAN port; Tailscale mode only changes the name and certificate devices use.

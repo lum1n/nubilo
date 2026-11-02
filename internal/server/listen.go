@@ -120,37 +120,18 @@ func (s *Server) Run(ctx context.Context) error {
 
 	if inv := s.Cfg.Public.Relay.Invite; inv != "" {
 		node, err := s.joinRelay()
-		switch {
-		case err != nil:
-			s.Log.Error("relay_join", "err", err.Error())
-		case s.Cfg.Public.Relay.BehindProxy:
-			// The proxy in front of the relay terminated TLS; plain HTTP
-			// arrives over the (encrypted) overlay.
-			wl, err := node.Listen(wiredx.ServiceWeb)
+		if err != nil {
+			// The relay may be down, restarting, or on another wired
+			// version for now: keep trying instead of staying cut off
+			// until the next restart.
+			s.Log.Error("relay_join", "err", err.Error(), "retry", "in the background")
+			go s.rejoinRelay(ctx, tlsCfg, mgr)
+		} else {
+			n, err := s.serveRelay(node, tlsCfg, mgr, serve)
 			if err != nil {
-				return fmt.Errorf("server: wired listen: %w", err)
+				return err
 			}
-			h := s.edgeServer()
-			serve("relay-web", func() error { return h.Serve(wl) })
-			running++
-			s.Log.Info("listen_relay", "node", node.Name(), "domain", s.Cfg.Public.Domain, "behind_proxy", true)
-		default:
-			wl, err := node.Listen(wiredx.ServiceHTTPS)
-			if err != nil {
-				return fmt.Errorf("server: wired listen: %w", err)
-			}
-			// The relay sends the client address in a PROXY header.
-			wl = wiredx.ProxyListener(wl)
-			h := s.publicServer(tlsCfg)
-			serve("relay-https", func() error { return h.ServeTLS(wl, "", "") })
-			running++
-			if pl, err := node.Listen(wiredx.ServiceHTTP); err == nil {
-				pl = wiredx.ProxyListener(pl)
-				p := s.plainServer(mgr)
-				serve("relay-http", func() error { return p.Serve(pl) })
-				running++
-			}
-			s.Log.Info("listen_relay", "node", node.Name(), "domain", s.Cfg.Public.Domain)
+			running += n
 		}
 	}
 
@@ -169,6 +150,76 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 	return http.ErrServerClosed
+}
+
+// serveRelay serves the API over the overlay node and returns how many
+// servers it started through serve.
+func (s *Server) serveRelay(node wiredx.Node, tlsCfg *tls.Config, mgr *autocert.Manager, serve func(string, func() error)) (int, error) {
+	if s.Cfg.Public.Relay.BehindProxy {
+		// The proxy in front of the relay terminated TLS; plain HTTP
+		// arrives over the (encrypted) overlay.
+		wl, err := node.Listen(wiredx.ServiceWeb)
+		if err != nil {
+			return 0, fmt.Errorf("server: wired listen: %w", err)
+		}
+		h := s.edgeServer()
+		serve("relay-web", func() error { return h.Serve(wl) })
+		s.Log.Info("listen_relay", "node", node.Name(), "domain", s.Cfg.Public.Domain, "behind_proxy", true)
+		return 1, nil
+	}
+	wl, err := node.Listen(wiredx.ServiceHTTPS)
+	if err != nil {
+		return 0, fmt.Errorf("server: wired listen: %w", err)
+	}
+	// The relay sends the client address in a PROXY header.
+	wl = wiredx.ProxyListener(wl)
+	h := s.publicServer(tlsCfg)
+	serve("relay-https", func() error { return h.ServeTLS(wl, "", "") })
+	n := 1
+	if pl, err := node.Listen(wiredx.ServiceHTTP); err == nil {
+		pl = wiredx.ProxyListener(pl)
+		p := s.plainServer(mgr)
+		serve("relay-http", func() error { return p.Serve(pl) })
+		n++
+	}
+	s.Log.Info("listen_relay", "node", node.Name(), "domain", s.Cfg.Public.Domain)
+	return n, nil
+}
+
+// rejoinRelay retries joining the relay, backing off from 5 s to 5 min,
+// and serves over it once joined. Its servers are in s.extra, so Shutdown
+// stops them; their errors are logged.
+func (s *Server) rejoinRelay(ctx context.Context, tlsCfg *tls.Config, mgr *autocert.Manager) {
+	wait := 5 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		node, err := s.joinRelay()
+		if err != nil {
+			s.Log.Warn("relay_join", "err", err.Error(), "retry_in", (2 * wait).String())
+			wait = min(2*wait, 5*time.Minute)
+			continue
+		}
+		if ctx.Err() != nil {
+			// Shut down while joining: Shutdown may have missed the node.
+			_ = node.Close()
+			return
+		}
+		serve := func(name string, f func() error) {
+			go func() {
+				if err := f(); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
+					s.Log.Error("serve", "name", name, "err", err.Error())
+				}
+			}()
+		}
+		if _, err := s.serveRelay(node, tlsCfg, mgr, serve); err != nil {
+			s.Log.Error("relay_serve", "err", err.Error())
+		}
+		return
+	}
 }
 
 func (s *Server) joinRelay() (wiredx.Node, error) {

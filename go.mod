@@ -6,7 +6,7 @@ require (
 	github.com/emersion/go-ical v0.0.0-20240127095438-fc1c9d8fb2b6
 	github.com/emersion/go-vcard v0.0.0-20230815062825-8fda7d206ec9
 	github.com/emersion/go-webdav v0.7.0
-	github.com/lum1n/wired/bindings/go v0.0.0-20261022063719-e142a2d1d091
+	github.com/lum1n/wired/bindings/go v0.0.0-20261102123643-ca45dfbf1544
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/teambition/rrule-go v1.8.2
