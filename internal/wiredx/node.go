@@ -85,6 +85,9 @@ const (
 	// ServiceWeb is plain HTTP for a relay behind a TLS-terminating proxy:
 	// TLS already ended at the proxy, and wired encrypts the hop home.
 	ServiceWeb = "web"
+	// ServiceAdmin is the relay's update API, which its home server calls
+	// (plain HTTP; the overlay encrypts and admits only members).
+	ServiceAdmin = "nubilo-admin"
 )
 
 // ClientIPHeader carries the client address from a relay behind a proxy to

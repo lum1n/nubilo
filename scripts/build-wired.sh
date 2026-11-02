@@ -83,6 +83,8 @@ LDFLAGS="-X nubilo/internal/wiredx.Commit=$COMMIT -X nubilo/internal/wiredx.Prot
 if [[ -n "${NUBILO_VERSION:-}" ]]; then
   LDFLAGS="$LDFLAGS -X nubilo/internal/version.String=$NUBILO_VERSION"
 fi
+# Extra flags for test builds (e.g. the updater's test key and release URL).
+LDFLAGS="$LDFLAGS ${NUBILO_LDFLAGS:-}"
 GOWORK="$WORK" CGO_ENABLED=1 GOOS="$GOOS_T" GOARCH="$GOARCH_T" go build -tags wired -trimpath \
   -ldflags "$LDFLAGS" -o "$OUT" "$ROOT/cmd/nubilo"
 echo "built $OUT ($TARGET, wired ${COMMIT:0:12}, protocol $PROTOCOL)"

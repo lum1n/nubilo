@@ -4,16 +4,21 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"nubilo/internal/logging"
 	"nubilo/internal/qr"
 	"nubilo/internal/relay"
 	"nubilo/internal/service"
+	"nubilo/internal/update"
+	"nubilo/internal/version"
 	"nubilo/internal/wiredx"
 )
 
@@ -84,10 +89,33 @@ func runRelay(g global, args []string) int {
 		return 0
 	case "run":
 		log := logging.New(logging.Options{Level: "info"})
+		if restart, err := update.Boot(dir, version.String, time.Now()); err != nil {
+			fmt.Fprintln(os.Stderr, "update:", err)
+		} else if restart {
+			fmt.Fprintln(os.Stderr, "update: rolled back to the previous version; restarting")
+			return exitRestart
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		if err := relay.Run(ctx, dir, log); err != nil {
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var restarting atomic.Bool
+		restart := func() { restarting.Store(true); cancel() }
+		ready := func(ctx context.Context, node wiredx.Node) {
+			m := newRelayUpdater(dir, log, restart)
+			if m == nil {
+				return
+			}
+			if err := relay.ServeAdmin(ctx, node, m, log); err != nil {
+				log.Error("relay_admin", "err", err.Error())
+			}
+			go watchRelayUpdate(ctx, node, dir, log, restart)
+		}
+		if err := relay.RunWith(ctx, dir, log, ready); err != nil && !restarting.Load() {
 			return fatal(err)
+		}
+		if restarting.Load() {
+			return exitRestart
 		}
 		return 0
 	case "install":
@@ -167,4 +195,78 @@ func printRelayInvite(inv string) {
 		fmt.Print(text)
 	}
 	fmt.Printf("Relay invite (a secret; anyone holding it can join the overlay):\n%s\n", inv)
+}
+
+// newRelayUpdater sets up updates for this relay: installed when its home
+// server asks (over the overlay), never on the relay's own schedule, so the
+// home server can put them in order.
+func newRelayUpdater(dir string, log *slog.Logger, restart func()) *update.Manager {
+	exe, err := service.ResolveExe()
+	if err != nil {
+		log.Warn("update_disabled", "err", err.Error())
+		return nil
+	}
+	if changed, err := service.Refresh(service.Spec{Kind: service.KindRelay, Exe: exe, DataDir: dir}); err != nil {
+		log.Warn("service_refresh", "err", err.Error())
+	} else if changed {
+		log.Info("service_refresh", "unit", service.KindRelay.UnitName())
+	}
+	return &update.Manager{
+		DataDir: dir,
+		Current: version.String,
+		Source:  update.DefaultSource(),
+		Install: update.Installer{DataDir: dir, Exe: exe, WiredDir: filepath.Join(dir, "wired")},
+		Manual:  true,
+		Restart: restart,
+		Log:     log,
+	}
+}
+
+// relayHealthyWithin is how long a freshly updated relay has for its home
+// server to reconnect before it rolls back. Longer than the server's own
+// limit: across a wired protocol change, the home server updates only
+// after the relay has restarted.
+const relayHealthyWithin = 10 * time.Minute
+
+// relayHealthyOverride shortens relayHealthyWithin in test builds of the
+// update loop (-ldflags "-X nubilo/internal/cli.relayHealthyOverride=1m").
+var relayHealthyOverride = ""
+
+func relayDeadline() time.Duration {
+	if d, err := time.ParseDuration(relayHealthyOverride); err == nil && d > 0 {
+		return d
+	}
+	return relayHealthyWithin
+}
+
+// watchRelayUpdate finishes an update this relay binary was installed by:
+// the home server must reconnect in time, or it goes back.
+func watchRelayUpdate(ctx context.Context, node wiredx.Node, dir string, log *slog.Logger, restart func()) {
+	st, err := update.LoadState(dir)
+	if err != nil || st == nil || st.Phase != update.PhaseVerifying || st.To != version.String {
+		return
+	}
+	deadline := time.Now().Add(relayDeadline())
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
+		if relay.Reconnected(node) {
+			if err := update.Healthy(dir, version.String, time.Now()); err != nil {
+				log.Error("update_healthy", "err", err.Error())
+			} else {
+				log.Info("update_done", "from", st.From, "to", st.To)
+			}
+			return
+		}
+	}
+	why := fmt.Sprintf("the home server did not reconnect to relay %s within %s", st.To, relayDeadline())
+	log.Error("update_rollback", "why", why)
+	if err := update.Rollback(dir, why, time.Now()); err != nil {
+		log.Error("update_rollback", "err", err.Error())
+		return
+	}
+	restart()
 }

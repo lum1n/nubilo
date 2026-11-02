@@ -36,13 +36,43 @@ type Status struct {
 	Current    string   `json:"current"`
 	Available  *Release `json:"available"`
 	Auto       bool     `json:"auto"`
-	State      string   `json:"state"` // idle, checking, downloading, preflight, installing, restarting
+	State      string   `json:"state"` // idle, checking, updating_relay, downloading, preflight, installing, restarting
 	Progress   float64  `json:"progress,omitempty"`
 	Blocked    string   `json:"blocked"`
 	CheckedAt  int64    `json:"checked_at"`
 	NextAutoAt int64    `json:"next_auto_at"`
 	Last       *Outcome `json:"last"`
-	manifest   *Manifest
+	// Relay is the relay this server reaches the internet through, when
+	// there is one; it is updated first.
+	Relay    *RelayStatus `json:"relay,omitempty"`
+	manifest *Manifest
+}
+
+// RelayStatus is the relay as the home server last saw it.
+type RelayStatus struct {
+	// Reachable: it answered over the overlay and can update itself.
+	Reachable bool     `json:"reachable"`
+	Current   string   `json:"current,omitempty"`
+	State     string   `json:"state,omitempty"`
+	Last      *Outcome `json:"last,omitempty"`
+	Error     string   `json:"error,omitempty"`
+	protocol  string
+}
+
+// RemoteStatus is GET /update on a relay's admin service.
+type RemoteStatus struct {
+	Status        Status `json:"status"`
+	WiredProtocol string `json:"wired_protocol"`
+}
+
+// Remote is a relay's updater, reached over the overlay.
+type Remote interface {
+	// Status reports the relay's version and update state; Protocol is the
+	// wired protocol it speaks.
+	Status(ctx context.Context) (st Status, protocol string, err error)
+	// Install asks it to install version (a signed release it fetches and
+	// checks itself) and restart.
+	Install(ctx context.Context, version string) error
 }
 
 // Settings are kept in <data>/update/settings.json.
@@ -62,6 +92,14 @@ type Manager struct {
 	// speaking another one would cut the server off until the relay is
 	// updated too, so it is not installed automatically.
 	RelayProtocol string
+	// Relay, when set, is updated before this server.
+	Relay Remote
+	// Manual: installs happen only on request (a relay, told by its home
+	// server), never at night.
+	Manual bool
+	// RelayHealthyWithin is how long the relay may take to come back after
+	// its update before the home server stops waiting (default 10 min).
+	RelayHealthyWithin time.Duration
 	// Restart stops the server so the service manager starts the new
 	// binary.
 	Restart func()
@@ -114,7 +152,7 @@ func (m *Manager) Status() Status {
 
 func (m *Manager) refreshLocked() {
 	m.status.Current = m.Current
-	m.status.Auto = LoadSettings(m.DataDir).Auto
+	m.status.Auto = LoadSettings(m.DataDir).Auto && !m.Manual
 	if m.status.State == "" {
 		m.status.State = "idle"
 	}
@@ -154,8 +192,15 @@ func (m *Manager) blockedLocked(man Manifest) string {
 		return fmt.Sprintf("Nubilo %s needs %s or later first. Update by hand, then updates install from here again.", man.Version, man.MinFrom)
 	}
 	if m.RelayProtocol != "" && man.WiredProtocol != "" && man.WiredProtocol != m.RelayProtocol {
-		return fmt.Sprintf("Nubilo %s changes the relay protocol (%s to %s). Update the relay and this server together; see docs/RELAY.md, \"Upgrading wired\".",
-			man.Version, m.RelayProtocol, man.WiredProtocol)
+		// Fine when the relay updates first; it has to be able to.
+		if r := m.status.Relay; r == nil || !r.Reachable {
+			why := "it can't be reached to update it"
+			if r != nil && r.Error != "" {
+				why = r.Error
+			}
+			return fmt.Sprintf("Nubilo %s changes the relay protocol (%s to %s), and the relay has to update first, but %s. Update the relay by hand (docs/RELAY.md, \"Upgrading wired\"), then this server.",
+				man.Version, m.RelayProtocol, man.WiredProtocol, why)
+		}
 	}
 	if err := writable(filepath.Dir(exe)); err != nil {
 		return fmt.Sprintf("Nubilo cannot replace %s: %v", exe, err)
@@ -195,6 +240,7 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	m.mu.Unlock()
 
 	man, err := m.Source.Latest(ctx)
+	m.refreshRelay(ctx)
 
 	m.mu.Lock()
 	m.status.State = "idle"
@@ -255,6 +301,15 @@ func (m *Manager) install(man Manifest) {
 		m.mu.Lock()
 		m.busy = false
 		m.status.State, m.status.Progress = "idle", 0
+		m.mu.Unlock()
+	}
+	if m.Relay != nil {
+		if err := m.updateRelay(ctx, man); err != nil {
+			fail(err)
+			return
+		}
+		m.mu.Lock()
+		m.status.State, m.status.Progress = "downloading", 0
 		m.mu.Unlock()
 	}
 	a, _ := man.Artifact(runtime.GOOS, runtime.GOARCH)
@@ -356,4 +411,95 @@ func (m *Manager) maybeAutoInstall() {
 	if _, err := m.StartInstall(); err != nil {
 		m.log().Warn("update_auto", "err", err.Error())
 	}
+}
+
+// refreshRelay asks the relay how it is.
+func (m *Manager) refreshRelay(ctx context.Context) {
+	if m.Relay == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	st, proto, err := m.Relay.Status(ctx)
+	rs := &RelayStatus{}
+	if err != nil {
+		rs.Error = err.Error()
+	} else {
+		rs.Reachable, rs.Current, rs.State, rs.Last, rs.protocol = true, st.Current, st.State, st.Last, proto
+	}
+	m.mu.Lock()
+	m.status.Relay = rs
+	m.mu.Unlock()
+}
+
+// updateRelay brings the relay to man.Version before this server updates.
+// On the same wired protocol it waits until the relay is back and serving
+// (it reports healthy only once this server has reconnected). Across a
+// protocol change this server can't reach the new relay, so it goes on as
+// soon as the relay has restarted; if this server then fails to come up,
+// the relay rolls itself back when nobody reconnects.
+func (m *Manager) updateRelay(ctx context.Context, man Manifest) error {
+	m.refreshRelay(ctx)
+	m.mu.Lock()
+	rs := *m.status.Relay
+	m.mu.Unlock()
+	same := m.RelayProtocol == "" || man.WiredProtocol == "" || man.WiredProtocol == m.RelayProtocol
+	if !rs.Reachable {
+		if same {
+			// It keeps working with this release; update this server alone.
+			m.log().Warn("update_relay_skipped", "to", man.Version, "err", rs.Error)
+			return nil
+		}
+		return fmt.Errorf("the relay has to update first, but it can't be reached: %s", rs.Error)
+	}
+	if Compare(man.Version, rs.Current) <= 0 {
+		return nil
+	}
+	m.mu.Lock()
+	m.status.State, m.status.Progress = "updating_relay", 0
+	m.mu.Unlock()
+	m.log().Info("update_relay", "from", rs.Current, "to", man.Version)
+	if err := m.Relay.Install(ctx, man.Version); err != nil {
+		return fmt.Errorf("the relay could not start its update: %w", err)
+	}
+	before := rs.Last
+	within := m.RelayHealthyWithin
+	if within == 0 {
+		within = 10 * time.Minute
+	}
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(relayPoll):
+		}
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		st, _, err := m.Relay.Status(pctx)
+		cancel()
+		if err == nil && st.Last != nil && st.Last.To == man.Version && !sameOutcome(st.Last, before) {
+			if st.Last.Result != "updated" {
+				return fmt.Errorf("the relay could not update: %s", st.Last.Message)
+			}
+			if same {
+				m.refreshRelay(ctx)
+				return nil
+			}
+		}
+		if !same && (err != nil || st.State == "restarting") {
+			// Gone to the new protocol: this server follows.
+			return nil
+		}
+	}
+	return fmt.Errorf("the relay did not come back on %s within %s", man.Version, within)
+}
+
+// relayPoll is how often the relay is asked how its update goes.
+var relayPoll = 3 * time.Second
+
+func sameOutcome(a, b *Outcome) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }

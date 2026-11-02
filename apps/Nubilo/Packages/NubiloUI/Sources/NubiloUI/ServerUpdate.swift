@@ -88,6 +88,7 @@ final class ServerUpdateModel {
         guard let s = status, s.isBusy || installing else { return nil }
         switch s.state {
         case "checking": return "Checking for updates…"
+        case "updating_relay": return "Updating the relay first…"
         case "downloading":
             if let p = s.progress { return "Downloading… \(Int(p * 100))%" }
             return "Downloading…"
@@ -192,8 +193,22 @@ struct ServerUpdateCard: View {
                     .foregroundStyle(.green)
             } else {
                 let why = (last.message ?? "").isEmpty ? "" : ": \(last.message!)"
-                Label("The update to \(last.to) failed and the server went back to \(last.from)\(why)",
+                Label(last.result == "rolled_back"
+                      ? "The update to \(last.to) failed and the server went back to \(last.from)\(why)"
+                      : "The update to \(last.to) failed; nothing was changed\(why)",
                       systemImage: "arrow.uturn.backward.circle")
+                    .foregroundStyle(.orange)
+            }
+        }
+
+        if let relay = status.relay {
+            if relay.reachable, let version = relay.current {
+                Text("Relay: Nubilo \(version), updated together with the server")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Relay: can't be updated from here\(relay.error.map { " (\($0))" } ?? ""). Update it by hand.")
+                    .font(.caption)
                     .foregroundStyle(.orange)
             }
         }

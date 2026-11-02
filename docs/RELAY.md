@@ -95,7 +95,7 @@ Without inbound UDP on the VM, traffic flows on wired's relay path (through the 
 
 The relay and the home server must link the same wired protocol version: a node on another version can join as a member but gets no path (`nubilo relay members` shows `path=none`, and the relay logs `dial web@home: timed out`). `scripts/build-wired.sh` builds the wired commit in `go.mod`, and `nubilo version` prints it (`wired: ca45dfbf1544`); compare it on both machines.
 
-When `go.mod` moves to a wired release with a new protocol version, upgrade both together, relay first:
+A home server and relay that both have the updater (`nubilo update`) do this on their own: the home server tells the relay to update first, over the overlay, then updates itself; a relay whose home server doesn't reconnect within 10 minutes rolls back. By hand (a relay from before the updater, or updates turned off), upgrade both together, relay first:
 
 1. Back up the wired state on both: `~/.nubilo-relay/wired` on the relay, `~/.nubilo/wired` at home. The first start on the new version rewrites it in a format the old version cannot read.
 2. Stop the relay, install the new binary, start it.

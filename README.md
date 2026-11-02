@@ -173,7 +173,7 @@ nubilo update check | install      # ask the running server
 nubilo update rollback             # back to the previous version by hand
 ```
 
-It won't install on its own when a release changes the relay's wired protocol (update relay and server together, docs/RELAY.md), or when the server runs inside the Mac app (update the app). Releases: push a tag `vX.Y.Z`; `.github/workflows/release.yml` builds, signs and publishes.
+With a relay, the server updates it first, over the overlay: the relay fetches and checks the same signed release itself, and reports healthy once the home server has reconnected (within 10 minutes, or it rolls back). Then the server updates itself. This also covers releases that change the relay's wired protocol: the relay goes first, the server follows, and if the server can't, the relay goes back so they find each other again. A relay from before this (no updater) is updated by hand once (docs/RELAY.md). The server won't update itself inside the Mac app (update the app). Releases: push a tag `vX.Y.Z`; `.github/workflows/release.yml` builds, signs and publishes.
 
 ## Photos API
 

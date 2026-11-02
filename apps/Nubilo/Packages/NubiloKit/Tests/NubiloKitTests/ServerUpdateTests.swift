@@ -39,6 +39,28 @@ final class ServerUpdateTests: XCTestCase {
         XCTAssertEqual(s.last?.succeeded, false)
     }
 
+    func testRelay() async throws {
+        let t = FakeTransport()
+        t.routes["GET /api/v1/admin/update"] = (200, """
+        {"current":"0.8.0","available":null,"auto":true,"state":"updating_relay","last":null,
+         "relay":{"reachable":true,"current":"0.8.0","state":"restarting","last":null}}
+        """)
+        var s = try await client(t).updateStatus()
+        XCTAssertEqual(s.relay, .init(reachable: true, current: "0.8.0", state: "restarting", last: nil, error: nil))
+        XCTAssertTrue(s.isBusy)
+        t.routes["GET /api/v1/admin/update"] = (200, """
+        {"current":"0.8.0","available":null,"auto":true,"state":"idle","last":null,
+         "relay":{"reachable":false,"error":"the relay did not answer"}}
+        """)
+        s = try await client(t).updateStatus()
+        XCTAssertEqual(s.relay?.reachable, false)
+        XCTAssertEqual(s.relay?.error, "the relay did not answer")
+        // Servers without a relay leave it out.
+        t.routes["GET /api/v1/admin/update"] = (200, #"{"current":"0.8.0","auto":true,"state":"idle"}"#)
+        s = try await client(t).updateStatus()
+        XCTAssertNil(s.relay)
+    }
+
     func testSettingsBodyAndUnsupported() async throws {
         let t = FakeTransport()
         t.routes["PUT /api/v1/admin/update/settings"] = (200, #"{"current":"0.8.0","available":null,"auto":false,"state":"idle","last":null}"#)

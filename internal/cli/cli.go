@@ -328,6 +328,10 @@ func runServer(g global, args []string) int {
 	defer stop()
 	restart := make(chan string, 1)
 	srv.Updater = newUpdater(rt, dir, func() { restart <- "update installed" })
+	if srv.Updater != nil && rt.Cfg.Public.Relay.Invite != "" {
+		// The relay updates first, told over the overlay.
+		srv.Updater.Relay = srv.RelayRemote()
+	}
 	if srv.Updater != nil {
 		go srv.Updater.Run(ctx)
 		go watchUpdate(ctx, srv, dir, rt, restart)

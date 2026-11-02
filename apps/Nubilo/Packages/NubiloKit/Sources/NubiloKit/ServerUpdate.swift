@@ -26,11 +26,22 @@ public struct ServerUpdateStatus: Codable, Sendable, Equatable {
         public var succeeded: Bool { result == "updated" }
     }
 
+    /// The relay the server reaches the internet through, if any. It is
+    /// updated first.
+    public struct Relay: Codable, Sendable, Equatable {
+        /// It answered and can update itself.
+        public var reachable: Bool
+        public var current: String?
+        public var state: String?
+        public var last: Outcome?
+        public var error: String?
+    }
+
     public var current: String
     public var available: Release?
     public var auto: Bool
-    /// "idle", "checking", "downloading", "preflight", "installing" or
-    /// "restarting".
+    /// "idle", "checking", "updating_relay", "downloading", "preflight",
+    /// "installing" or "restarting".
     public var state: String
     /// 0...1 while downloading, if the server knows.
     public var progress: Double?
@@ -41,6 +52,7 @@ public struct ServerUpdateStatus: Codable, Sendable, Equatable {
     /// Unix ms of the next automatic install attempt.
     public var nextAutoAt: Int64?
     public var last: Outcome?
+    public var relay: Relay?
 
     public var isBusy: Bool { state != "idle" }
     public var blockedReason: String? {
