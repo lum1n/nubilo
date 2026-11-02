@@ -42,7 +42,11 @@ type Server struct {
 	pairOK    *ipLimiter
 	sigFail   *ipLimiter
 	redeemLim *ipLimiter
-	davAuth   *dav.Auth
+	// webLoginLim limits browser sign-in starts per IP.
+	webLoginLim *ipLimiter
+	// webApproveLim limits code lookups and approvals per device.
+	webApproveLim *ipLimiter
+	davAuth       *dav.Auth
 
 	mu    sync.Mutex
 	extra []*http.Server // public listeners (direct, relay)
@@ -51,18 +55,20 @@ type Server struct {
 
 func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Authenticator, eng *syncengine.Engine, al *audit.Logger, log *slog.Logger, serverPub ed25519.PublicKey) *Server {
 	s := &Server{
-		Cfg:       cfg,
-		Store:     st,
-		IDs:       ids,
-		Auth:      a,
-		Engine:    eng,
-		Audit:     al,
-		Log:       log,
-		ServerPub: serverPub,
-		pairLim:   newIPLimiter(cfg.Pairing.BeginsPerHour, time.Hour),
-		pairOK:    newIPLimiter(cfg.Pairing.CompletesPerHour, time.Hour),
-		sigFail:   newIPLimiter(30, time.Minute),
-		redeemLim: newIPLimiter(5, time.Hour),
+		Cfg:           cfg,
+		Store:         st,
+		IDs:           ids,
+		Auth:          a,
+		Engine:        eng,
+		Audit:         al,
+		Log:           log,
+		ServerPub:     serverPub,
+		pairLim:       newIPLimiter(cfg.Pairing.BeginsPerHour, time.Hour),
+		pairOK:        newIPLimiter(cfg.Pairing.CompletesPerHour, time.Hour),
+		sigFail:       newIPLimiter(30, time.Minute),
+		redeemLim:     newIPLimiter(5, time.Hour),
+		webLoginLim:   newIPLimiter(30, time.Hour),
+		webApproveLim: newIPLimiter(20, 10*time.Minute),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/pair/begin", s.handlePairBegin)
@@ -70,6 +76,8 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("POST /api/v1/invites/redeem", s.handleInviteRedeem)
 	mux.HandleFunc("GET /api/v1/profile/{token}", s.handleProfileDownload)
 	mux.HandleFunc("GET /join", s.handleJoinPage)
+	mux.HandleFunc("GET /{$}", s.handleHomePage)
+	s.webRoutes(mux)
 	mux.HandleFunc("GET /api/v1/status", s.authed(s.handleStatus))
 	mux.HandleFunc("GET /api/v1/me", s.authed(s.handleMe))
 	mux.HandleFunc("GET /api/v1/me/passwords", s.authed(s.handleMyPasswords))
@@ -79,6 +87,10 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("POST /api/v1/me/upload-token", s.authed(s.handleUploadToken))
 	mux.HandleFunc("POST /api/v1/me/device-invite", s.authed(s.handleDeviceInvite))
 	mux.HandleFunc("GET /api/v1/users", s.authed(s.handleUserDirectory))
+	mux.HandleFunc("GET /api/v1/groups", s.authed(s.handleGroups))
+	mux.HandleFunc("POST /api/v1/admin/groups", s.authed(s.handleAdminCreateGroup))
+	mux.HandleFunc("PATCH /api/v1/admin/groups/{id}", s.authed(s.handleAdminPatchGroup))
+	mux.HandleFunc("DELETE /api/v1/admin/groups/{id}", s.authed(s.handleAdminDeleteGroup))
 	mux.HandleFunc("GET /api/v1/collections", s.authed(s.handleCollectionList))
 	mux.HandleFunc("GET /api/v1/collections/{id}/shares", s.authed(s.handleSharesGet))
 	mux.HandleFunc("PUT /api/v1/collections/{id}/shares", s.authed(s.handleSharesPut))
@@ -105,6 +117,7 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("POST /sync/v1/object", s.authed(s.handleObject))
 	mux.HandleFunc("POST /sync/v1/collection/update", s.authed(s.handleCollectionUpdate))
 	mux.HandleFunc("POST /sync/v1/collection/delete", s.authed(s.handleCollectionDelete))
+	mux.HandleFunc("POST /sync/v1/thumb", s.authed(s.handleThumb))
 	mux.HandleFunc("PUT /sync/v1/blob/{hash}", s.authedUpload(s.handleBlobPut))
 	mux.HandleFunc("GET /sync/v1/blob/{hash}", s.authed(s.handleBlobGet))
 	mux.HandleFunc("GET /api/v1/photos", s.authedAny(s.handlePhotosList))

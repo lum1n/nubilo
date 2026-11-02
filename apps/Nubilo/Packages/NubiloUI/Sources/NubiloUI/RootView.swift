@@ -18,6 +18,30 @@ public struct RootView: View {
             }
         }
         .errorAlert($model.alert, title: "Nubilo")
+        .sheet(item: $model.pendingWebSignIn.identified) { code in
+            NavigationStack {
+                WebSignInView(initialCode: code.value)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { model.pendingWebSignIn = nil }
+                        }
+                    }
+            }
+            .macSheetFrame()
+        }
+    }
+}
+
+/// Lets an optional String drive `.sheet(item:)`.
+struct IdentifiedString: Identifiable {
+    let value: String
+    var id: String { value }
+}
+
+extension Optional where Wrapped == String {
+    var identified: IdentifiedString? {
+        get { map(IdentifiedString.init) }
+        set { self = newValue?.value }
     }
 }
 

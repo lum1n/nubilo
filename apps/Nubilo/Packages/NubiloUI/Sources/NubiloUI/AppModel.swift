@@ -11,6 +11,8 @@ public final class AppModel {
     public private(set) var me: Me?
     /// A setup link that arrived through a `nubilo://` URL; onboarding picks it up.
     public var pendingLink: SetupLink?
+    /// A web sign-in code from an opened `nubilo://web-login` link.
+    public var pendingWebSignIn: String?
     /// An app-level problem shown as an alert (bad deep link, revoked device).
     public var alert: String?
 
@@ -43,7 +45,7 @@ public final class AppModel {
                 #if canImport(Photos) && canImport(SwiftData)
                 await BackupRuntime.shared.connect(client: client, tlsPin: paired.tlsPin)
                 #endif
-                #if os(iOS) && canImport(FileProvider)
+                #if (os(iOS) || os(macOS)) && canImport(FileProvider)
                 await FilesIntegration.connect(paired, keys: keys)
                 #endif
                 await refreshMe()
@@ -63,7 +65,7 @@ public final class AppModel {
             let fresh = try await client.me()
             me = fresh
             await follow(publicURL: fresh.publicUrl)
-            #if os(iOS) && canImport(FileProvider)
+            #if (os(iOS) || os(macOS)) && canImport(FileProvider)
             // The stored pairing may have gained a TLS pin since activation.
             if let current = store.load() {
                 await FilesIntegration.connect(current, keys: keys)
@@ -94,6 +96,18 @@ public final class AppModel {
 
     /// Handles `nubilo://setup?…` links (and https join links passed in).
     public func handle(url: URL) {
+        if url.host()?.lowercased() == "web-login" {
+            guard server != nil else {
+                alert = "Set up this device first, then scan the code again."
+                return
+            }
+            guard let link = WebSignInLink(parsing: url.absoluteString) else {
+                alert = "That sign-in link is not valid."
+                return
+            }
+            pendingWebSignIn = link.code
+            return
+        }
         if let server {
             alert = "This device is already set up with \(server.baseURL.host() ?? "a server"). Sign out first to use another invite."
             return
@@ -105,7 +119,7 @@ public final class AppModel {
         }
     }
 
-    #if os(iOS) && canImport(FileProvider)
+    #if (os(iOS) || os(macOS)) && canImport(FileProvider)
     /// Sets up the Files app location again; returns the problem, if any.
     public func setUpFilesLocation() async -> String? {
         guard let current = store.load() ?? server else { return "This device is not set up yet." }
@@ -125,7 +139,7 @@ public final class AppModel {
         #if os(macOS) && canImport(EventKit)
         await MacCalendarMirror.shared.signedOut()
         #endif
-        #if os(iOS) && canImport(FileProvider)
+        #if (os(iOS) || os(macOS)) && canImport(FileProvider)
         await FilesIntegration.disconnect()
         #endif
         if let server { try? keys.delete(tag: server.keyTag) }

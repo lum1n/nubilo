@@ -119,6 +119,14 @@ tailscale funnel --bg --tcp 443 tcp://127.0.0.1:8443
 
 Then set `"port": 443` under `public.tailscale` in `config.json` and restart the server, so device URLs drop the `:8443`. Funnel forwards from tailscaled on the same host, so the server sees every public client as `127.0.0.1`: per-IP rate limits then apply to all of them together. Nubilo does not set Funnel up for you.
 
+To keep the public clients' addresses, give Funnel a listener of its own that reads the PROXY protocol header tailscaled can send. Add `"funnel_listen": "127.0.0.1:8444"` under `public.tailscale` (it must be a loopback address and differ from `listen`), restart the server, and point Funnel at it instead:
+
+```sh
+tailscale funnel --bg --tcp 443 --proxy-protocol 1 tcp://127.0.0.1:8444
+```
+
+That listener serves the same API and certificates as the LAN one, but drops every connection that does not start with a PROXY v1 header naming the client, so it only works through Funnel. Keep the LAN listener for tailnet and local clients.
+
 ## Direct setup
 
 ```sh

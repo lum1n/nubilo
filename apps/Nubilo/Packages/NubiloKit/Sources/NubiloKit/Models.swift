@@ -17,6 +17,8 @@ public struct User: Codable, Sendable, Identifiable, Hashable {
     public var role: String?
     public var status: String?
     public var createdAt: Int64?
+    /// Storage limit in bytes; 0 or nil means none.
+    public var quotaBytes: Int64?
 
     public var isAdmin: Bool { role == "admin" }
 }
@@ -34,6 +36,8 @@ public struct DeviceInfo: Codable, Sendable, Identifiable, Hashable {
 public struct Storage: Codable, Sendable, Hashable {
     public var objects: Int
     public var bytes: Int64
+    /// Storage limit in bytes; 0 or nil means none.
+    public var quotaBytes: Int64?
 }
 
 public struct Me: Codable, Sendable {
@@ -74,7 +78,17 @@ public struct Share: Codable, Sendable, Hashable {
     public var principalType: String
     public var principalId: String
     public var username: String?
+    public var groupName: String?
     public var access: String
+}
+
+/// A named set of users; sharing with it shares with every member.
+/// (Not `Group`, which would shadow SwiftUI's view.)
+public struct UserGroup: Codable, Sendable, Identifiable, Hashable {
+    public var id: String
+    public var name: String
+    /// User IDs.
+    public var members: [String]
 }
 
 public struct CollectionInfo: Codable, Sendable, Identifiable, Hashable {
@@ -181,6 +195,8 @@ public struct AdminUser: Codable, Sendable, Identifiable, Hashable {
     public var devices: Int
     public var objects: Int
     public var bytes: Int64
+    /// Storage limit in bytes; 0 or nil means none.
+    public var quotaBytes: Int64?
 }
 
 public struct Invite: Codable, Sendable, Identifiable, Hashable {

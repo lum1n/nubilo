@@ -200,6 +200,40 @@ public final class NubiloClient: Sendable {
         try await call("DELETE", "/api/v1/collections/\(id)/shares?username=\(username.queryEscaped)", as: Wrapped<[Share]>.self).value("shares")
     }
 
+    @discardableResult
+    public func share(collection id: String, groupID: String, access: String) async throws -> [Share] {
+        try await call("PUT", "/api/v1/collections/\(id)/shares", json: ["principal_type": "group", "principal_id": groupID, "access": access], as: Wrapped<[Share]>.self).value("shares")
+    }
+
+    @discardableResult
+    public func unshare(collection id: String, groupID: String) async throws -> [Share] {
+        try await call("DELETE", "/api/v1/collections/\(id)/shares?principal_type=group&principal_id=\(groupID.queryEscaped)", as: Wrapped<[Share]>.self).value("shares")
+    }
+
+    // MARK: Groups
+
+    public func groups() async throws -> [UserGroup] {
+        try await call("GET", "/api/v1/groups", as: Wrapped<[UserGroup]>.self).value("groups")
+    }
+
+    struct GroupRequest: Encodable, Sendable {
+        var name: String?
+        var members: [String]?
+    }
+
+    @discardableResult
+    public func createGroup(name: String, members: [String] = []) async throws -> UserGroup {
+        try await call("POST", "/api/v1/admin/groups", json: GroupRequest(name: name, members: members))
+    }
+
+    /// Renames (name != nil) and/or replaces the members (members != nil).
+    @discardableResult
+    public func updateGroup(_ id: String, name: String? = nil, members: [String]? = nil) async throws -> UserGroup {
+        try await call("PATCH", "/api/v1/admin/groups/\(id)", json: GroupRequest(name: name, members: members))
+    }
+
+    public func deleteGroup(_ id: String) async throws { try await raw("DELETE", "/api/v1/admin/groups/\(id)") }
+
     // MARK: Photos
 
     public func photos(after: String? = nil, limit: Int = 500) async throws -> PhotoPage {
@@ -339,6 +373,11 @@ public final class NubiloClient: Sendable {
         if let role { body["role"] = role }
         if let status { body["status"] = status }
         return try await call("PATCH", "/api/v1/admin/users/\(id)", json: body)
+    }
+
+    /// Sets a user's storage limit; 0 removes it.
+    public func setQuota(_ id: String, bytes: Int64) async throws -> User {
+        try await call("PATCH", "/api/v1/admin/users/\(id)", json: ["quota_bytes": bytes])
     }
 
     public func invites() async throws -> [Invite] {

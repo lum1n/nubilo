@@ -15,15 +15,20 @@ public struct SetupWizardView: View {
                 Picker("Reachability", selection: $wizard.mode) {
                     ForEach(SetupWizard.Mode.allCases) { Text($0.title).tag($0) }
                 }
-                .pickerStyle(.segmented)
                 .labelsHidden()
                 Text(wizard.mode.explanation).foregroundStyle(.secondary)
-                if wizard.mode != .lan {
-                    TextField("Public domain", text: $wizard.domain, prompt: Text("cloud.example.com"))
+                if wizard.mode.needsDomain {
+                    TextField("Public domain", text: $wizard.domain,
+                              prompt: Text(wizard.mode == .proxy ? "nubilo.exe.xyz" : "cloud.example.com"))
+                }
+                if wizard.mode.usesACME {
                     TextField("Email for certificate notices (optional)", text: $wizard.email)
                 }
-                if wizard.mode == .relay {
-                    TextField("Relay invite (from `nubilo relay init` on the VPS)", text: $wizard.relayInvite, axis: .vertical)
+                if wizard.mode.needsInvite {
+                    TextField(wizard.mode == .proxy
+                              ? "Relay invite (from `nubilo relay init --behind-proxy` on the proxied host)"
+                              : "Relay invite (from `nubilo relay init` on the VPS)",
+                              text: $wizard.relayInvite, axis: .vertical)
                         .lineLimit(2...4)
                 }
             }

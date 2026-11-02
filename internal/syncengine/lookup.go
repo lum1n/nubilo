@@ -118,11 +118,14 @@ func (e *Engine) SharedRoots(ctx context.Context, userID, kind string) ([]Collec
 	if userID == "" {
 		return nil, nil
 	}
-	rows, err := e.Store.DB.QueryContext(ctx, `SELECT `+collectionCols+`, CASE s.access WHEN 'rw' THEN 2 ELSE 1 END`+collectionFrom+`
-		JOIN shares s ON s.collection_id = c.id AND s.principal_type = 'user' AND s.principal_id = ?
+	// A collection shared both directly and through groups appears once,
+	// with the best access.
+	rows, err := e.Store.DB.QueryContext(ctx, `SELECT `+collectionCols+`, MAX(`+shareAccessSQL+`)`+collectionFrom+`
+		JOIN shares s ON s.collection_id = c.id AND `+shareMatchSQL+`
 		WHERE c.kind = ? AND c.deleted_at IS NULL AND c.parent_id IS NULL AND COALESCE(c.owner_user_id, '') <> ?
 		  AND COALESCE(u.status, 'active') = 'active'
-		ORDER BY u.username, c.name`, userID, kind, userID)
+		GROUP BY c.id
+		ORDER BY u.username, c.name`, userID, userID, kind, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -411,10 +414,12 @@ type Usage struct {
 	Bytes   int64 `json:"bytes"`
 }
 
-// UserUsage returns live object counts and bytes per owning user.
+// UserUsage returns live object counts and bytes per owning user. Bytes are
+// what counts toward quotas (objects.charged: data, metadata and photo
+// renditions).
 func (e *Engine) UserUsage(ctx context.Context) (map[string]Usage, error) {
 	rows, err := e.Store.DB.QueryContext(ctx, `
-		SELECT COALESCE(c.owner_user_id, ''), COUNT(o.id), COALESCE(SUM(o.size), 0)
+		SELECT COALESCE(c.owner_user_id, ''), COUNT(o.id), CAST(MIN(TOTAL(o.charged), 9.2e18) AS INTEGER)
 		FROM objects o JOIN collections c ON c.id = o.collection_id
 		WHERE o.deleted_at IS NULL AND c.deleted_at IS NULL
 		GROUP BY c.owner_user_id

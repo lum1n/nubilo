@@ -4,7 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"nubilo/internal/app"
@@ -83,7 +86,11 @@ func runUsers(g global, args []string) int {
 		usage, _ := rt.Engine.UserUsage(ctx)
 		for _, u := range users {
 			us := usage[u.ID]
-			fmt.Printf("%-16s %-7s %-8s %6d objects  %s  %s\n", u.Username, u.Role, u.Status, us.Objects, humanBytes(us.Bytes), u.DisplayName)
+			used := humanBytes(us.Bytes)
+			if u.QuotaBytes > 0 {
+				used += " of " + humanBytes(u.QuotaBytes)
+			}
+			fmt.Printf("%-16s %-7s %-8s %6d objects  %s  %s\n", u.Username, u.Role, u.Status, us.Objects, used, u.DisplayName)
 		}
 		return 0
 	case "add":
@@ -136,6 +143,28 @@ func runUsers(g global, args []string) int {
 			return fatal(err)
 		}
 		fmt.Printf("%s is now %s\n", u.Username, args[1])
+		return 0
+	case "quota":
+		if len(args) != 2 {
+			return fatal(fmt.Errorf("users quota USERNAME SIZE (e.g. 50G, 500M; 0 or none removes it)"))
+		}
+		u, err := byName(args[0])
+		if err != nil {
+			return fatal(err)
+		}
+		n, err := parseBytes(args[1])
+		if err != nil {
+			return fatal(err)
+		}
+		if err := rt.IDs.SetUserQuota(ctx, u.ID, n); err != nil {
+			return fatal(err)
+		}
+		rt.Audit.Event(ctx, "admin-local", "user.update", map[string]any{"user": u.ID, "quota_bytes": n})
+		if n == 0 {
+			fmt.Printf("%s has no quota\n", u.Username)
+		} else {
+			fmt.Printf("%s may store %s\n", u.Username, humanBytes(n))
+		}
 		return 0
 	case "invite":
 		fs := flag.NewFlagSet("users invite", flag.ContinueOnError)
@@ -222,4 +251,33 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// parseBytes reads sizes such as "500M", "50G", "1.5T" or a plain byte count
+// (binary units). "0" and "none" mean no limit.
+func parseBytes(s string) (int64, error) {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	if s == "NONE" || s == "" {
+		return 0, nil
+	}
+	s = strings.TrimSuffix(strings.TrimSuffix(s, "B"), "I")
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(s, "K"):
+		mult = 1 << 10
+	case strings.HasSuffix(s, "M"):
+		mult = 1 << 20
+	case strings.HasSuffix(s, "G"):
+		mult = 1 << 30
+	case strings.HasSuffix(s, "T"):
+		mult = 1 << 40
+	}
+	if mult > 1 {
+		s = s[:len(s)-1]
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f < 0 || f*float64(mult) > float64(math.MaxInt64) {
+		return 0, fmt.Errorf("invalid size %q (e.g. 50G, 500M)", s)
+	}
+	return int64(f * float64(mult)), nil
 }

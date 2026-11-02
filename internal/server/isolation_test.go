@@ -368,6 +368,10 @@ func TestInviteRedeemAndMe(t *testing.T) {
 		!strings.Contains(string(body), "com.apple.caldav.account") || !strings.Contains(string(body), "/caldav/u/carol/") {
 		t.Fatalf("profile %d %s", resp.StatusCode, body)
 	}
+	// Only the self-signed LAN certificate here, so the profile is plain XML.
+	if !strings.HasPrefix(string(body), "<?xml") {
+		t.Fatalf("profile signed without a trusted certificate: % x", body[:16])
+	}
 	resp, _ = http.Get(f.ts.URL + path)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

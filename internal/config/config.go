@@ -57,6 +57,13 @@ type TailscaleConfig struct {
 	// Port in device URLs; 0 means the port of Listen. Set 443 when Tailscale
 	// Funnel forwards public TCP 443 to the listener.
 	Port int `json:"port,omitempty"`
+	// FunnelListen is an optional loopback address (e.g. "127.0.0.1:8444")
+	// for `tailscale funnel --proxy-protocol 1` to forward to. Connections
+	// there start with a PROXY v1 header carrying the public client's
+	// address, so rate limits and the audit log see real IPs. Only
+	// tailscaled on this host can reach it, which is why the header is
+	// trusted there and nowhere else.
+	FunnelListen string `json:"funnel_listen,omitempty"`
 }
 
 type ACMEConfig struct {
@@ -274,6 +281,18 @@ func (c Config) Validate() error {
 		}
 		if ts.Port < 0 || ts.Port > 65535 {
 			return fmt.Errorf("config: public.tailscale.port %d out of range", ts.Port)
+		}
+		if ts.FunnelListen != "" {
+			h, _, err := net.SplitHostPort(ts.FunnelListen)
+			if err != nil {
+				return fmt.Errorf("config: public.tailscale.funnel_listen: %w", err)
+			}
+			if !isLoopback(h) {
+				return fmt.Errorf("config: public.tailscale.funnel_listen %q must be a loopback address (it trusts PROXY headers)", ts.FunnelListen)
+			}
+			if ts.FunnelListen == c.Listen {
+				return fmt.Errorf("config: public.tailscale.funnel_listen must differ from listen")
+			}
 		}
 	}
 	if c.Public.DirectListen != "" {

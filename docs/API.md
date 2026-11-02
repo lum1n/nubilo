@@ -56,13 +56,13 @@ The older code flow (`POST /api/v1/pair/begin {code,name,public_key}` then `pair
 
 | Request | Response |
 | --- | --- |
-| `GET /api/v1/me` | `{"user":{id,username,display_name,role,status,created_at},"device":{id,name,role,user_id,…},"storage":{"objects","bytes"},"urls":{"caldav","carddav","webdav","photos"},"public_url"}` — `public_url` is `""` until a public domain is set; apps then switch to it after a signed request through it succeeds |
+| `GET /api/v1/me` | `{"user":{id,username,display_name,role,status,created_at},"device":{id,name,role,user_id,…},"storage":{"objects","bytes","quota_bytes"},"urls":{"caldav","carddav","webdav","photos"},"public_url"}` — `public_url` is `""` until a public domain is set; apps then switch to it after a signed request through it succeeds |
 | `GET /api/v1/me/passwords` | `{"passwords":[{"id","label","scope","created_at","last_used"}]}` |
 | `POST /api/v1/me/passwords {"label","scope"}` | 201 `{"id","username","password"}` — the password is shown once; scope is a comma list of `caldav,carddav,webdav,photos` or `all`; at most 10 per user (409) |
 | `DELETE /api/v1/me/passwords/{id}` | `{"revoked":id}` |
 | `POST /api/v1/me/profile {"services":["caldav","carddav"]}` | 201 `{"url","expires_at","password_id"}` — open `url` in Safari within 15 minutes; it downloads once |
 | `POST /api/v1/me/device-invite` | 201 `{"id","code","url","setup_url","expires_at","role","max_uses"}` — adds a device to the caller's own account: single use, expires in 1 hour; the redeemer's username is ignored. App-password (dav) devices get 403 |
-| `GET /api/v1/profile/{token}` | `application/x-apple-aspen-config` (no auth; single use) |
+| `GET /api/v1/profile/{token}` | `application/x-apple-aspen-config` (no auth; single use). CMS-signed (DER) when the server holds a trusted certificate (ACME in relay/direct mode, Tailscale); otherwise the plain XML plist |
 | `GET /api/v1/devices` | own devices `[{"id","name","role","user_id","created_at","last_seen","revoked"}]`; admins add `?all=1` |
 | `POST /api/v1/devices/{id}/revoke`, `/rename {"name"}` | own devices (admins: any) |
 | `GET /api/v1/users` | `{"users":[{"id","username","display_name"}]}` active users, for share pickers |
@@ -72,9 +72,13 @@ The older code flow (`POST /api/v1/pair/begin {code,name,public_key}` then `pair
 | Request | Response |
 | --- | --- |
 | `GET /api/v1/collections` | `{"collections":[{…collection, "owner","owner_user_id","root_id","access":"owner"\|"rw"\|"ro","shares":[…] (owners, roots only)}]}` |
-| `GET /api/v1/collections/{id}/shares` | `{"shares":[{"collection_id","principal_type":"user","principal_id","username","access","created_by","created_at"}]}` (owner only) |
-| `PUT /api/v1/collections/{id}/shares {"username"\|"principal_id","access":"ro"\|"rw"}` | the updated list |
-| `DELETE /api/v1/collections/{id}/shares?username=…` | the updated list |
+| `GET /api/v1/collections/{id}/shares` | `{"shares":[{"collection_id","principal_type":"user"\|"group","principal_id","username"?,"group_name"?,"access","created_by","created_at"}]}` (owner only) |
+| `PUT /api/v1/collections/{id}/shares {"principal_type"?:"user"\|"group","username"\|"group_name"\|"principal_id","access":"ro"\|"rw"}` | the updated list |
+| `DELETE /api/v1/collections/{id}/shares?username=…` (or `principal_type=group&principal_id=…` / `group_name=…`) | the updated list |
+| `GET /api/v1/groups` | `{"groups":[{"id","name","created_at","members":[user ids]}]}` (any user, for share pickers) |
+| `POST /api/v1/admin/groups {"name","members"?}` | group (409 name taken, case-insensitive; 404 unknown member) |
+| `PATCH /api/v1/admin/groups/{id} {"name"?,"members"?}` | group; `members` replaces the list |
+| `DELETE /api/v1/admin/groups/{id}` | 204; shares made to the group are deleted |
 
 Only top-level collections can be shared; everything below inherits the share.
 
@@ -111,7 +115,7 @@ Listings (`photos`, `photos/index`, album `items` and `index`) are gzipped for c
 | --- | --- |
 | `GET /api/v1/admin/users` | `{"users":[user + "devices","objects","bytes"]}` |
 | `POST /api/v1/admin/users {"username","display_name","role"}` | 201 user |
-| `PATCH /api/v1/admin/users/{id} {"role"?,"status":"active"\|"disabled"?,"display_name"?}` | user (409 when it would remove the last admin) |
+| `PATCH /api/v1/admin/users/{id} {"role"?,"status":"active"\|"disabled"?,"display_name"?,"quota_bytes"?}` | user (409 when it would remove the last admin; `quota_bytes` 0 removes the limit) |
 | `GET /api/v1/admin/invites` | `{"invites":[…]}` redeemable invites |
 | `POST /api/v1/admin/invites {"role","user_id"?,"ttl_hours"?,"max_uses"?}` | 201 `{"id","code","url","setup_url","expires_at","role","max_uses"}` |
 | `DELETE /api/v1/admin/invites/{id}` | `{"revoked":id}` |
@@ -131,6 +135,7 @@ Folder calls (used by the iOS Files app integration; same rules as WebDAV: top-l
 | `POST` | `/sync/v1/collection` | `{"kind", "name", "parent_id"?, "metadata"?}` → find or create |
 | `POST` | `/sync/v1/collection/update` | `{"id", "name"?, "parent_id"?}` (`""` = top level) → rename and/or move |
 | `POST` | `/sync/v1/collection/delete` | `{"id"}` → deletes subfolders and objects (journaled), then the folder |
+| `POST` | `/sync/v1/thumb` | `{"id", "size"?}` → `image/jpeg` thumbnail of a readable file object, longer side `size` rounded up to 64/128/256/512/1024 (default 256). JPEG, PNG, GIF, WebP, BMP and TIFF, judged first by the file's name (or `mime` without an extension), then by decoding; 415 for anything else (including HEIC), 404 when not readable, 413 above `max_blob_bytes`. Images over 64 MP are not decoded (415). Made on demand and kept in a 32 MB in-memory cache keyed by content hash and size. |
 
 A collection whose metadata has `"mirror": true` (the Mac calendar mirror) accepts object writes only from the device in `"mirror_device"`, which the server sets when a device turns `mirror` on.
 
@@ -145,3 +150,31 @@ A collection whose metadata has `"mirror": true` (the Mac calendar mirror) accep
 | `/dav/shared/<owner>/<name>/…` | file roots shared with the user |
 
 Accounts created before multi-user support keep using `/caldav/user/calendars/<name>/`.
+
+## Web app (`/web/`)
+
+`internal/server/webui` is embedded and served at `/web/`: `index.html` for every `/web/…` page path, other files at `/web/assets/<file>`. Plain ES modules, no build step, no third-party code. The CSP (`script-src 'self'; style-src 'self'`, images from `self`, `blob:`, `data:`) rules out inline scripts, inline styles and `style=""`, so the app styles only through `app.css` and sets nothing inline.
+
+Sign-in and the session routes are listed under "Web sign-in and the web app" below.
+
+A file upload from the browser hashes the file (SHA-256), `PUT`s the blob, then pushes `{"op":"create","kind":"file","object_id":<new ULID>,"content_hash":hash,"blob_id":hash,"size","metadata":{"name","mime"}}`, or an `update` with `base_revision` when a file of that name exists, as a WebDAV PUT does. Renames push an `update` that changes only `metadata.name`; deletes push `delete` with `base_revision`.
+
+## Storage quotas
+
+`users.quota_bytes` (0 = no limit) caps what live objects in collections a user owns cost (`objects.charged`), whoever writes them: a write into a shared read-write folder counts against its owner. An object costs its data, its metadata, and every blob its metadata names (photo previews, thumbnails, Live Photo movies). A blob-backed object's `size` is always set to its stored blob size; other objects need `0 ≤ size ≤ max blob size` (else `"invalid size"`), and metadata is capped at 256 KiB (`"metadata too large"`). Shrinking writes and deletes are always allowed. Schema v6 charges existing objects their size plus metadata. Over quota, `/sync/v1/push` answers the item with `"error": "quota exceeded"`, WebDAV/CalDAV/CardDAV PUT answers 507, and `POST /api/v1/photos` and `/photos/commit` answer 507. `GET /api/v1/me` returns `storage: {objects, bytes, quota_bytes}`.
+
+## Web sign-in and the web app
+
+The browser app is served at `/web/` (static files at `/web/assets/`). Sign-in is approved from a paired app; see SECURITY.md §15f.
+
+| Call | Auth | Result |
+|---|---|---|
+| `POST /web/api/login` | none (`X-Nubilo-Web: 1`) | 201 `{code:"ABCD-EFGH", expires_at, link:"nubilo://web-login?url=…&code=…", qr_png}`; sets the browser-secret cookie |
+| `GET /web/api/login` | browser-secret cookie | `{status:"pending"\|"approved"\|"expired"}`; on `approved` sets the `nubilo_web` session cookie |
+| `POST /web/api/logout` | session | 204 |
+| `GET /api/v1/me/web-login?code=…` | signed app | `{code, user_agent, ip, created_at, expires_at}`; 404 unknown or expired |
+| `POST /api/v1/me/web-login {"code"}` | signed app (role `client`) | 204; 404 unknown, expired or already used |
+| `GET /api/v1/me/web-sessions` | signed | `{sessions:[{id, device_id, user_agent, ip, created_at, last_seen, expires_at}]}` |
+| `DELETE /api/v1/me/web-sessions/{id}` | signed | 204 |
+
+With a session cookie (and `X-Nubilo-Web: 1` plus a same-origin `Origin` on non-GET), `/web/api/` mirrors the app API for the approving device: `me`, `collections`, `objects`, `object`, `collection`, `collection/update`, `collection/delete`, `push`, `blob/{hash}` (PUT), `photos` (GET/POST), `photos/{id}[/original|/preview|/thumb]`, `albums`, `albums/{id}/items`, and `files/{object id}` (GET, download as an attachment).

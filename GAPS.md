@@ -7,7 +7,7 @@ Priorities stay: security, integrity, correct sync. Tailscale is transport only.
 ## Works today
 
 - CalDAV (calendars and reminders) and CardDAV (contacts) for every device, with app passwords and Apple-trusted TLS.
-- WebDAV files, Mac agent folder sync, photo backup from the Mac and iPhone apps, photo HTTP API and `nubilo ui` gallery + upload.
+- WebDAV files, Mac agent folder sync, photo backup from the Mac and iPhone apps, photo HTTP API, `nubilo ui` gallery + upload, and the browser app at `/web/` (photos and files, signed in from a paired app).
 - Pairing, backup/restore (CLI + UI), enroll/rotate, TLS regen, verify, gc, optional server auto-backup.
 - Always-on user services: `nubilo server install` (Linux systemd `--user` or macOS LaunchAgent), `nubilo agent install` (macOS LaunchAgent running the current binary).
 - Guided setup + doctor: `nubilo setup`, `nubilo agent setup`, `nubilo doctor`, UI health panel; macOS agent keys in Keychain.
@@ -22,7 +22,7 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 | Reminders (`VTODO`) | Done | VTODO-only calendar collections |
 | Calendar color (`calendar-color` PROPPATCH) | Done | Stored in collection metadata; returned on PROPFIND |
 | Sharing a calendar or address book with another user | Done | Read-only or read-write shares (SECURITY.md §5.1) |
-| Calendar mirror (Mac → server, read-only elsewhere) | Done | Nubilo Mac app reads EventKit and writes the chosen calendars to server calendars marked `"mirror": true`; only the owning device may write them. Occurrences from −30 to +365 days as separate events (no RRULE), so repeating meetings are not shown as series. Runs only while the app runs. No reminders or contacts |
+| Calendar mirror (Mac → server, read-only elsewhere) | Done | Nubilo Mac app reads EventKit and writes the chosen calendars to server calendars marked `"mirror": true`; only the owning device may write them. Events from −30 to +365 days; repeating meetings as series (RRULE with EXDATE and RECURRENCE-ID overrides), falling back to one event per occurrence for rules that cannot be written faithfully (week-of-year or day-of-year rules, yearly weekday rules without a month, or a rule that does not reproduce EventKit's occurrences). Outside the window the phone expands the bare rule, so occurrences moved or cancelled there are not known. Runs only while the app runs. No reminders or contacts |
 | Inline binary attachments | Open | Would bloat blobs; URI ATTACH only |
 | Moving data out of iCloud | Manual | Export from iCloud (or drag the calendars into the Nubilo account on the Mac) |
 
@@ -38,8 +38,9 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 
 ## Files
 
-- iPhone and iPad: Nubilo is a location in the Files app (File Provider extension in the app, signed sync API, no app password). Browse, open, add, edit, rename, move and delete files and folders, including folders shared with you (read-only ones are locked). Changes made elsewhere show up when Files refreshes (the app also asks it to when it comes to the foreground). Not yet: thumbnails, Camera Upload ingestion through Files (WebDAV only), offline pinning beyond what iOS keeps.
-- Finder (and other WebDAV clients) can mount `/dav/` (nested folders, file + collection COPY, MOVE across folders).
+- iPhone and iPad: Nubilo is a location in the Files app (File Provider extension in the app, signed sync API, no app password). Browse, open, add, edit, rename, move and delete files and folders, including folders shared with you (read-only ones are locked). Changes made elsewhere show up when Files refreshes (the app also asks it to when it comes to the foreground). Image files show thumbnails made by the server (JPEG, PNG, GIF, WebP, BMP, TIFF; HEIC, RAW and video have none yet). Not yet: Camera Upload ingestion through Files (WebDAV only), offline pinning beyond what iOS keeps.
+- Mac: the same File Provider extension puts Nubilo in Finder's sidebar (macOS File Provider, files download on open, thumbnails as above). Built and signed in Xcode only; not yet tried on a Mac. Not yet: trash (deletes are immediate), keeping files downloaded (pinning).
+- Finder without the app (and other WebDAV clients) can mount `/dav/` (nested folders, file + collection COPY, MOVE across folders).
 - Mac agent can sync selected local folders: `nubilo agent files add PATH`, `files on`. Nested dirs become nested collections; pull writes back to disk.
 - Agent configuration UI: `nubilo agent ui` (loopback, same look as `nubilo ui`) for folder selection and setup; CLI selection remains.
 - `nubilo ui` can upload into a files collection; files browser drills into nested subfolders (agent syncs nested dirs as child collections).
@@ -49,7 +50,7 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 ## Integrity / sync
 
 - Failed `apply_change` no longer advances the journal cursor.
-- Multi-user since schema v2: users, per-collection ownership, read-only/read-write shares of top-level collections, isolated journal/blobs/photos/DAV (SECURITY.md §5.1). Groups, quotas and per-user web logins are not implemented yet; the admin console acts as a chosen user.
+- Multi-user since schema v2: users, per-collection ownership, read-only/read-write shares of top-level collections, isolated journal/blobs/photos/DAV (SECURITY.md §5.1). Per-user storage quotas (schema v3; `nubilo users quota`, app Members → Storage Limit) count live objects in collections the user owns. Groups (schema v4; `nubilo groups`, app People → Groups) can be shared with like users; a member gets the best of their direct and group shares. Each user can use the web app at `/web/` (photos, albums, files), signing in by approving a code from the Nubilo app (People → Sign In on the Web); there are no web passwords. The admin console (`nubilo ui`) stays loopback-only and acts as a chosen user.
 
 ## Security / ops
 
@@ -67,4 +68,4 @@ The Mac, like the iPhone, adds the server as a CalDAV / CardDAV account (the pro
 
 - Hands-on phone/Finder restore drills remain operator actions; `nubilo doctor` surfaces the checklist in product.
 - Corporate credentials never leave the Mac. `nubilo agent` runs in the foreground on any OS; only its always-on install is macOS-only. GPS never lands in SQLite. Originals are never mutated.
-- iOS/macOS app (`apps/Nubilo`): onboarding by QR, CalDAV/CardDAV profile install, best-effort photo backup, gallery and shared albums, managing people and devices, Files app integration on iPhone/iPad. No Android app. Signed profiles are later work.
+- iOS/macOS app (`apps/Nubilo`): onboarding by QR, CalDAV/CardDAV profile install, best-effort photo backup, gallery and shared albums, managing people and devices, Files app integration on iPhone/iPad and in Finder on the Mac. No Android app. Profiles are signed when the server holds a trusted certificate (relay, direct, Tailscale); proxy and LAN-only servers hand them out unsigned.

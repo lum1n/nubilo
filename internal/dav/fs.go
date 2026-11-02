@@ -443,10 +443,7 @@ func (f *FS) Create(ctx context.Context, name string, body io.ReadCloser, opts *
 		return nil, false, err
 	}
 	if res[0].Status != "ok" {
-		if res[0].Status == "conflict" {
-			return nil, false, webdav.NewHTTPError(http.StatusPreconditionFailed, errors.New("conflict"))
-		}
-		return nil, false, webdav.NewHTTPError(http.StatusConflict, errors.New(res[0].Error))
+		return nil, false, pushError(res[0])
 	}
 	obj, err := f.Engine.GetObject(ctx, in.ObjectID)
 	if err != nil {
@@ -707,8 +704,11 @@ func (f *FS) copyCollectionContents(ctx context.Context, src, dest *syncengine.C
 		if err != nil {
 			return err
 		}
-		if len(res) == 0 || res[0].Status != "ok" {
+		if len(res) == 0 {
 			return webdav.NewHTTPError(http.StatusConflict, errors.New("copy object failed"))
+		}
+		if res[0].Status != "ok" {
+			return pushError(res[0])
 		}
 	}
 	children, err := f.Engine.ChildCollections(ctx, "", "files", src.ID)
@@ -909,3 +909,18 @@ func looksLikeMediaUpload(name string, payload []byte) bool {
 }
 
 var _ webdav.FileSystem = (*FS)(nil)
+
+// pushError maps a rejected push result to the WebDAV status a client acts
+// on: 412 for a revision conflict, 403 for a read-only mirror, 507 when the
+// owner is over quota, 409 otherwise.
+func pushError(r syncengine.PushResult) error {
+	switch {
+	case r.Status == "conflict":
+		return webdav.NewHTTPError(http.StatusPreconditionFailed, errors.New("conflict"))
+	case r.Error == syncengine.ErrMirrorReadOnly:
+		return webdav.NewHTTPError(http.StatusForbidden, errors.New(r.Error))
+	case r.Error == syncengine.ErrQuotaExceeded:
+		return webdav.NewHTTPError(http.StatusInsufficientStorage, errors.New(r.Error))
+	}
+	return webdav.NewHTTPError(http.StatusConflict, errors.New(r.Error))
+}

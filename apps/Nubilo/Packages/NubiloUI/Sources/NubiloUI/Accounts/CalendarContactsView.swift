@@ -36,7 +36,7 @@ struct CalendarContactsView: View {
                 }
             }
             Section {
-                Text("The profile is not signed, so it is shown as “Unverified”. That is expected for a self-hosted server.")
+                Text("If Settings shows the profile as “Unverified”, your server has no public certificate to sign it with (proxy mode or home network only). That is expected for a self-hosted server.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

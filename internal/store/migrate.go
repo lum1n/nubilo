@@ -21,8 +21,15 @@ type migration struct {
 
 var migrations = []migration{
 	{Version: 2, Name: "multi-user", Up: migrateV2},
-	{Version: 3, Name: "object lookup indexes", Up: migrateV3},
+	{Version: 3, Name: "quotas", Up: migrateV3},
+	{Version: 4, Name: "groups", Up: migrateV4},
+	{Version: 5, Name: "web login", Up: migrateV5},
+	{Version: 6, Name: "quota charge", Up: migrateV6},
+	{Version: 7, Name: "object lookup indexes", Up: migrateV7},
 }
+
+// LatestSchemaVersion is the version Migrate brings a database to.
+var LatestSchemaVersion = migrations[len(migrations)-1].Version
 
 // SchemaVersion returns the highest applied schema version.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
@@ -315,10 +322,76 @@ func recountBlobRefs(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-// migrateV3 indexes the lookups that ran once per photo during backup and
+// migrateV3 adds a storage quota per user; 0 means no limit.
+func migrateV3(ctx context.Context, tx *sql.Tx) error {
+	return addColumn(ctx, tx, "users", "quota_bytes", "INTEGER NOT NULL DEFAULT 0")
+}
+
+// migrateV4 adds groups of users; shares with principal_type 'group' grant
+// every member access.
+func migrateV4(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS groups (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+			created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS group_members (
+			group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+			user_id TEXT NOT NULL REFERENCES users(id),
+			PRIMARY KEY (group_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS group_members_user ON group_members(user_id);
+	`)
+	return err
+}
+
+// migrateV5 adds browser sign-in approved from a paired device: pending
+// logins (code shown in the browser) and the sessions they become.
+func migrateV5(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS web_logins (
+			id TEXT PRIMARY KEY,
+			code TEXT NOT NULL UNIQUE,
+			browser_hash BLOB NOT NULL,
+			user_agent TEXT NOT NULL,
+			ip TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			approved_by TEXT,
+			approved_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS web_sessions (
+			id TEXT PRIMARY KEY,
+			hash BLOB NOT NULL,
+			user_id TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			user_agent TEXT NOT NULL,
+			ip TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			last_seen INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS web_sessions_user ON web_sessions(user_id);
+	`)
+	return err
+}
+
+// migrateV6 records what each object costs its owner toward the quota
+// (size, metadata and extra blobs; syncengine charge). Existing objects are
+// charged their size and metadata.
+func migrateV6(ctx context.Context, tx *sql.Tx) error {
+	if err := addColumn(ctx, tx, "objects", "charged", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE objects SET charged = MAX(size, 0) + COALESCE(length(metadata), 0)`)
+	return err
+}
+
+// migrateV7 indexes the lookups that ran once per photo during backup and
 // scanned the whole library: by blob (photos/check, commit dedupe), by name
 // (commit), and album items by source photo.
-func migrateV3(ctx context.Context, tx *sql.Tx) error {
+func migrateV7(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS objects_collection_blob ON objects(collection_id, blob_id);
 		CREATE INDEX IF NOT EXISTS objects_collection_name ON objects(collection_id, json_extract(metadata, '$.name'));

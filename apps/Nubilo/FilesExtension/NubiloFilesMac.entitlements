@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists/1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- macOS loads File Provider extensions only when sandboxed. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Talks to the Nubilo server. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!--
+	Reads the app's pairing and device key (SharedCredentials, data
+	protection keychain). Same group as on iOS.
+	-->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)dev.nubilo.shared</string>
+	</array>
+	<!--
+	macOS app groups are team-prefixed (no portal registration needed);
+	must match NSExtensionFileProviderDocumentGroup in Info-macOS.plist.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(TeamIdentifierPrefix)dev.nubilo.shared</string>
+	</array>
+</dict>
+</plist>

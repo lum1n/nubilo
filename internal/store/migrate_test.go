@@ -95,7 +95,7 @@ func TestMigrateV1ToV2(t *testing.T) {
 	}
 	defer st.Close()
 	ctx := context.Background()
-	if v, err := st.SchemaVersion(ctx); err != nil || v != 3 {
+	if v, err := st.SchemaVersion(ctx); err != nil || v != store.LatestSchemaVersion {
 		t.Fatalf("version %d %v", v, err)
 	}
 	var owner, role string
@@ -179,7 +179,7 @@ func TestFreshDatabaseHasNoUsers(t *testing.T) {
 	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("fresh db users %d %v", n, err)
 	}
-	if v, _ := st.SchemaVersion(context.Background()); v != 3 {
+	if v, _ := st.SchemaVersion(context.Background()); v != store.LatestSchemaVersion {
 		t.Fatalf("fresh version %d", v)
 	}
 }

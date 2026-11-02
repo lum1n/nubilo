@@ -118,6 +118,8 @@ func (s *Server) handleAdminPatchUser(w http.ResponseWriter, r *http.Request) {
 		Role        identity.UserRole `json:"role"`
 		Status      string            `json:"status"`
 		DisplayName string            `json:"display_name"`
+		// QuotaBytes sets the storage quota; 0 removes it, absent leaves it.
+		QuotaBytes *int64 `json:"quota_bytes"`
 	}
 	if err := s.readJSON(r, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -151,12 +153,18 @@ func (s *Server) handleAdminPatchUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.QuotaBytes != nil {
+		if err := s.IDs.SetUserQuota(r.Context(), id, *req.QuotaBytes); err != nil {
+			fail(err)
+			return
+		}
+	}
 	u, err := s.IDs.GetUser(r.Context(), id)
 	if err != nil {
 		fail(err)
 		return
 	}
-	s.Audit.Event(r.Context(), dev.ID, "user.update", map[string]any{"user": id, "role": u.Role, "status": u.Status})
+	s.Audit.Event(r.Context(), dev.ID, "user.update", map[string]any{"user": id, "role": u.Role, "status": u.Status, "quota_bytes": u.QuotaBytes})
 	s.writeJSON(w, http.StatusOK, u)
 }
 

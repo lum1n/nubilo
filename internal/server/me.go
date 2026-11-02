@@ -59,6 +59,12 @@ func (s *Server) baseURL(r *http.Request) string {
 	return "https://" + r.Host
 }
 
+// myStorage is the caller's usage plus their quota (0 = no limit).
+type myStorage struct {
+	syncengine.Usage
+	QuotaBytes int64 `json:"quota_bytes"`
+}
+
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	dev := userDevice(w, r)
 	if dev == nil {
@@ -78,7 +84,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"user":    u,
 		"device":  toDeviceRow(dev),
-		"storage": usage[u.ID],
+		"storage": myStorage{Usage: usage[u.ID], QuotaBytes: u.QuotaBytes},
 		"urls": map[string]string{
 			"caldav":  base + profile.PrincipalPath("/caldav", u.Username),
 			"carddav": base + profile.PrincipalPath("/carddav", u.Username),
@@ -220,6 +226,16 @@ func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
+	}
+	// Sign with the publicly trusted certificate when the server holds one,
+	// so the device shows the profile as Verified; otherwise it stays
+	// unsigned as before.
+	if cert, _, err := profile.SigningCert(s.Cfg); err == nil {
+		if signed, err := profile.Sign(body, cert); err != nil {
+			s.Log.Warn("profile_sign", "err", err.Error())
+		} else {
+			body = signed
+		}
 	}
 	// The payload holds a plaintext password; keep it encrypted at rest and
 	// only until first download or expiry.
@@ -431,17 +447,34 @@ type shareReq struct {
 	PrincipalType string `json:"principal_type"`
 	PrincipalID   string `json:"principal_id"`
 	Username      string `json:"username"`
+	GroupName     string `json:"group_name"`
 	Access        string `json:"access"`
 }
 
-// principal resolves a share request to a user id (by id or username).
-func (s *Server) principal(ctx context.Context, req shareReq) (string, error) {
-	if req.PrincipalType == "" {
-		req.PrincipalType = "user"
+// principal resolves a share request to a principal type and id: a user (by
+// id or username) or a group (by id or name).
+func (s *Server) principal(ctx context.Context, req shareReq) (string, string, error) {
+	switch req.PrincipalType {
+	case "", "user":
+		id, err := s.userPrincipal(ctx, req)
+		return "user", id, err
+	case "group":
+		if req.PrincipalID == "" && req.GroupName != "" {
+			g, err := s.IDs.GetGroupByName(ctx, req.GroupName)
+			if err != nil {
+				return "", "", err
+			}
+			return "group", g.ID, nil
+		}
+		if _, err := s.IDs.GetGroup(ctx, req.PrincipalID); err != nil {
+			return "", "", err
+		}
+		return "group", req.PrincipalID, nil
 	}
-	if req.PrincipalType != "user" {
-		return "", fmt.Errorf("unsupported principal type")
-	}
+	return "", "", fmt.Errorf("unsupported principal type")
+}
+
+func (s *Server) userPrincipal(ctx context.Context, req shareReq) (string, error) {
 	if req.PrincipalID == "" && req.Username != "" {
 		u, err := s.IDs.GetUserByName(ctx, req.Username)
 		if err != nil {
@@ -465,20 +498,20 @@ func (s *Server) handleSharesPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	uid, err := s.principal(r.Context(), req)
+	ptype, pid, err := s.principal(r.Context(), req)
 	if err != nil {
-		http.Error(w, "unknown user", http.StatusBadRequest)
+		http.Error(w, "unknown user or group", http.StatusBadRequest)
 		return
 	}
 	by := dev.UserID
 	if by == "" {
 		by = dev.ID
 	}
-	if err := s.Engine.SetShare(r.Context(), c.ID, "user", uid, req.Access, by); err != nil {
+	if err := s.Engine.SetShare(r.Context(), c.ID, ptype, pid, req.Access, by); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	s.Audit.Event(r.Context(), dev.ID, "share.set", map[string]any{"collection": c.ID, "principal": uid, "access": req.Access})
+	s.Audit.Event(r.Context(), dev.ID, "share.set", map[string]any{"collection": c.ID, "principal_type": ptype, "principal": pid, "access": req.Access})
 	s.handleSharesGet(w, r)
 }
 
@@ -487,23 +520,24 @@ func (s *Server) handleSharesDelete(w http.ResponseWriter, r *http.Request) {
 	if c == nil {
 		return
 	}
-	req := shareReq{PrincipalType: r.URL.Query().Get("principal_type"), PrincipalID: r.URL.Query().Get("principal_id"), Username: r.URL.Query().Get("username")}
-	if req.PrincipalID == "" && req.Username == "" {
+	q := r.URL.Query()
+	req := shareReq{PrincipalType: q.Get("principal_type"), PrincipalID: q.Get("principal_id"), Username: q.Get("username"), GroupName: q.Get("group_name")}
+	if req.PrincipalID == "" && req.Username == "" && req.GroupName == "" {
 		if err := s.readJSON(r, &req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 	}
-	uid, err := s.principal(r.Context(), req)
+	ptype, pid, err := s.principal(r.Context(), req)
 	if err != nil {
-		http.Error(w, "unknown user", http.StatusBadRequest)
+		http.Error(w, "unknown user or group", http.StatusBadRequest)
 		return
 	}
-	if err := s.Engine.RemoveShare(r.Context(), c.ID, "user", uid); err != nil {
+	if err := s.Engine.RemoveShare(r.Context(), c.ID, ptype, pid); err != nil {
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
 	}
-	s.Audit.Event(r.Context(), dev.ID, "share.remove", map[string]any{"collection": c.ID, "principal": uid})
+	s.Audit.Event(r.Context(), dev.ID, "share.remove", map[string]any{"collection": c.ID, "principal_type": ptype, "principal": pid})
 	s.handleSharesGet(w, r)
 }
 
@@ -568,6 +602,21 @@ func (s *Server) handleJoinPage(w http.ResponseWriter, r *http.Request) {
 <p><a class="b" id="open" href="#">Open in Nubilo</a></p><p id="code" style="font-family:ui-monospace,monospace"></p>
 <script>var c=location.hash.slice(1);var u="nubilo://setup?url="+encodeURIComponent(location.origin)+"&invite="+encodeURIComponent(c);
 document.getElementById("open").href=u;document.getElementById("code").textContent=c?"Invite code: "+c:"This link has no invite code.";</script></body></html>`, name)
+}
+
+// handleHomePage answers the bare server URL, so a shared link or a browser
+// visit shows what this is instead of a 404. It reveals only the server name,
+// which /join shows too.
+func (s *Server) handleHomePage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	name := htmlEscape(s.Cfg.Public.Name())
+	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%[1]s</title><style>body{font:17px -apple-system,system-ui,sans-serif;max-width:32em;margin:3em auto;padding:0 1em}</style></head>
+<body><h1>%[1]s</h1><p>This is a Nubilo server. Devices connect to it with the Nubilo app.</p>
+<p>To add a device, ask an admin for an invite and scan it with the Nubilo app, or open the invite link on the device.</p>
+<p><a href="/web/">Open Nubilo on the web</a></p></body></html>`, name)
 }
 
 func htmlEscape(s string) string {

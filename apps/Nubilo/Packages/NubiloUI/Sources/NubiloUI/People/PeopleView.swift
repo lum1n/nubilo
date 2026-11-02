@@ -13,6 +13,9 @@ struct PeopleView: View {
                     NavigationLink { MembersView() } label: {
                         Label("Members", systemImage: "person.2")
                     }
+                    NavigationLink { GroupsView() } label: {
+                        Label("Groups", systemImage: "person.3")
+                    }
                     NavigationLink { InviteView() } label: {
                         Label("Invite Someone", systemImage: "qrcode")
                     }
@@ -28,9 +31,12 @@ struct PeopleView: View {
                 NavigationLink { AppPasswordsView() } label: {
                     Label("App Passwords", systemImage: "key")
                 }
+                NavigationLink { WebSignInView() } label: {
+                    Label("Sign In on the Web", systemImage: "globe")
+                }
                 if let storage = model.me?.storage {
                     LabeledContent("Storage used") {
-                        Text("\(storage.bytes.byteString) in \(storage.objects) items")
+                        Text("\(storage.bytes.usage(of: storage.quotaBytes)) in \(storage.objects) items")
                     }
                 }
             }

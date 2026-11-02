@@ -167,6 +167,30 @@ extension NubiloClient {
         try await raw("GET", Self.blobPath(hash))
     }
 
+    public static let thumbnailPath = "/sync/v1/thumb"
+
+    /// The signed request for a file object's JPEG thumbnail; the server
+    /// rounds `size` (longer side, pixels) up to 64, 128, 256, 512 or 1024.
+    public func thumbnailRequest(objectID: String, size: Int) throws -> URLRequest {
+        struct Req: Encodable {
+            var id: String
+            var size: Int
+        }
+        let body = try Self.encoder.encode(Req(id: objectID, size: max(1, size)))
+        return try request("POST", Self.thumbnailPath, body: body, contentType: "application/json")
+    }
+
+    /// A JPEG thumbnail of an image file object. The server answers 415 for
+    /// files it cannot decode and 404 for objects the device cannot read.
+    public func thumbnail(objectID: String, size: Int) async throws -> Data {
+        let (data, resp) = try await transport.send(try thumbnailRequest(objectID: objectID, size: size))
+        guard (200..<300).contains(resp.statusCode) else {
+            let msg = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NubiloError.http(status: resp.statusCode, message: msg)
+        }
+        return data
+    }
+
     /// Pushes up to 500 changes in one transaction.
     public func push(_ changes: [SyncChange]) async throws -> [SyncPushResult] {
         struct Req: Encodable {

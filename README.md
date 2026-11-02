@@ -39,6 +39,7 @@ Setup ends with an admin invite QR code: scan it with the Nubilo app to become t
 ./nubilo users invite --role member        # QR code + https://<domain>/join#<code>
 ./nubilo users list
 ./nubilo users disable USERNAME            # revokes all their devices and app passwords
+./nubilo users quota USERNAME 50G          # storage limit; 0 removes it
 ```
 
 The same is available in the admin console (`nubilo ui`, Users tab) and in the app. Data commands take `--user USERNAME` (default: the owner admin), e.g. `nubilo --user anna calendars list`.
@@ -140,7 +141,13 @@ Failed local listings never push mass deletes.
 
 The agent does not sync Photos, Calendar, Reminders or Contacts. The Nubilo app backs up Photos.app on the Mac and the iPhone; for calendars and contacts install the Calendar & Contacts profile (Nubilo app → Calendar & Contacts). Older agents' `photos`, `calendars`, `reminders` and `sync_contacts` settings in `agent.json` are ignored.
 
-**Calendar mirror.** For calendars only a particular Mac can reach, such as a work Exchange account, the Nubilo Mac app mirrors chosen Mac calendars one way into read-only server calendars (Nubilo app → Calendar & Contacts → Mirror Mac Calendars). They show up read-only in the CalDAV account on your other devices: the server marks such a calendar with `"mirror": true`, only the device that owns the mirror may write to it, and edits from anything else are refused (`read-only mirror`, HTTP 403 over CalDAV). Deleting the whole mirrored calendar stays possible. Nothing is written back to the Mac. Events from 30 days ago to a year ahead are copied, each occurrence of a repeating meeting as its own event; the copy updates while the app runs (Settings → Open at Login), shortly after Calendar changes and every 15 minutes. If one of your own calendars already has the same name, the copy is named "… (Mac)". Turning a calendar off leaves its copy until you delete it. Check your employer's policy before copying work calendars to a personal server.
+**Calendar mirror.** For calendars only a particular Mac can reach, such as a work Exchange account, the Nubilo Mac app mirrors chosen Mac calendars one way into read-only server calendars (Nubilo app → Calendar & Contacts → Mirror Mac Calendars). They show up read-only in the CalDAV account on your other devices: the server marks such a calendar with `"mirror": true`, only the device that owns the mirror may write to it, and edits from anything else are refused (`read-only mirror`, HTTP 403 over CalDAV). Deleting the whole mirrored calendar stays possible. Nothing is written back to the Mac. Events from 30 days ago to a year ahead are copied, a repeating meeting as one repeating event with its moved and cancelled occurrences (or, for a repeat rule that cannot be copied faithfully, each occurrence as its own event); the copy updates while the app runs (Settings → Open at Login), shortly after Calendar changes and every 15 minutes. If one of your own calendars already has the same name, the copy is named "… (Mac)". Turning a calendar off leaves its copy until you delete it. Check your employer's policy before copying work calendars to a personal server.
+
+## Web
+
+Open `https://<host>/web/` in any browser to see your photos, albums and files. There is no password: the page shows a code and a QR code; scan it with the Nubilo app on your phone or Mac, or type the code under People → Sign In on the Web. The browser then has the same access as the device that approved it until you sign out.
+
+In the browser you can browse photos by month, open them full screen (arrow keys move between them), download originals, and upload pictures and videos. In Files you can open your folders and folders shared with you, download, upload (drop files onto the page), rename and delete files and folders, and make new folders. Folders shared read-only show no write controls. Uploads land exactly as uploads from the Files app or WebDAV do.
 
 ## Operations
 
@@ -172,9 +179,14 @@ GPS stays in the encrypted original; it is not stored in SQLite. Derivatives str
 ## Commands
 
 ```text
-nubilo setup | doctor | init | server | ui | status
+nubilo setup | doctor | init | server | ui | status | version
 nubilo server install|uninstall|service
+nubilo users list|add|disable|enable|role|quota|invite
+nubilo groups list|add|members|rename|delete
+nubilo relay init|run|install|uninstall|invite|members|revoke
 nubilo pair | devices | devices revoke|rename|password|enroll|rotate
+nubilo files|calendars|contacts [list|mkdir|create]    # --user USERNAME selects whose data
+nubilo photos [list]
 nubilo agent | agent setup|ui|install|uninstall|service
 nubilo agent files add|remove|list|on|off
 nubilo verify | gc | backup | restore | tls

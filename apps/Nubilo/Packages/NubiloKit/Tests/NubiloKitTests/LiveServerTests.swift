@@ -126,6 +126,39 @@ final class LiveCalendarMirrorTests: XCTestCase {
         XCTAssertEqual(run.calendars.map(\.pushed), [0, 0])
         live = try await c.liveObjects(collectionID: work.id)
         XCTAssertEqual(live.count, 1)
+
+        // A repeating meeting copied as single occurrences (an older app), then as one series: the singles go.
+        let utc = TimeZone(identifier: "UTC")!
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = utc
+        let first = cal.startOfDay(for: now).addingTimeInterval(10 * 3600)
+        let rule = MirrorRecurrence(frequency: .daily, count: 3)
+        func occurrence(_ i: Int, series: Bool) -> MirrorEvent {
+            let s = first.addingTimeInterval(Double(i) * 86400)
+            return MirrorEvent(key: "S@" + ICSWriter.utc(s), title: "Daily", start: s, end: s.addingTimeInterval(900), timeZone: utc,
+                               seriesID: series ? "S" : nil, occurrenceDate: s, recurrence: series ? [rule] : [],
+                               seriesStart: series ? first : nil)
+        }
+        let kept = fake.events["ex"] ?? []
+        fake.events["ex"] = kept + (0..<3).map { occurrence($0, series: false) }
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.calendars.first?.pushed, 3)
+        fake.events["ex"] = kept + (0..<3).map { occurrence($0, series: true) }
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.errors, [])
+        XCTAssertEqual(run.calendars.first?.pushed, 1)
+        XCTAssertEqual(run.calendars.first?.deleted, 3)
+        live = try await c.liveObjects(collectionID: work.id)
+        XCTAssertEqual(live.count, 2)
+        XCTAssertTrue(live.values.contains { $0.uid == MirrorSeries.objects(for: fake.events["ex"]!, from: now, to: now)
+                .first { $0.seriesID == "S" }?.uid })
+
+        // Lost state again: the series object is adopted by UID.
+        try? FileManager.default.removeItem(at: stateURL)
+        engine = CalendarMirrorEngine(stateURL: stateURL)
+        run = await engine.run(client: c, reader: fake, selections: sels, deviceID: paired.deviceID)
+        XCTAssertEqual(run.calendars.first?.pushed, 0)
+        XCTAssertEqual(run.calendars.first?.deleted, 0)
     }
 }
 
@@ -162,6 +195,19 @@ final class LiveFilesTests: XCTestCase {
         XCTAssertEqual(listed.map(\.name), ["note.txt"])
         let body = try await fs.contents(of: note)
         XCTAssertEqual(String(decoding: body, as: UTF8.self), "hello")
+
+        // Thumbnails: a JPEG for a PNG, none for text.
+        let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGM4IScHRwzEcQCxYxBBO0tjggAAAABJRU5ErkJggg=="))
+        let pic = try await fs.createFile(named: "dot.png", in: docs.id, data: png, mime: "image/png")
+        XCTAssertTrue(pic.hasThumbnail)
+        XCTAssertFalse(note.hasThumbnail)
+        let thumb = try await fs.thumbnail(of: pic.id, size: 128)
+        XCTAssertEqual(Array(thumb.prefix(2)), [0xFF, 0xD8], "a JPEG")
+        do {
+            _ = try await fs.thumbnail(of: note.id, size: 128)
+            XCTFail("thumbnail of a text file")
+        } catch FilesError.noThumbnail {}
+        try await fs.delete(pic)
 
         var changes = try await fs.changes(since: start)
         XCTAssertTrue(changes.updated.contains { $0.id == docs.id }, "new folder in changes")

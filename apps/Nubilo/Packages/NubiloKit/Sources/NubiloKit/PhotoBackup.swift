@@ -109,6 +109,8 @@ public struct BackupRun: Equatable, Sendable {
     public var committed = 0
     public var queued = 0
     public var errors: [String] = []
+    /// The server refused a photo because the account is over its storage limit.
+    public var storageFull = false
 }
 
 /// Runs backup passes. All SwiftData access happens on this actor.
@@ -235,8 +237,9 @@ public actor PhotoBackupEngine {
         }
         await refreshLibrary(client: client)
         await commitUploaded(client: client, run: &run)
-        // The BGTask expiration handler cancels the surrounding Task.
-        while Date() < deadline, !Task.isCancelled {
+        // The BGTask expiration handler cancels the surrounding Task. A full
+        // account stops the pass so no more bytes are uploaded for nothing.
+        while Date() < deadline, !Task.isCancelled, !run.storageFull {
             let batch = nextPending(limit: 25)
             if batch.isEmpty { break }
             var prepared: [(BackupAsset, ExportedAsset)] = []
@@ -273,7 +276,11 @@ public actor PhotoBackupEngine {
                     run.queued += 1
                 } else {
                     exported.cleanUp()
-                    await commit(row, client: client, run: &run)
+                    if run.storageFull {
+                        row.status = BackupState.uploaded.rawValue
+                    } else {
+                        await commit(row, client: client, run: &run)
+                    }
                 }
                 row.updatedAt = Date()
             }
@@ -311,7 +318,7 @@ public actor PhotoBackupEngine {
     private func commitUploaded(client: NubiloClient, run: inout BackupRun) async {
         let uploaded = BackupState.uploaded.rawValue
         let rows = (try? modelContext.fetch(FetchDescriptor<BackupAsset>(predicate: #Predicate { $0.status == uploaded }))) ?? []
-        for row in rows { await commit(row, client: client, run: &run) }
+        for row in rows where !run.storageFull { await commit(row, client: client, run: &run) }
         try? modelContext.save()
     }
 
@@ -336,6 +343,15 @@ public actor PhotoBackupEngine {
                 row.derivativesDone = true
             } else if derivativesSupported {
                 await attachDerivatives(row, photoID: p.id, client: client)
+            }
+        } catch NubiloError.http(507, _) {
+            // Over quota: keep the upload and retry once space is freed or the
+            // limit raised, without counting it as a failure.
+            row.status = BackupState.uploaded.rawValue
+            row.lastError = "Storage full"
+            if !run.storageFull {
+                run.storageFull = true
+                run.errors.append("Your storage is full. Free up space or ask an admin to raise your limit.")
             }
         } catch {
             // 403/400: a blob is not on the server yet; keep and retry later.

@@ -12,16 +12,19 @@ import (
 // be deleted (another device changed it, or the caller may not).
 var ErrTreeConflict = errors.New("syncengine: collection tree delete conflict")
 
-// IsAncestor reports whether id is maybeChild or one of its ancestors.
+// IsAncestor reports whether id is maybeChild or one of its ancestors. It
+// walks to the top however deep the tree is (a depth cap would let a move
+// create a cycle), and answers true when it cannot tell, so callers refuse.
 func (e *Engine) IsAncestor(ctx context.Context, id, maybeChild string) bool {
-	cur := maybeChild
-	for i := 0; i < 32 && cur != ""; i++ {
-		if cur == id {
+	seen := map[string]bool{}
+	for cur := maybeChild; cur != ""; {
+		if cur == id || seen[cur] {
 			return true
 		}
+		seen[cur] = true
 		c, err := e.GetCollection(ctx, cur)
 		if err != nil {
-			return false
+			return true
 		}
 		cur = c.ParentID
 	}

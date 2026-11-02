@@ -70,6 +70,28 @@ func TestUnauthenticatedAPI(t *testing.T) {
 	}
 }
 
+func TestHomePage(t *testing.T) {
+	ts, _, _ := start(t)
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "Nubilo app") {
+		t.Fatalf("home %d %q", resp.StatusCode, body)
+	}
+	// Only the bare root is the home page; unknown paths still 404.
+	resp, err = http.Get(ts.URL + "/nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown path %d", resp.StatusCode)
+	}
+}
+
 func TestPairAndSignedSync(t *testing.T) {
 	ts, idsvc, st := start(t)
 	code, _, err := idsvc.StartPairing(context.Background(), "", identity.RoleClient)

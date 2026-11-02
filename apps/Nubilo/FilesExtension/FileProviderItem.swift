@@ -2,7 +2,7 @@ import FileProvider
 import UniformTypeIdentifiers
 import NubiloKit
 
-/// A RemoteItem (or the top level) as the Files app sees it.
+/// A RemoteItem (or the top level) as the Files app and Finder see it.
 final class FileProviderItem: NSObject, NSFileProviderItem {
     let remote: RemoteItem?
 

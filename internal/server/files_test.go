@@ -70,3 +70,23 @@ func TestFolderEndpoints(t *testing.T) {
 		t.Fatalf("folder not deleted: %v %v", c, err)
 	}
 }
+
+// A folder cannot be moved into a descendant however deep it is nested; a
+// cycle would make every later walk up or down the tree loop forever.
+func TestFolderMoveIntoDeepDescendant(t *testing.T) {
+	f := startFamily(t)
+	alice := f.alice
+	parent := f.files(t, alice)
+	var top, bottom string
+	for i := 0; i < 40; i++ {
+		c := alice.json(http.MethodPost, "/sync/v1/collection", map[string]any{"kind": "files", "name": "Level", "parent_id": parent}, http.StatusOK)
+		parent, _ = c["id"].(string)
+		if top == "" {
+			top = parent
+		}
+		bottom = parent
+	}
+	if code, out := alice.do(http.MethodPost, "/sync/v1/collection/update", map[string]any{"id": top, "parent_id": bottom}); code != http.StatusConflict {
+		t.Fatalf("cycle allowed: %d %s", code, out)
+	}
+}

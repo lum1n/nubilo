@@ -10,12 +10,14 @@ import Observation
 @Observable
 public final class SetupWizard {
     public enum Mode: String, CaseIterable, Identifiable {
-        case relay, direct, lan
+        case relay, proxy, tailscale, direct, lan
         public var id: String { rawValue }
 
         var title: String {
             switch self {
             case .relay: "Relay"
+            case .proxy: "Relay behind a proxy"
+            case .tailscale: "Tailscale"
             case .direct: "Direct"
             case .lan: "Home network only"
             }
@@ -24,10 +26,19 @@ public final class SetupWizard {
         var explanation: String {
             switch self {
             case .relay: "A small VPS runs `nubilo relay`. Nothing opens on your router. Recommended."
+            case .proxy: "`nubilo relay --behind-proxy` runs on a host such as exe.dev. Its proxy holds the certificate and can read traffic."
+            case .tailscale: "Devices on your tailnet connect by this Mac's MagicDNS name, with a certificate from `tailscale cert`. Turn on MagicDNS and HTTPS Certificates in the Tailscale admin console first."
             case .direct: "This Mac is reachable from the internet on ports 443 and 80 (port forward)."
-            case .lan: "Only devices on your home network or Tailscale can connect. Uses a self-signed certificate."
+            case .lan: "Only devices on your home network can connect. Uses a self-signed certificate."
             }
         }
+
+        /// The mode needs a public domain name.
+        var needsDomain: Bool { self == .relay || self == .proxy || self == .direct }
+        /// The mode joins a relay with an invite.
+        var needsInvite: Bool { self == .relay || self == .proxy }
+        /// The mode gets a Let's Encrypt certificate, so a notice email helps.
+        var usesACME: Bool { self == .relay || self == .direct }
     }
 
     public enum StepState: Equatable {
@@ -64,8 +75,8 @@ public final class SetupWizard {
     /// Why the form cannot run yet, if anything is missing.
     public var missingInput: String? {
         if cli == nil { return "The nubilo command-line tool is missing from this build of the app." }
-        if mode != .lan && domain.trimmingCharacters(in: .whitespaces).isEmpty { return "Enter the public domain." }
-        if mode == .relay && relayInvite.trimmingCharacters(in: .whitespaces).isEmpty { return "Paste the relay invite." }
+        if mode.needsDomain && domain.trimmingCharacters(in: .whitespaces).isEmpty { return "Enter the public domain." }
+        if mode.needsInvite && relayInvite.trimmingCharacters(in: .whitespaces).isEmpty { return "Paste the relay invite." }
         return nil
     }
 
@@ -115,9 +126,9 @@ public final class SetupWizard {
         let domain = domain.trimmingCharacters(in: .whitespaces)
         let email = email.trimmingCharacters(in: .whitespaces)
         let invite = relayInvite.trimmingCharacters(in: .whitespacesAndNewlines)
-        if mode != .lan, !domain.isEmpty { args += ["--domain", domain] }
-        if mode != .lan, !email.isEmpty { args += ["--email", email] }
-        if mode == .relay, !invite.isEmpty { args += ["--relay-invite", invite] }
+        if mode.needsDomain, !domain.isEmpty { args += ["--domain", domain] }
+        if mode.usesACME, !email.isEmpty { args += ["--email", email] }
+        if mode.needsInvite, !invite.isEmpty { args += ["--relay-invite", invite] }
         return args
     }
 

@@ -1,13 +1,14 @@
 import SwiftUI
 import NubiloKit
 
-/// WebDAV access details and a one-time app password for file clients.
+/// The Files app (iOS) or Finder (macOS) location, plus WebDAV access
+/// details and a one-time app password for other file clients.
 struct FilesView: View {
     @Environment(AppModel.self) private var model
     @State private var created: NewAppPassword?
     @State private var working = false
     @State private var error: String?
-    #if os(iOS) && canImport(FileProvider)
+    #if (os(iOS) || os(macOS)) && canImport(FileProvider)
     @State private var locationStatus: String?
     @State private var locationOK = false
     @State private var checking = false
@@ -15,13 +16,25 @@ struct FilesView: View {
 
     var body: some View {
         Form {
-            #if os(iOS)
+            #if (os(iOS) || os(macOS)) && canImport(FileProvider)
             Section {
+                #if os(iOS)
                 Text("Your folders are in the Files app: open Files, tap Browse and choose Nubilo. Files you add there are stored on your server.")
                 Button("Open the Files App") {
                     if let url = URL(string: "shareddocuments://") { ExternalURL.open(url) }
                 }
-                #if canImport(FileProvider)
+                #else
+                Text("Your folders are in Finder: Nubilo is listed under Locations in the sidebar. Files are downloaded when you open them, and files you add there are stored on your server.")
+                Button("Show in Finder") {
+                    Task {
+                        if let problem = await FilesIntegration.showInFinder() {
+                            locationOK = false
+                            locationStatus = problem
+                        }
+                    }
+                }
+                .disabled(!locationOK)
+                #endif
                 if let locationStatus {
                     Label(locationStatus, systemImage: locationOK ? "checkmark.circle" : "exclamationmark.triangle")
                         .foregroundStyle(locationOK ? Color.secondary : Color.red)
@@ -31,16 +44,15 @@ struct FilesView: View {
                     Task { await setUpLocation() }
                 } label: {
                     HStack {
-                        Text("Set Up the Files Location Again")
+                        Text(Self.setUpAgainTitle)
                         if checking { Spacer(); ProgressView() }
                     }
                 }
                 .disabled(checking || model.client == nil)
-                #endif
             } header: {
                 Text("On this device")
             } footer: {
-                Text("Nubilo is listed under Locations in Files → Browse. If it is missing, use the button above and check the message.")
+                Text(Self.locationFooter)
             }
             #endif
             Section(Self.connectionTitle) {
@@ -89,19 +101,35 @@ struct FilesView: View {
         .errorAlert($error)
         .task {
             if model.me == nil { await model.refreshMe() }
-            #if os(iOS) && canImport(FileProvider)
+            #if (os(iOS) || os(macOS)) && canImport(FileProvider)
             await checkLocation()
             #endif
         }
     }
+
+    #if os(iOS) && canImport(FileProvider)
+    static let setUpAgainTitle = "Set Up the Files Location Again"
+    static let locationFooter = "Nubilo is listed under Locations in Files → Browse. If it is missing, use the button above and check the message."
+    #elseif os(macOS) && canImport(FileProvider)
+    static let setUpAgainTitle = "Set Up the Finder Location Again"
+    static let locationFooter = "If Nubilo is missing from the Finder sidebar, use the button above and check the message, and make sure Nubilo is turned on in System Settings → General → Login Items & Extensions → File Providers."
+    #endif
 
     #if os(iOS)
     static let connectionTitle = "Other apps and computers"
     // This device uses the Files app integration; the WebDAV details are for
     // other apps and for computers.
     static let guide = [
-        "On a Mac: Finder → Go → Connect to Server (⌘K), paste the server address and sign in with the username and password above.",
+        "On a Mac with the Nubilo app, your folders are in Finder already. Without it: Finder → Go → Connect to Server (⌘K), paste the server address and sign in with the username and password above.",
         "In another app that supports WebDAV, add a connection with the same details.",
+    ]
+    #elseif canImport(FileProvider)
+    // The Mac uses the Finder location; WebDAV remains for other apps and
+    // for Macs without the app.
+    static let connectionTitle = "WebDAV, for other apps and computers"
+    static let guide = [
+        "Other apps that support WebDAV, or a Mac without the Nubilo app: use the server address, username and password above.",
+        "In Finder on such a Mac: Go → Connect to Server (⌘K), paste the server address and choose Registered User.",
     ]
     #else
     static let connectionTitle = "Connection"
@@ -113,7 +141,7 @@ struct FilesView: View {
     ]
     #endif
 
-    #if os(iOS) && canImport(FileProvider)
+    #if (os(iOS) || os(macOS)) && canImport(FileProvider)
     private func checkLocation() async {
         if let problem = FilesIntegration.problem {
             locationOK = false
@@ -124,16 +152,16 @@ struct FilesView: View {
             do {
                 let items = try await FilesSession(client: client).allItems()
                 locationOK = true
-                locationStatus = "Nubilo is set up in the Files app (\(items.filter { $0.kind == .folder }.count) folders, \(items.filter { $0.kind == .file }.count) files)."
+                locationStatus = "Nubilo is set up in \(FilesIntegration.placeName) (\(items.filter { $0.kind == .folder }.count) folders, \(items.filter { $0.kind == .file }.count) files)."
             } catch {
                 locationOK = false
-                locationStatus = "The Files location is set up, but listing files fails: \(describe(error))"
+                locationStatus = "The \(FilesIntegration.placeTitle) location is set up, but listing files fails: \(describe(error))"
             }
         } else {
             locationOK = false
             locationStatus = FilesIntegration.extensionInstalled
-                ? "Nubilo is not registered with the Files app yet."
-                : "This build of the app does not contain the Files extension."
+                ? "Nubilo is not registered with \(FilesIntegration.placeName) yet."
+                : "This build of the app does not contain the File Provider extension."
         }
     }
 
