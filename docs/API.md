@@ -86,21 +86,28 @@ Only top-level collections can be shared; everything below inherits the share.
 
 | Request | Response |
 | --- | --- |
-| `GET /api/v1/photos?after=<id>&limit=<≤1000>` | `{"photos":[photo],"next":"<id or empty>"}` the caller's library, oldest first |
+| `GET /api/v1/photos/index` | `{"photos":[{id,name,kind,mime,width,height,taken_at_ms,size,checksum,thumb_hash,preview_hash,live_pair_hash}]}` the whole library in one response, empty fields left out; weak `ETag`, `If-None-Match` → 304 |
+| `GET /api/v1/photos?after=<id>&limit=<≤1000>` | `{"photos":[photo],"next":"<id or empty>"}` the caller's library in id order, a page at a time (older apps) |
 | `GET /api/v1/photos/{id}` | photo metadata (`id, name, mime, width, height, taken_at_ms, kind, checksum, thumb_hash, preview_hash, live_pair_hash, collection_id, …`) |
-| `GET /api/v1/photos/{id}/thumb` \| `/preview` \| `/original` | image bytes (Range supported); also for album items |
+| `GET /api/v1/photos/{id}/thumb` \| `/preview` \| `/original` `[?v=<hash>]` | image bytes (Range supported); also for album items. A photo without a thumbnail or preview gets the original. With `v` equal to the blob served (`thumb_hash`, `preview_hash`, or `checksum` for the original) the response is `Cache-Control: private, max-age=31536000, immutable`; otherwise `private, no-cache` |
+| `POST /api/v1/photos/{id}/derivatives {"thumb_blob","preview_blob"}` | photo; sets a thumbnail and preview the client made (see below) where the photo has none; only in the caller's own library |
 | `POST /api/v1/photos?name=…` (body = file) | 201 photo |
 | `POST /api/v1/photos/check {"hashes":[sha256…]}` | `{"missing":[…]}` hashes not yet in the library (≤1000 per call) |
 | `PUT /sync/v1/blob/{sha256}` (body = file) | `{"blob_id","size"}` |
-| `POST /api/v1/photos/commit {"blob_id","name","taken_at","local_id","live_video_blob"}` | 201 photo; derivatives are made on the server; idempotent per content |
+| `POST /api/v1/photos/commit {"blob_id","name","taken_at","local_id","live_video_blob","thumb_blob","preview_blob"}` | 201 photo; derivatives are made on the server when it can decode the original, else `thumb_blob`/`preview_blob` are used; idempotent per content (a repeat commit adds missing derivatives) |
 | `GET /api/v1/albums` | `{"albums":[{"id","name","owner","access","created_at","updated_at"}]}` own and shared |
 | `POST /api/v1/albums {"name"}` | 201 album |
+| `GET /api/v1/albums/{id}/index` | like `photos/index`, with `photo_id`; items without derivatives show the source photo's |
 | `GET /api/v1/albums/{id}/items?after=&limit=` | `{"items":[photo + "photo_id"],"next"}` |
 | `POST /api/v1/albums/{id}/items {"photo_ids":[…]}` | `{"items":[…]}` |
 
 Share an album with `PUT /api/v1/collections/{album id}/shares`.
 
 Backup loop for a phone: hash each asset → `photos/check` in batches → for each missing hash `PUT /sync/v1/blob/{hash}` (background upload with an upload token) → `photos/commit`.
+
+Client-made derivatives: the server makes thumbnails and previews only for formats Go decodes (JPEG, PNG, GIF, WebP, TIFF, BMP), not HEIC, RAW or video. Apps that can decode them `PUT` a thumbnail and a preview as blobs and name them in `photos/commit`, or attach them later with `photos/{id}/derivatives`. Both must be JPEG: thumbnail long side ≤ 512 px, preview ≤ 2048 px, each ≤ 4 MB.
+
+Listings (`photos`, `photos/index`, album `items` and `index`) are gzipped for clients that send `Accept-Encoding: gzip`.
 
 ## Admin (admin users only)
 

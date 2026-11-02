@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"nubilo/internal/identity"
@@ -119,7 +120,17 @@ type Authenticator struct {
 	AdminTok []byte
 	MaxBody  int64
 	Now      func() time.Time
+
+	// When expired nonces were last deleted (unix ms). Deleting on every
+	// request cost a second database write per request, which adds up when
+	// an app loads hundreds of thumbnails.
+	lastSweep atomic.Int64
 }
+
+// nonceSweepEveryMS is how often expired nonces are deleted. Expired nonces
+// left in the table meanwhile are harmless: their timestamps fail the skew
+// check before the nonce is looked at.
+const nonceSweepEveryMS = 60_000
 
 func (a *Authenticator) AuthenticateRequest(r *http.Request) (*identity.Device, error) {
 	if tok := r.Header.Get("X-Nubilo-Admin"); tok != "" {
@@ -195,8 +206,11 @@ func (a *Authenticator) consumeNonce(ctx context.Context, deviceID, nonce string
 		}
 		return err
 	}
-	cutoff := a.now().UnixMilli() - 2*a.SkewMS
-	_, _ = a.Store.DB.ExecContext(ctx, `DELETE FROM nonces WHERE ts < ?`, cutoff)
+	now := a.now().UnixMilli()
+	last := a.lastSweep.Load()
+	if now-last >= nonceSweepEveryMS && a.lastSweep.CompareAndSwap(last, now) {
+		_, _ = a.Store.DB.ExecContext(ctx, `DELETE FROM nonces WHERE ts < ?`, now-2*a.SkewMS)
+	}
 	return nil
 }
 

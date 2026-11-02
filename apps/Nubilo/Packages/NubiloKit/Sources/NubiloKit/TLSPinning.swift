@@ -70,7 +70,7 @@ extension URLSessionTransport {
         // Not waitsForConnectivity: signed requests expire after 60 s, so a
         // request held until the network returns would be rejected anyway.
         cfg.waitsForConnectivity = false
-        cfg.urlCache = cached ? URLCache(memoryCapacity: 32 << 20, diskCapacity: 500 << 20) : nil
+        cfg.urlCache = cached ? URLCache(memoryCapacity: 32 << 20, diskCapacity: 1 << 30) : nil
         if !cached { cfg.requestCachePolicy = .reloadIgnoringLocalCacheData }
         let session = URLSession(configuration: cfg, delegate: PinningDelegate(pin: pin, onFirstUse: onFirstUse), delegateQueue: nil)
         return URLSessionTransport(session: session)

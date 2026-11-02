@@ -2,7 +2,11 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -69,7 +73,7 @@ func (s *Server) handlePhotosList(w http.ResponseWriter, r *http.Request) {
 	for i := range objs {
 		out = append(out, photoJSON(&objs[i]))
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"photos": out, "next": next})
+	s.writeListJSON(w, r, map[string]any{"photos": out, "next": next})
 }
 
 func (s *Server) handlePhotosUpload(w http.ResponseWriter, r *http.Request) {
@@ -130,14 +134,28 @@ func (s *Server) servePhoto(w http.ResponseWriter, r *http.Request, rendition st
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	obj = s.photos().WithSourceDerivatives(r.Context(), obj)
 	if rendition == "meta" {
 		s.writeJSON(w, http.StatusOK, photoJSON(obj))
+		return
+	}
+	hash, _, err := photos.RenditionBlob(obj, rendition)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	mime, body, err := s.photos().Blob(obj, rendition)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
+	}
+	// Blobs never change, so a URL naming the blob it wants can be kept for
+	// good. The apps add ?v=<hash> from the photo's metadata; a stale v (a
+	// thumbnail attached since) gets the new bytes and must be revalidated.
+	if v := r.URL.Query().Get("v"); v != "" && strings.EqualFold(v, hash) {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "private, no-cache")
 	}
 	// The MIME type comes from client metadata. Serve only media types a
 	// browser shows without running anything, and sandbox the response, so a
@@ -146,7 +164,9 @@ func (s *Server) servePhoto(w http.ResponseWriter, r *http.Request, rendition st
 	w.Header().Set("Content-Type", safeMediaType(mime))
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("ETag", `"`+obj.ContentHash+`"`)
+	// The blob actually sent: a thumbnail attached later must not revalidate
+	// as the original that stood in for it.
+	w.Header().Set("ETag", `"`+hash+`"`)
 	http.ServeContent(w, r, obj.ID+"-"+rendition, time.UnixMilli(obj.UpdatedAt), bytes.NewReader(body))
 }
 
@@ -211,6 +231,8 @@ func (s *Server) handlePhotosCommit(w http.ResponseWriter, r *http.Request) {
 		TakenAt       int64  `json:"taken_at"`
 		LocalID       string `json:"local_id"`
 		LiveVideoBlob string `json:"live_video_blob"`
+		ThumbBlob     string `json:"thumb_blob"`
+		PreviewBlob   string `json:"preview_blob"`
 	}
 	if err := s.readJSON(r, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -224,6 +246,7 @@ func (s *Server) handlePhotosCommit(w http.ResponseWriter, r *http.Request) {
 	}
 	obj, err := s.photos().Commit(r.Context(), dev, photos.CommitRequest{
 		BlobID: req.BlobID, Name: req.Name, TakenAtMS: req.TakenAt, LocalID: req.LocalID, LiveVideoBlob: req.LiveVideoBlob,
+		ThumbBlob: req.ThumbBlob, PreviewBlob: req.PreviewBlob,
 	})
 	if errors.Is(err, photos.ErrForbidden) {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -292,7 +315,7 @@ func (s *Server) handleAlbumItems(w http.ResponseWriter, r *http.Request) {
 	for i := range objs {
 		out = append(out, photoJSON(&objs[i]))
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"items": out, "next": next})
+	s.writeListJSON(w, r, map[string]any{"items": out, "next": next})
 }
 
 func (s *Server) handleAddAlbumItems(w http.ResponseWriter, r *http.Request) {
@@ -322,4 +345,126 @@ func (s *Server) handleAddAlbumItems(w http.ResponseWriter, r *http.Request) {
 		out = append(out, photoJSON(&items[i]))
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
+// handlePhotoIndex lists the caller's whole library in one compact response.
+func (s *Server) handlePhotoIndex(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosRead); err != nil || dev.UserID == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	entries, err := s.photos().LibraryIndex(r.Context(), dev.UserID)
+	if err != nil {
+		http.Error(w, "internal", http.StatusInternalServerError)
+		return
+	}
+	s.writeListJSON(w, r, map[string]any{"photos": entries})
+}
+
+// handleAlbumIndex lists every item of an album in one compact response.
+func (s *Server) handleAlbumIndex(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosRead); err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	entries, err := s.photos().AlbumIndex(r.Context(), dev, r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	s.writeListJSON(w, r, map[string]any{"photos": entries})
+}
+
+// handlePhotoDerivatives attaches a client-made thumbnail and preview to a
+// photo the server could not make them for.
+func (s *Server) handlePhotoDerivatives(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r)
+	if err := authz.Allow(dev, authz.PhotosWrite); err != nil || dev.UserID == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		ThumbBlob   string `json:"thumb_blob"`
+		PreviewBlob string `json:"preview_blob"`
+	}
+	if err := s.readJSON(r, &req); err != nil || (req.ThumbBlob == "" && req.PreviewBlob == "") {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	obj, err := s.photos().AttachDerivatives(r.Context(), dev, r.PathValue("id"), req.ThumbBlob, req.PreviewBlob)
+	switch {
+	case errors.Is(err, syncengine.ErrNotFound), errors.Is(err, photos.ErrNotPhoto):
+		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, photos.ErrForbidden):
+		http.Error(w, "forbidden", http.StatusForbidden)
+	case errors.Is(err, photos.ErrBadDerivative):
+		http.Error(w, "bad derivative", http.StatusBadRequest)
+	case err != nil:
+		http.Error(w, "internal", http.StatusInternalServerError)
+	default:
+		s.writeJSON(w, http.StatusOK, photoJSON(obj))
+	}
+}
+
+// writeListJSON writes a (possibly large) JSON listing with a validator, so
+// an app that has it already gets 304 instead of the body, and gzips it for
+// clients that accept that: photo listings shrink to about a fifth.
+func (s *Server) writeListJSON(w http.ResponseWriter, r *http.Request, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, "internal", http.StatusInternalServerError)
+		return
+	}
+	sum := sha256.Sum256(body)
+	// Weak: the same listing is sent gzipped or not.
+	etag := `W/"` + hex.EncodeToString(sum[:16]) + `"`
+	h := w.Header()
+	h.Set("ETag", etag)
+	h.Set("Cache-Control", "private, no-cache")
+	h.Set("Vary", "Accept-Encoding")
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	h.Set("Content-Type", "application/json")
+	if len(body) < 1024 || !acceptsGzip(r) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		return
+	}
+	h.Set("Content-Encoding", "gzip")
+	w.WriteHeader(http.StatusOK)
+	gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	_, _ = gz.Write(body)
+	_ = gz.Close()
+}
+
+// etagMatches compares If-None-Match to etag the weak way, as RFC 9110 asks
+// for If-None-Match.
+func etagMatches(header, etag string) bool {
+	want := strings.TrimPrefix(etag, "W/")
+	for _, tag := range strings.Split(header, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag == "*" || strings.TrimPrefix(tag, "W/") == want {
+			return true
+		}
+	}
+	return false
+}
+
+func acceptsGzip(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		coding, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		if !strings.EqualFold(strings.TrimSpace(coding), "gzip") {
+			continue
+		}
+		k, v, _ := strings.Cut(strings.TrimSpace(params), "=")
+		if q, err := strconv.ParseFloat(strings.TrimSpace(v), 64); strings.TrimSpace(k) == "q" && err == nil && q == 0 {
+			return false
+		}
+		return true
+	}
+	return false
 }

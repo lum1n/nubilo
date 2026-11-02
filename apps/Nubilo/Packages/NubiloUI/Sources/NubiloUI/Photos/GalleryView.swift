@@ -18,7 +18,7 @@ struct GalleryView: View {
             }
         }
         .navigationTitle(selecting ? "\(selected.count) Selected" : "Library")
-        .navigationDestination(for: Photo.self) { PhotoPreviewView(photo: $0) }
+        .navigationDestination(for: Photo.self) { PhotoViewer(photos: pager?.photos ?? [], start: $0) }
         .toolbar {
             if selecting {
                 ToolbarItem(placement: .primaryAction) {
@@ -38,48 +38,23 @@ struct GalleryView: View {
             AddToAlbumSheet(photoIDs: Array(selected)) { endSelection() }
         }
         .task {
-            guard pager == nil, let client = model.client else { return }
-            let pager = PhotoPager { after in
-                let page = try await client.photos(after: after, limit: 200)
-                return (page.photos, page.next)
+            if pager == nil, let client = model.client {
+                pager = PhotoPager(
+                    fetch: { after in
+                        let page = try await client.photos(after: after, limit: 1000)
+                        return (page.photos, page.next)
+                    },
+                    index: { etag in try await client.photoIndex(etag: etag) },
+                    cache: .standard(for: client),
+                    cacheKey: PhotoIndexCache.libraryKey
+                )
             }
-            self.pager = pager
-            await pager.loadMore()
+            pager?.start()
         }
     }
 
     private func endSelection() {
         selecting = false
         selected = []
-    }
-}
-
-/// One photo at preview size.
-struct PhotoPreviewView: View {
-    let photo: Photo
-
-    var body: some View {
-        RemoteImage(id: photo.id, rendition: "preview", contentMode: .fit)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(.black)
-            .safeAreaInset(edge: .bottom) {
-                VStack(spacing: 2) {
-                    if let taken = photo.takenAt {
-                        Text(taken.formatted(date: .long, time: .shortened))
-                    }
-                    if let w = photo.width, let h = photo.height {
-                        Text("\(w) × \(h)").foregroundStyle(.secondary)
-                    }
-                    if photo.kind == "video" {
-                        Text("Video: a still is shown; play it in Files or on the web.").foregroundStyle(.secondary)
-                    }
-                }
-                .font(.footnote)
-                .padding(8)
-                .frame(maxWidth: .infinity)
-                .background(.bar)
-            }
-            .navigationTitle(photo.name ?? "Photo")
-            .inlineNavigationTitle()
     }
 }

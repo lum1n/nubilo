@@ -2,6 +2,12 @@
 import Foundation
 import Photos
 import SwiftData
+import ImageIO
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 #if canImport(BackgroundTasks) && os(iOS)
 import BackgroundTasks
 #endif
@@ -11,6 +17,13 @@ import BackgroundTasks
 //   PhotoKit asset → export original to a file → stream SHA-256
 //   → POST /api/v1/photos/check (batched) → background PUT /sync/v1/blob/<hash>
 //   with an upload token → POST /api/v1/photos/commit.
+//
+// The server cannot decode HEIC or video, so for those it has no thumbnail
+// or preview and would send the whole original to every grid tile. After a
+// commit that came back without a thumbnail, this device makes both from
+// PhotoKit and attaches them (POST /api/v1/photos/{id}/derivatives). Photos
+// backed up before that existed are filled in by a backfill at the end of
+// each pass.
 //
 // iOS gives third-party apps no always-on sync, so this is best effort: it
 // runs while the app is open and in BGProcessingTask windows, and uploads
@@ -30,6 +43,12 @@ public final class BackupAsset {
     public var lastError: String?
     public var attempts: Int
     public var updatedAt: Date
+    /// The server has a thumbnail and preview for this photo (made by the
+    /// server, or attached by this device). Nil until known; optional so
+    /// existing stores migrate without a schema version.
+    public var derivativesDone: Bool?
+    /// Failed attempts to attach derivatives; the backfill gives up at 3.
+    public var derivativeFailures: Int?
 
     public init(localIdentifier: String, takenAt: Date?, modifiedAt: Date?) {
         self.localIdentifier = localIdentifier
@@ -101,6 +120,13 @@ public actor PhotoBackupEngine {
     private var uploader: BackgroundUploader?
     private var running = false
     public private(set) var lastRun: BackupRun?
+    /// The server library by id, refreshed at the start of each pass (one
+    /// small request when it has not changed).
+    private var library: [String: Photo]?
+    private var libraryFetchedAt = Date.distantPast
+    /// The server takes derivatives made here (it has the photo index, which
+    /// came with them). Until known, commits leave them to the backfill.
+    private var derivativesSupported = false
 
     /// The SwiftData container for BackupAsset, stored in Application Support.
     public static func makeContainer() throws -> ModelContainer {
@@ -116,6 +142,10 @@ public actor PhotoBackupEngine {
     /// another server whose library does not have these photos).
     public func reset() {
         client = nil
+        // What the previous server had says nothing about the next one.
+        library = nil
+        libraryFetchedAt = .distantPast
+        derivativesSupported = false
         try? modelContext.delete(model: BackupAsset.self)
         try? modelContext.save()
     }
@@ -205,6 +235,7 @@ public actor PhotoBackupEngine {
             run.errors.append("upload token: \(error.localizedDescription)")
             return
         }
+        await refreshLibrary(client: client)
         await commitUploaded(client: client, run: &run)
         // The BGTask expiration handler cancels the surrounding Task. A full
         // account stops the pass so no more bytes are uploaded for nothing.
@@ -256,6 +287,7 @@ public actor PhotoBackupEngine {
             try? modelContext.save()
         }
         try? modelContext.save()
+        await backfillDerivatives(client: client, deadline: deadline)
     }
 
     /// Called by the uploader when a blob PUT finished.
@@ -304,6 +336,14 @@ public actor PhotoBackupEngine {
             row.status = BackupState.done.rawValue
             row.lastError = nil
             run.committed += 1
+            // An edited asset is a new photo: its derivatives start over.
+            row.derivativesDone = nil
+            row.derivativeFailures = nil
+            if p.thumbHash != nil {
+                row.derivativesDone = true
+            } else if derivativesSupported {
+                await attachDerivatives(row, photoID: p.id, client: client)
+            }
         } catch NubiloError.http(507, _) {
             // Over quota: keep the upload and retry once space is freed or the
             // limit raised, without counting it as a failure.
@@ -321,6 +361,86 @@ public actor PhotoBackupEngine {
             if row.attempts >= 8 { row.status = BackupState.failed.rawValue }
         }
         row.updatedAt = Date()
+    }
+
+    // MARK: Derivatives
+
+    /// Makes a thumbnail and preview of the row's asset, uploads them and
+    /// attaches them to the photo. Leaves the row unmarked on failure, so the
+    /// backfill tries again (at most three times).
+    @discardableResult
+    private func attachDerivatives(_ row: BackupAsset, photoID: String, client: NubiloClient) async -> Bool {
+        do {
+            let made = try await DerivativeMaker.make(localIdentifier: row.localIdentifier)
+            let thumb = try await client.putBlob(made.thumb)
+            let preview = try await client.putBlob(made.preview)
+            try await client.attachDerivatives(photoID, thumbBlob: thumb.blobId, previewBlob: preview.blobId)
+            row.derivativesDone = true
+            return true
+        } catch let e as NubiloError where e.status == 404 {
+            // The asset left the Photos library, or the photo the server.
+            row.derivativesDone = true
+            return false
+        } catch {
+            row.derivativeFailures = (row.derivativeFailures ?? 0) + 1
+            if (row.derivativeFailures ?? 0) >= 3 { row.derivativesDone = true }
+            return false
+        }
+    }
+
+    /// Fills in thumbnails and previews for photos backed up before this
+    /// device made them, newest first, until `deadline`.
+    private func backfillDerivatives(client: NubiloClient, deadline: Date) async {
+        guard derivativesSupported, let library, Date() < deadline, !Task.isCancelled else { return }
+        let done = BackupState.done.rawValue
+        let descriptor = FetchDescriptor<BackupAsset>(
+            predicate: #Predicate { $0.status == done && $0.derivativesDone == nil },
+            sortBy: [SortDescriptor(\.takenAt, order: .reverse)])
+        guard let rows = try? modelContext.fetch(descriptor) else { return }
+        var attached = 0
+        for row in rows {
+            guard Date() < deadline, !Task.isCancelled else { break }
+            guard let id = row.serverID, let photo = library[id] else {
+                // Committed after the index was fetched: next pass. Before
+                // it and still missing: deleted on the server.
+                if row.updatedAt < libraryFetchedAt { row.derivativesDone = true }
+                continue
+            }
+            if photo.thumbHash != nil {
+                row.derivativesDone = true
+                continue
+            }
+            await attachDerivatives(row, photoID: id, client: client)
+            attached += 1
+            if attached % 20 == 0 { try? modelContext.save() }
+        }
+        try? modelContext.save()
+    }
+
+    /// Fetches the server library, using the gallery's cached copy when the
+    /// server says it is current.
+    private func refreshLibrary(client: NubiloClient) async {
+        let cache = PhotoIndexCache.standard(for: client)
+        let cached = cache.load(PhotoIndexCache.libraryKey)
+        let started = Date()
+        do {
+            let photos: [Photo]
+            switch try await client.photoIndex(etag: cached?.etag) {
+            case .notModified:
+                photos = cached?.photos ?? []
+            case let .photos(fresh, etag):
+                photos = fresh
+                cache.save(PhotoIndexCache.Entry(etag: etag, photos: fresh), as: PhotoIndexCache.libraryKey)
+            }
+            library = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            libraryFetchedAt = started
+            derivativesSupported = true
+        } catch is PhotoIndexUnavailable {
+            library = nil
+            derivativesSupported = false
+        } catch {
+            // Offline: keep what the last pass learned.
+        }
     }
 
     private func nextPending(limit: Int) -> [BackupAsset] {
@@ -409,6 +529,94 @@ public enum AssetExporter {
             try FileManager.default.moveItem(at: tmp, to: final)
         }
         return ExportedFile(url: final, sha256: hash)
+    }
+}
+
+// MARK: - Thumbnails and previews
+
+/// JPEG thumbnail and preview of a library asset, made with PhotoKit so HEIC,
+/// Live Photos and videos (their poster frame) all work. Sizes and quality
+/// match what the server makes from JPEG originals.
+public enum DerivativeMaker {
+    public struct Made: Sendable {
+        public var thumb: Data
+        public var preview: Data
+    }
+
+    // Twice the server's own 256 px: a default 96 pt tile is ~290 px on a 3x
+    // screen. The server accepts up to 512.
+    public static let thumbMaxPixels = 512
+    public static let previewMaxPixels = 1280
+
+    public static func make(localIdentifier: String) async throws -> Made {
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject else {
+            throw NubiloError.http(status: 404, message: "asset no longer in the library")
+        }
+        let image = try await requestImage(asset, maxPixels: previewMaxPixels)
+        guard let preview = jpeg(image, quality: 0.85),
+              let thumb = downsample(preview, maxPixels: thumbMaxPixels).flatMap({ jpeg($0, quality: 0.7) }) else {
+            throw NubiloError.invalidResponse
+        }
+        return Made(thumb: thumb, preview: preview)
+    }
+
+    private static func requestImage(_ asset: PHAsset, maxPixels: Int) async throws -> CGImage {
+        let opts = PHImageRequestOptions()
+        opts.deliveryMode = .highQualityFormat // one callback, full quality
+        opts.resizeMode = .exact
+        opts.isNetworkAccessAllowed = true // originals may live in iCloud
+        opts.isSynchronous = false
+        let size = CGSize(width: maxPixels, height: maxPixels)
+        return try await withCheckedThrowingContinuation { cont in
+            var resumed = false
+            PHImageManager.default().requestImage(for: asset, targetSize: size, contentMode: .aspectFit, options: opts) { image, info in
+                guard !resumed else { return }
+                if (info?[PHImageResultIsDegradedKey] as? Bool) == true { return }
+                resumed = true
+                if let cg = image.flatMap(uprightCGImage) {
+                    cont.resume(returning: cg)
+                } else {
+                    let err = info?[PHImageErrorKey] as? Error
+                    cont.resume(throwing: err ?? NubiloError.invalidResponse)
+                }
+            }
+        }
+    }
+
+    #if canImport(UIKit)
+    /// The pixels as they should be seen: UIImage may carry an orientation
+    /// that its CGImage does not have applied.
+    private static func uprightCGImage(_ image: UIImage) -> CGImage? {
+        if image.imageOrientation == .up, let cg = image.cgImage { return cg }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: image.size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }.cgImage
+    }
+    #else
+    private static func uprightCGImage(_ image: NSImage) -> CGImage? {
+        var rect = CGRect(origin: .zero, size: image.size)
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+    }
+    #endif
+
+    private static func jpeg(_ image: CGImage, quality: Double) -> Data? {
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out as CFMutableData, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
+    }
+
+    private static func downsample(_ data: Data, maxPixels: Int) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 }
 

@@ -8,13 +8,14 @@ import XCTest
 /// Replays canned responses and records requests.
 final class FakeTransport: HTTPTransport, @unchecked Sendable {
     var routes: [String: (Int, String)] = [:]
+    var headers: [String: [String: String]] = [:]
     var seen: [URLRequest] = []
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         seen.append(request)
         let key = "\(request.httpMethod ?? "GET") \(request.url!.path)"
         let (status, body) = routes[key] ?? (404, "not found")
-        let resp = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
+        let resp = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers[key])!
         return (Data(body.utf8), resp)
     }
 }

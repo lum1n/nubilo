@@ -25,6 +25,7 @@ var migrations = []migration{
 	{Version: 4, Name: "groups", Up: migrateV4},
 	{Version: 5, Name: "web login", Up: migrateV5},
 	{Version: 6, Name: "quota charge", Up: migrateV6},
+	{Version: 7, Name: "object lookup indexes", Up: migrateV7},
 }
 
 // LatestSchemaVersion is the version Migrate brings a database to.
@@ -384,5 +385,17 @@ func migrateV6(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE objects SET charged = MAX(size, 0) + COALESCE(length(metadata), 0)`)
+	return err
+}
+
+// migrateV7 indexes the lookups that ran once per photo during backup and
+// scanned the whole library: by blob (photos/check, commit dedupe), by name
+// (commit), and album items by source photo.
+func migrateV7(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS objects_collection_blob ON objects(collection_id, blob_id);
+		CREATE INDEX IF NOT EXISTS objects_collection_name ON objects(collection_id, json_extract(metadata, '$.name'));
+		CREATE INDEX IF NOT EXISTS objects_photo_id ON objects(json_extract(metadata, '$.photo_id'));
+	`)
 	return err
 }

@@ -122,7 +122,9 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("GET /sync/v1/blob/{hash}", s.authed(s.handleBlobGet))
 	mux.HandleFunc("GET /api/v1/photos", s.authedAny(s.handlePhotosList))
 	mux.HandleFunc("POST /api/v1/photos", s.authedAny(s.handlePhotosUpload))
+	mux.HandleFunc("GET /api/v1/photos/index", s.authedAny(s.handlePhotoIndex))
 	mux.HandleFunc("GET /api/v1/photos/{id}", s.authedAny(s.handlePhotoMeta))
+	mux.HandleFunc("POST /api/v1/photos/{id}/derivatives", s.authedAny(s.handlePhotoDerivatives))
 	mux.HandleFunc("GET /api/v1/photos/{id}/original", s.authedAny(s.handlePhotoOriginal))
 	mux.HandleFunc("GET /api/v1/photos/{id}/preview", s.authedAny(s.handlePhotoPreview))
 	mux.HandleFunc("GET /api/v1/photos/{id}/thumb", s.authedAny(s.handlePhotoThumb))
@@ -131,6 +133,7 @@ func New(cfg config.Config, st *store.Store, ids *identity.Service, a *auth.Auth
 	mux.HandleFunc("GET /api/v1/albums", s.authedAny(s.handleAlbums))
 	mux.HandleFunc("POST /api/v1/albums", s.authedAny(s.handleCreateAlbum))
 	mux.HandleFunc("GET /api/v1/albums/{id}/items", s.authedAny(s.handleAlbumItems))
+	mux.HandleFunc("GET /api/v1/albums/{id}/index", s.authedAny(s.handleAlbumIndex))
 	mux.HandleFunc("POST /api/v1/albums/{id}/items", s.authedAny(s.handleAddAlbumItems))
 	davAuth := dav.NewAuth(ids)
 	s.davAuth = davAuth
