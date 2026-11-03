@@ -83,12 +83,17 @@ capability. What they need:
 scripts/build-mac-app.sh
 ```
 
-It builds the bundled `nubilo` CLI (see below), runs `xcodegen`, builds the
-Release configuration with the same automatic signing as Xcode, installs it
-as `/Applications/Nubilo.app` (quitting the running copy first) and opens
-it. `--no-install` stops after the build. Turn on Settings → Open at Login in
-the installed copy so it keeps running. The app must have been run from Xcode
-on this Mac once, so the Mac is in the team's development profile.
+It builds the bundled `nubilo` CLI (see below), runs `xcodegen`, archives the
+Release configuration, exports it signed with Developer ID, packs
+`build/macos/Nubilo-<version>.dmg`, notarizes and staples it, installs the app
+as `/Applications/Nubilo.app` (quitting the running copy first) and opens it.
+It needs a Developer ID Application certificate and a `notarytool` keychain
+profile (`NOTARY_PROFILE`, default `lapp-notary`; create one with
+`xcrun notarytool store-credentials <name> --apple-id <you> --team-id <team>`).
+`--dev` skips Developer ID and notarization and signs like a run from Xcode,
+which only runs on Macs in the team's development profile. `--no-install`
+stops after the build. Turn on Settings → Open at Login in the installed copy
+so it keeps running.
 
 **The bundled server (macOS).** The Mac app runs the Go `nubilo` binary from
 `Nubilo.app/Contents/Helpers/nubilo`. A post-build step copies it from
