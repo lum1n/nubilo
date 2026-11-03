@@ -77,6 +77,19 @@ capability. What they need:
 - For Developer ID distribution, notarize the app with the extension inside;
   the extension is sandboxed and hardened, the app is hardened only.
 
+**A Release build for everyday use (Mac).** On the Mac, run
+
+```sh
+scripts/build-mac-app.sh
+```
+
+It builds the bundled `nubilo` CLI (see below), runs `xcodegen`, builds the
+Release configuration with the same automatic signing as Xcode, installs it
+as `/Applications/Nubilo.app` (quitting the running copy first) and opens
+it. `--no-install` stops after the build. Turn on Settings → Open at Login in
+the installed copy so it keeps running. The app must have been run from Xcode
+on this Mac once, so the Mac is in the team's development profile.
+
 **The bundled server (macOS).** The Mac app runs the Go `nubilo` binary from
 `Nubilo.app/Contents/Helpers/nubilo`. A post-build step copies it from
 `bin/nubilo` at the repository root and signs it. Build it first:
