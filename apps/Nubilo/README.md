@@ -86,7 +86,9 @@ scripts/build-mac-app.sh
 It builds the bundled `nubilo` CLI (see below), runs `xcodegen`, archives the
 Release configuration, exports it signed with Developer ID, packs
 `build/macos/Nubilo-<version>.dmg`, notarizes and staples it, installs the app
-as `/Applications/Nubilo.app` (quitting the running copy first) and opens it.
+as `/Applications/Nubilo.app` (quitting the running copy first; `~/Applications`
+when this user cannot write to `/Applications`, or set `INSTALL_DIR`) and
+opens it.
 It needs a Developer ID Application certificate and a `notarytool` keychain
 profile (`NOTARY_PROFILE`, default `lapp-notary`; create one with
 `xcrun notarytool store-credentials <name> --apple-id <you> --team-id <team>`).

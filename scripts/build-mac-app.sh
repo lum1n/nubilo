@@ -3,6 +3,8 @@
 # runs without Xcode.
 #
 #   scripts/build-mac-app.sh                 Developer ID, notarized DMG, install
+#                                            (/Applications, or ~/Applications
+#                                            when that is not writable)
 #   scripts/build-mac-app.sh --dev           Apple Development signing, no
 #                                            notarization (this team's Macs only)
 #   scripts/build-mac-app.sh --no-install    build only
@@ -151,15 +153,25 @@ fi
 echo "built $APP"
 [[ "$INSTALL" == 1 ]] || exit 0
 
-# 4. Install. Quit the running copy first (Xcode's or an older install).
-echo "==> installing /Applications/Nubilo.app"
+# 4. Install. /Applications when this user can write there, else
+# ~/Applications (standard accounts); INSTALL_DIR picks another folder.
+if [[ -z "${INSTALL_DIR:-}" ]]; then
+  INSTALL_DIR=/Applications
+  if [[ ! -w /Applications || ( -e /Applications/Nubilo.app && ! -w /Applications/Nubilo.app ) ]]; then
+    INSTALL_DIR="$HOME/Applications"
+  fi
+fi
+DEST="$INSTALL_DIR/Nubilo.app"
+echo "==> installing $DEST"
+# Quit the running copy first (Xcode's or an older install).
 osascript -e 'tell application id "dev.nubilo.app" to quit' 2>/dev/null || true
 for _ in {1..20}; do
   pgrep -x Nubilo >/dev/null || break
   sleep 0.5
 done
-rm -rf /Applications/Nubilo.app
-ditto "$APP" /Applications/Nubilo.app
+mkdir -p "$INSTALL_DIR"
+rm -rf "$DEST"
+ditto "$APP" "$DEST"
 
 # Debug builds in DerivedData carry the same bundle ids, so Launch Services
 # and the Finder extension may pick one of them over the installed app.
@@ -167,7 +179,12 @@ ditto "$APP" /Applications/Nubilo.app
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 find "$HOME/Library/Developer/Xcode/DerivedData" "$OUT" -name Nubilo.app -type d -prune 2>/dev/null |
   while read -r stale; do "$LSREGISTER" -u "$stale" 2>/dev/null || true; done
-"$LSREGISTER" -f /Applications/Nubilo.app
+"$LSREGISTER" -f "$DEST"
+for other in /Applications/Nubilo.app "$HOME/Applications/Nubilo.app"; do
+  if [[ "$other" != "$DEST" && -e "$other" ]]; then
+    echo "warning: an older $other is still there; delete it so only $DEST runs" >&2
+  fi
+done
 
-open /Applications/Nubilo.app
-echo "installed and launched /Applications/Nubilo.app ($VERSION)"
+open "$DEST"
+echo "installed and launched $DEST ($VERSION)"
