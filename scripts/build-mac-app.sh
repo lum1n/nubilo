@@ -117,9 +117,11 @@ EOF
   # or notarization rejects it.
   for code in "$APP" "$APP/Contents/Helpers/nubilo"; do
     [[ -e "$code" ]] || continue
-    if ! codesign -dvv "$code" 2>&1 | grep -q '^Authority=Developer ID Application'; then
+    # Not piped into grep -q: with pipefail, codesign's SIGPIPE fails the test.
+    info="$(codesign -dvv "$code" 2>&1)"
+    if [[ "$info" != *$'\nAuthority=Developer ID Application'* ]]; then
       echo "$code is not signed with Developer ID:" >&2
-      codesign -dvv "$code" 2>&1 | grep '^Authority' >&2
+      grep '^Authority' <<<"$info" >&2 || true
       exit 1
     fi
   done
