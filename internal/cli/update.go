@@ -10,14 +10,18 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"nubilo/internal/app"
 	"nubilo/internal/config"
+	"nubilo/internal/relay"
 	"nubilo/internal/service"
 	"nubilo/internal/update"
+	"nubilo/internal/version"
+	"nubilo/internal/wiredx"
 )
 
 // runUpdate: nubilo update [status|check|install|rollback]. status, check
@@ -28,6 +32,9 @@ func runUpdate(g global, args []string) int {
 	sub := "status"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub, args = args[0], args[1:]
+	}
+	if rdir, ok := relayDataDir(g); ok && sub != "guard" {
+		return runRelayUpdate(rdir, sub)
 	}
 	dir, err := app.ResolveDataDir(g.dataDir)
 	if err != nil {
@@ -112,6 +119,13 @@ func printUpdateStatus(st update.Status) {
 	if l := st.Last; l != nil {
 		fmt.Printf("last:       %s → %s %s %s\n", l.From, l.To, l.Result, l.Message)
 	}
+	if r := st.Relay; r != nil {
+		if r.Reachable {
+			fmt.Printf("relay:      %s (updated first, with this server)\n", r.Current)
+		} else {
+			fmt.Printf("relay:      can't be updated from here: %s\n", r.Error)
+		}
+	}
 }
 
 // localAdmin calls the running server's API on loopback with the admin
@@ -156,4 +170,71 @@ func localAdmin(dir, method, path string, out any) error {
 		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return json.Unmarshal(body, out)
+}
+
+// relayDataDir finds a relay's data directory: the one given (or the
+// default ~/.nubilo-relay) when it holds relay.json and no home server
+// config.
+func relayDataDir(g global) (string, bool) {
+	dir, err := relayDir(g)
+	if err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(filepath.Join(dir, relay.ConfigFile)); err != nil {
+		return "", false
+	}
+	if g.dataDir == "" {
+		// A machine running a home server too: `nubilo update` is about that.
+		if home, err := app.ResolveDataDir(""); err == nil {
+			if _, err := os.Stat(config.Paths(home).Config); err == nil {
+				return "", false
+			}
+		}
+	}
+	return dir, true
+}
+
+// runRelayUpdate: on a relay, updates are started by its home server, so
+// this only reports, and rolls back by hand.
+func runRelayUpdate(dir, sub string) int {
+	switch sub {
+	case "status":
+		fmt.Printf("relay:      %s (wired protocol %s)\n", version.String, firstNonEmpty(wiredx.Protocol, "?"))
+		if st, err := update.LoadState(dir); err == nil && st != nil {
+			at := ""
+			if st.FinishedAt > 0 {
+				at = time.UnixMilli(st.FinishedAt).Format(time.DateTime)
+			}
+			fmt.Printf("last:       %s → %s %s %s %s\n", st.From, st.To, st.Phase, at, st.Message)
+		}
+		fmt.Println("This relay updates when its home server does (first, then the server).")
+		fmt.Println("To update now, run `nubilo update install` on the home server, or press Update in the app.")
+		return 0
+	case "rollback":
+		if err := update.Rollback(dir, "rolled back by hand", time.Now()); err != nil {
+			return fatal(err)
+		}
+		fmt.Println("The previous binary is back; its wired state is restored when the relay starts.")
+		if runtime.GOOS == "linux" {
+			if out, err := exec.Command("systemctl", "--user", "restart", service.KindRelay.UnitName()).CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "restart the relay yourself: %v %s\n", err, strings.TrimSpace(string(out)))
+				return 1
+			}
+			fmt.Println("Relay restarted.")
+		}
+		return 0
+	case "check", "install":
+		fmt.Fprintln(os.Stderr, "This is a relay: it updates when its home server does. Run `nubilo update "+sub+"` on the home server, or press Update in the app.")
+		return 2
+	default:
+		fmt.Fprintf(os.Stderr, "unknown update command %q (status, rollback)\n", sub)
+		return 2
+	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
