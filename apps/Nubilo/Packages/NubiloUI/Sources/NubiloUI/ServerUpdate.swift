@@ -108,13 +108,13 @@ final class ServerUpdateModel {
 }
 
 /// The Settings section: hidden unless the server has an updater and the
-/// user is an admin.
+/// user is an admin. The owner loads `update` (see `loadServerUpdate`): a
+/// view that shows nothing until loaded can't load itself, since its
+/// `.task` never runs.
 struct ServerUpdateSection: View {
-    @Environment(AppModel.self) private var app
-    @State private var update = ServerUpdateModel()
+    let update: ServerUpdateModel
 
     var body: some View {
-        @Bindable var update = update
         Group {
             if update.supported, let status = update.status {
                 Section {
@@ -126,12 +126,21 @@ struct ServerUpdateSection: View {
                 }
             }
         }
-        .task(id: app.me?.user.isAdmin) {
-            // Members get 403 anyway; skip the request once we know.
-            guard app.me?.user.isAdmin != false else { return }
-            await update.load(client: app.client)
-        }
-        .errorAlert($update.error, title: "Server Update")
+    }
+}
+
+extension View {
+    /// Loads the server's update status into `update` while this (always
+    /// visible) view is on screen, and shows its errors.
+    func loadServerUpdate(_ update: ServerUpdateModel, app: AppModel) -> some View {
+        @Bindable var update = update
+        return self
+            .task(id: app.me?.user.isAdmin) {
+                // Members get 403 anyway; skip the request once we know.
+                guard app.me?.user.isAdmin != false else { return }
+                await update.load(client: app.client)
+            }
+            .errorAlert($update.error, title: "Server Update")
     }
 }
 

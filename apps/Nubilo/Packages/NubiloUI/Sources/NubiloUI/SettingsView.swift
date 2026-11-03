@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var status: ServerStatus?
     @State private var confirmSignOut = false
+    @State private var serverUpdate = ServerUpdateModel()
     @State private var signingOut = false
     #if os(macOS)
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
@@ -37,7 +38,7 @@ struct SettingsView: View {
                         LabeledContent("This device", value: me.device.name)
                     }
                 }
-                ServerUpdateSection()
+                ServerUpdateSection(update: serverUpdate)
             }
             #if os(macOS)
             Section {
@@ -70,6 +71,7 @@ struct SettingsView: View {
             status = try? await model.client?.status()
             await model.refreshMe()
         }
+        .loadServerUpdate(serverUpdate, app: model)
     }
 
     #if os(macOS)
