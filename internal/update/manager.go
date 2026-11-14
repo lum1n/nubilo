@@ -243,7 +243,10 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	m.refreshRelay(ctx)
 
 	m.mu.Lock()
-	m.status.State = "idle"
+	// An install may have started while the check ran; keep its state.
+	if m.status.State == "checking" {
+		m.status.State = "idle"
+	}
 	m.status.CheckedAt = m.now().UnixMilli()
 	switch {
 	case errors.Is(err, ErrNoRelease):
