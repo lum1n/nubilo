@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -407,5 +408,41 @@ func TestBlockedInsideMacApp(t *testing.T) {
 	st, _ := m.Check(context.Background())
 	if !strings.Contains(st.Blocked, "Update the app") {
 		t.Fatalf("blocked %q", st.Blocked)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A check that overlaps the start of an install must not reset the status
+// to idle while the install is running.
+func TestCheckDoesNotClobberInstallState(t *testing.T) {
+	src, _ := releaseServer(t, "0.8.0", []byte("new binary"))
+	x := newInstall(t)
+	m := &Manager{DataDir: x.data, Current: "0.7.0", Source: src, Install: x.in, Restart: func() {}}
+	if _, err := m.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	inner := src.client()
+	base := inner.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	var once sync.Once
+	m.Source.HTTP = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		once.Do(func() {
+			if _, err := m.StartInstall(); err != nil {
+				t.Errorf("start install: %v", err)
+			}
+		})
+		return base.RoundTrip(r)
+	})}
+	st, err := m.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State == "idle" {
+		t.Fatalf("state %q while an install is under way", st.State)
 	}
 }
