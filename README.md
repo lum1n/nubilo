@@ -196,6 +196,7 @@ nubilo server install|uninstall|service
 nubilo users list|add|disable|enable|role|quota|invite
 nubilo groups list|add|members|rename|delete
 nubilo relay init|run|install|uninstall|invite|members|revoke
+nubilo update [status|check|install|rollback]    # also works on a relay data dir
 nubilo pair | devices | devices revoke|rename|password|enroll|rotate
 nubilo files|calendars|contacts [list|mkdir|create]    # --user USERNAME selects whose data
 nubilo photos [list]
